@@ -6,12 +6,12 @@
   "description": "Detect HTTP/1 desynchronization, including concurrent 0.CL contamination, plus HTTP/2 downgrade, splitting, response-queue, and tunnelling discrepancies with bounded differential controls.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "192c5b76186b9ba9187a03fdda286de1442bc94f9dc1b2ad317e33c5e58bce2d",
+  "entrypoint_sha256": "aacdea300e29b7438166db18f30ce7fd6c03f598145c863de233f0dfb62321fc",
   "capabilities": ["http.raw"],
   "limits": { "timeout_ms": 1200000, "max_operations": 700, "max_concurrency": 1, "memory_mb": 32 },
   "actions": [{
     "name": "scan",
-    "description": "Run bounded HTTP/1 and exact HTTP/2 marker pipelines with interleaved controls against one saved request.",
+    "description": "Run bounded HTTP/1 and exact HTTP/2 marker pipelines with differential controls against one saved request.",
     "required_capabilities": ["http.raw"],
     "input_schema": {
       "type": "object",
