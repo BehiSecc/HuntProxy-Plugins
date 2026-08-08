@@ -154,6 +154,7 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.equal(Array.from(fullQueryFinding.evidence_exchange_ids).length, 3);
   const shapeInput = { ...combinationInput, full_query_oracle: true, allow_shared_cache_key_tests: true, parameter_cloaking: [{ carrier: "utm_content", target: "callback", delimiter: ";" }], fat_get_parameters: ["callback"], max_poison_variants: 3 };
   const shapePlan = plugin.plan(shapeInput, context());
+  assert.ok(shapePlan.operations.find((op) => op.id === "baseline-auth").url.includes("/.huntproxy-control-"), "cloaking and fat-GET controls cannot pre-fill their tested cache key");
   const shapePoisons = shapePlan.operations.filter((op) => /^poison-\d+$/.test(op.id));
   assert.ok(shapePoisons.some((op) => op.url === "https://example.test/admin?hpmulti12345q0"), "full-query oracle uses the query-free clean key");
   assert.ok(shapePoisons.some((op) => /utm_content=hpmulti12345k0;callback=/.test(op.url)), "literal delimiter is preserved on the wire with a shared unique carrier prefix");

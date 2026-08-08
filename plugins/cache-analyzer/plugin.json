@@ -2,11 +2,11 @@
   "schema_version": 1,
   "id": "cache-analyzer",
   "name": "CacheAnalyzer",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "Test cache-key discrepancies, cache poisoning, and web cache deception with cache-busted controls and confirmation.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "9faa50c3edfe744c6543be7e1452f872c277eebda5dfc95efdf7b84ecb3fb0be",
+  "entrypoint_sha256": "88814063a64612de55f14a756beac44f9c9572da889ab6ec4e7cedc9bd358f33",
   "resources": {
     "headers": { "path": "resources/headers", "sha256": "175619d3e49c28431b4ced6363ba63544771db298834195fd3ccb3fc422e9af7" },
     "cookies": { "path": "resources/cookies", "sha256": "dc1d66e40324e017c7020405f25376ccda9cdc6091c00d5e07720312e9ae585b" }
