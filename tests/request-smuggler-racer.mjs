@@ -30,7 +30,7 @@ function context(url = "https://example.test/account") {
   const teCl = plugin.plan({ ...input, families: ["te_cl"] }, ctx);
   const teClAttack = Buffer.from(teCl.operations.find((operation) => operation.id === "probe-0-0").request_base64, "base64").toString();
   assert.match(teClAttack, /POST \/hp-abc12345-not-found HTTP\/1\.1/);
-  assert.match(teClAttack, /Content-Length: 7\r\n\r\n\r\n0\r\n\r\nGET \/account/);
+  assert.match(teClAttack, /Content-Length: 15\r\n\r\n\r\n0\r\n\r\n$/);
 
   function wire(responses) {
     let transcript = ""; const summaries = [];
