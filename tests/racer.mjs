@@ -175,6 +175,9 @@ const timeResult = racer.analyze(timeSensitiveInput, timeObservations, context);
 assert.equal(timeResult.findings.length, 1);
 assert.equal(timeResult.findings[0].confidence, "firm");
 assert.equal(timeResult.findings[0].metadata.private_validation, true);
+const oneTimeAttempt = racer.analyze({ ...timeSensitiveInput, attempts: 1 }, timeObservations.slice(0, 3), context);
+assert.equal(oneTimeAttempt.findings.length, 1);
+assert.equal(oneTimeAttempt.findings[0].confidence, "tentative");
 const failedPrivateComparison = timeObservations.map((observation) => observation.id.startsWith("validate-") && observation.id.endsWith("-1")
   ? { ...observation, responses: observation.responses.map((item) => ({ ...item, success: { matched: false } })) }
   : observation);

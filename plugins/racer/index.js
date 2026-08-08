@@ -281,7 +281,7 @@
       var operationErrors = race && race.error ? [race.error] : [];
       diagnostics.push({ attempt: attempt, synchronized: !!synchronized, release_skew_ms: race && race.release_skew_ms, successes: successes, semantic_success_used: semantic, setup_passed: setupPassed, validation_passed: validationPassed, novel_signatures: newSignatures, errors: operationErrors.concat(groupResponses.filter(function (response) { return !!response.error; }).map(function (response) { return response.error; })) });
     }
-    var findings = [], requiredRepeats = Math.min(2, attempts);
+    var findings = [], requiredRepeats = 2;
     if (timeSensitiveAttempts >= requiredRepeats) {
       findings.push({
         title: "Reproducible time-sensitive state collision",
