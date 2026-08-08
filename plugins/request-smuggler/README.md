@@ -28,7 +28,16 @@ Authentication is excluded by default; set `include_auth=true` only when the
 authorized target requires it. A custom `canary_path` should be harmless and
 have a response distinguishable from the probe path.
 
-The current host preserves exact HTTP/1 bytes, duplicate headers, and response
-transcripts. It does not yet expose malformed HTTP/2 frames or a read-before-
-write same-socket primitive. Accordingly this plugin does not claim H2
-downgrade/tunneling, pause-based, or browser-proven client-side desync coverage.
+The HTTP/2 families use HuntProxy's ordered raw HPACK fields without semantic
+normalization. They cover H2.CL, H2.TE, CRLF header-value injection, CRLF
+request splitting, header-name tunnelling, and pseudo-path tunnelling. The host
+requires HTTPS with ALPN `h2`, preserves duplicate and malformed field order,
+and never falls back to HTTP/1. H2 probes use the same independent
+control/probe/victim/recovery oracle as HTTP/1. Tunnelling is only firm when a
+nested HTTP/1 response is repeatedly visible in the HTTP/2 response body.
+
+The default scan is intentionally thorough: five cycles across every framing
+variant can schedule up to 508 requests. Use `families`, `max_techniques`, and
+`repeats` to reduce volume on fragile targets. Browser-proven client-side
+desync remains out of scope. Pause-based coverage requires the separate
+read-before-continuation workflow and is not claimed by these probes.

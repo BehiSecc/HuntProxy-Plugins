@@ -99,6 +99,30 @@ function context(url = "https://example.test/account") {
   const teTeResult = plugin.analyze(teTeInput, teTeObservations, ctx);
   assert.ok(performance.now() - started < 250, "TE.TE analysis must stay well below the host JavaScript stage budget");
   assert.equal(teTeResult.result.diagnostics.length, 12);
+
+  const h2Input = { ...input, families: ["h2_cl"], repeats: 3 };
+  const h2Plan = plugin.plan(h2Input, ctx);
+  assert.ok(h2Plan.operations.every((operation) => operation.type === "raw_http1" || operation.type === "raw_http2"));
+  const h2Probe = h2Plan.operations.find((operation) => operation.id === "probe-0-0");
+  assert.equal(h2Probe.type, "raw_http2");
+  assert.deepEqual(Array.from(h2Probe.streams[0].headers, (header) => [header.name, header.value]).slice(0, 4), [
+    [":method", "POST"], [":scheme", "https"], [":authority", "example.test"], [":path", "/account"],
+  ]);
+  assert.ok(h2Probe.streams[0].headers.some((header) => header.name === "content-length" && header.value === "0"));
+  assert.match(h2Probe.streams[0].body_text, /^GET \/hp-abc12345-not-found HTTP\/1\.1/);
+  function h2Observation(operation, index) {
+    const status = operation.id.startsWith("h2-direct-canary") || operation.id.startsWith("victim-") ? 404 : 200;
+    return operation.type === "raw_http2" ? { id: operation.id, protocol: "h2", timed_out: false, streams: [{ id: `${operation.id}-stream`, exchange_id: 900 + index, status_code: status, response_body_base64: Buffer.from(status === 404 ? "canary" : "normal").toString("base64") }] }
+      : { id: operation.id, raw: { exchange_id: 900 + index, ...wire([{ status: 200, body: "normal" }]) } };
+  }
+  const h2Result = plugin.analyze(h2Input, h2Plan.operations.map(h2Observation), ctx);
+  assert.equal(h2Result.findings[0].metadata.family, "h2_cl");
+  assert.match(h2Result.findings[0].title, /HTTP\/2/);
+  const tunnel = plugin.plan({ ...input, families: ["h2_tunnel"], repeats: 3 }, ctx);
+  const nameTunnel = tunnel.operations.find((operation) => operation.id === "probe-0-0").streams[0];
+  const pathTunnel = tunnel.operations.find((operation) => operation.id === "probe-1-0").streams[0];
+  assert.ok(nameTunnel.headers.some((header) => header.name.includes("\r\n\r\nGET")));
+  assert.ok(pathTunnel.headers.some((header) => header.name === ":path" && header.value.includes("\r\n\r\nGET")));
 }
 
 {
