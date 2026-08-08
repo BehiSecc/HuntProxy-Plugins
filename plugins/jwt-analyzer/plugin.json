@@ -1,0 +1,16 @@
+{
+  "schema_version": 1, "id": "jwt-analyzer", "name": "JWTAnalyzer", "version": "1.0.0",
+  "description": "Detect HTTP JWTs, report passive claim and algorithm issues, and run bounded signature, claim, and key-selection mutations.",
+  "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "dfbd9ffbe2f2966ed867aab2382ba14cbf5c400dc0bdf5415938ec780828a6a1",
+  "capabilities": ["http.semantic", "identity.use"],
+  "limits": { "timeout_ms": 300000, "max_operations": 30, "max_concurrency": 2, "memory_mb": 32 },
+  "actions": [{ "name": "scan", "description": "Analyze the privileged base request JWT and optionally replay a bounded set of safe active mutations.", "required_capabilities": ["http.semantic", "identity.use"],
+    "input_schema": { "type": "object", "additionalProperties": false, "properties": {
+      "token": { "type": "string", "description": "Optional explicit JWT; captured Authorization/Cookie tokens are preferred." },
+      "active": { "type": "boolean", "default": true },
+      "tests": { "type": "array", "uniqueItems": true, "maxItems": 10, "items": { "enum": ["none", "invalid_signature", "missing_signature", "expired", "no_exp", "empty_hmac", "kid_path", "embedded_jwk", "jku", "x5u"] } },
+      "key_url": { "type": "string", "description": "Explicit HTTP(S) marker URL required for jku/x5u tests; no implicit OAST is used." },
+      "embedded_jwk": { "type": "object", "description": "Explicit public JWK marker for the embedded_jwk test." }
+    } }
+  }]
+}

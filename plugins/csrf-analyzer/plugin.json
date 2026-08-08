@@ -1,0 +1,14 @@
+{
+  "schema_version": 1, "id": "csrf-analyzer", "name": "CSRFAnalyzer", "version": "1.0.0",
+  "description": "Reproduce state-changing requests while removing or corrupting CSRF tokens and varying Origin, Referer, and content type.",
+  "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "b047ddc7cdad314787c73ec4491f6478e8854a05e5ec5fe9fdf80cd540e43f37",
+  "capabilities": ["http.semantic", "identity.use"],
+  "limits": { "timeout_ms": 300000, "max_operations": 102, "max_concurrency": 2, "memory_mb": 32 },
+  "actions": [{ "name": "scan", "description": "Run bounded, repeated CSRF mutations after explicit confirmation that the request changes server state.", "required_capabilities": ["http.semantic", "identity.use"],
+    "input_schema": { "type": "object", "additionalProperties": false, "required": ["allow_state_change"], "properties": {
+      "allow_state_change": { "const": true },
+      "token_names": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1 }, "default": ["csrf", "csrf_token", "_csrf", "xsrf", "_token", "authenticity_token"] },
+      "max_mutations": { "type": "integer", "minimum": 1, "maximum": 50, "default": 30 }
+    } }
+  }]
+}
