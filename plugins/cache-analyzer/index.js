@@ -133,10 +133,7 @@
       var clean = addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":query:" + name));
       variants.push({ name: "query:" + name, poison_url: addQuery(clean, name, token), clean_url: clean, headers: [], marker: token });
     });
-    var isolatedShapeControls = (familyEnabled(input, "full-query") && input.full_query_oracle === true) ||
-      (familyEnabled(input, "parameter-cloaking") && input.parameter_cloaking && input.parameter_cloaking.length) ||
-      (familyEnabled(input, "fat-get") && input.fat_get_parameters && input.fat_get_parameters.length);
-    if (isolatedShapeControls) {
+    if (familyEnabled(input, "full-query") && input.full_query_oracle === true) {
       if (input.allow_shared_cache_key_tests !== true) throw new Error("full-query testing requires allow_shared_cache_key_tests=true");
       var parsed = splitUrl(baseUrl), shared = parsed.origin + parsed.path, fullMarker = token + "q0";
       shapeVariants.push({ name: "full-query", poison_url: shared + "?" + encodeURIComponent(fullMarker), clean_url: shared, headers: [], marker: fullMarker });
@@ -196,7 +193,10 @@
   function plan(input, context) {
     if (input.allow_cache_side_effects !== true) throw new Error("cache testing requires allow_cache_side_effects=true");
     var exchange = base(context), token = marker(input), operations = [], controlUrl = exchange.url;
-    if (familyEnabled(input, "full-query") && input.full_query_oracle === true) {
+    var isolatedShapeControls = (familyEnabled(input, "full-query") && input.full_query_oracle === true) ||
+      (familyEnabled(input, "parameter-cloaking") && input.parameter_cloaking && input.parameter_cloaking.length) ||
+      (familyEnabled(input, "fat-get") && input.fat_get_parameters && input.fat_get_parameters.length);
+    if (isolatedShapeControls) {
       var controlParsed = splitUrl(exchange.url), controlPath = controlParsed.path.replace(/\/$/, "");
       controlUrl = controlParsed.origin + controlPath + "/.huntproxy-control-" + cacheBuster(token);
     }
