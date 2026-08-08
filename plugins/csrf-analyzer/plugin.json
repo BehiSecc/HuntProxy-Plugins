@@ -1,7 +1,7 @@
 {
-  "schema_version": 1, "id": "csrf-analyzer", "name": "CSRFAnalyzer", "version": "1.1.0",
+  "schema_version": 1, "id": "csrf-analyzer", "name": "CSRFAnalyzer", "version": "1.2.0",
   "description": "Reproduce state-changing requests with token, duplicate-token, cross-session, Origin, Referer, method, and content-type controls.",
-  "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "c535a88efc970dd4d48f99b8e93f5a0f3ae5c5a489dac6399dadc183fa6fb0f2",
+  "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "0d754cf6ec0f1b382c0a492dfc34fe95eaa350ff64f2d980404aa6e30e00e3e0",
   "capabilities": ["http.semantic", "identity.use"],
   "limits": { "timeout_ms": 600000, "max_operations": 162, "max_concurrency": 2, "memory_mb": 32 },
   "actions": [{ "name": "scan", "description": "Run bounded, repeated CSRF mutations after explicit confirmation that the request changes server state.", "required_capabilities": ["http.semantic", "identity.use"],
@@ -9,6 +9,11 @@
       "allow_state_change": { "const": true },
       "token_names": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1 }, "default": ["csrf", "csrf_token", "_csrf", "xsrf", "_token", "authenticity_token"] },
       "secondary_identity": { "$ref": "#/$defs/identity", "description": "Optional second authenticated identity used to test whether the original token is bound to its session." },
+      "paired_cookie_tests": { "type": "array", "maxItems": 20, "items": { "type": "object", "additionalProperties": false, "required": ["name", "identity", "token"], "properties": {
+        "name": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,40}$" },
+        "identity": { "$ref": "#/$defs/identity" },
+        "token": { "type": "object", "additionalProperties": false, "required": ["location", "name", "value"], "properties": { "location": { "enum": ["body", "query", "header"] }, "name": { "type": "string", "minLength": 1 }, "value": { "type": "string" } } }
+      } }, "description": "Explicit cookie/session and matching token combinations for double-submit and non-session-cookie binding checks." },
       "cross_site_origin": { "type": "string", "pattern": "^https?://[^/]+$", "default": "https://csrf.invalid" },
       "success_markers": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 200 } },
       "failure_markers": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 200 } },

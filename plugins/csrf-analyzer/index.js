@@ -62,6 +62,21 @@
     if (identity && identity.cookie) headers.push({ name: "Cookie", value: String(identity.cookie) });
     return headers;
   }
+  function jsonPointer(parts) { return "/" + parts.map(function(part){return String(part).replace(/~/g,"~0").replace(/\//g,"~1");}).join("/"); }
+  function jsonTokenPaths(value, wanted, parts, output, depth) {
+    if(!value || typeof value!=="object" || depth>8 || output.length>=40) return;
+    Object.keys(value).forEach(function(name){
+      var next=parts.concat([name]);
+      if(wanted[String(name).toLowerCase()] && output.length<40) output.push(next);
+      jsonTokenPaths(value[name],wanted,next,output,depth+1);
+    });
+  }
+  function jsonChanged(value, path, replacement, remove) {
+    var copy=JSON.parse(JSON.stringify(value)), current=copy;
+    for(var index=0;index<path.length-1;index+=1) current=current[path[index]];
+    if(remove) delete current[path[path.length-1]]; else current[path[path.length-1]]=replacement;
+    return encode64(JSON.stringify(copy));
+  }
   function mutationList(input, context) {
     var exchange = base(context), data = raw(context), wanted = lowerSet(tokenNames(input)), values = [], seen = {};
     var invalid = "huntproxy-invalid-csrf", contentType = firstHeader(data, "content-type").toLowerCase();
@@ -95,10 +110,11 @@
     } else if (contentType.indexOf("application/json") !== -1) {
       try {
         var object = JSON.parse(data.body);
-        Object.keys(object).forEach(function (name) {
-          if (!wanted[name.toLowerCase()]) return;
-          add("body-remove:" + name, { body_params: [{ name: name, value: null }] });
-          add("body-invalid:" + name, { body_params: [{ name: name, value: invalid }] });
+        var paths=[]; jsonTokenPaths(object,wanted,[],paths,0);
+        paths.forEach(function (path) {
+          var pointer=jsonPointer(path);
+          add("json-remove:" + pointer, { body_base64: jsonChanged(object,path,invalid,true) });
+          add("json-invalid:" + pointer, { body_base64: jsonChanged(object,path,invalid,false) });
         });
       } catch (_) {}
     }
@@ -115,7 +131,11 @@
     if (contentType.indexOf("application/json") !== -1 || contentType.indexOf("application/x-www-form-urlencoded") !== -1) {
       add("content-type-text-plain", { header_tombstones: ["Content-Type"], headers: [{ name: "Content-Type", value: "text/plain" }] }, "content-type");
     }
-    add("method-get-empty-body", { method: "GET", body_base64: encode64(""), header_tombstones: ["Content-Type", "Content-Length"] }, "method");
+    if(contentType.indexOf("application/x-www-form-urlencoded") !== -1) {
+      var methodQuery=formParts(data.body).filter(function(part){return !wanted[part.name.toLowerCase()];}).map(function(part){return {name:part.name,value:part.value};});
+      queryParts(exchange.url).forEach(function(part){if(wanted[part.name.toLowerCase()]) methodQuery.push({name:part.name,value:null});});
+      add("method-get-form-query", { method: "GET", query_params: methodQuery, body_base64: encode64(""), header_tombstones: ["Content-Type", "Content-Length"] }, "method");
+    } else add("method-get-empty-body", { method: "GET", body_base64: encode64(""), header_tombstones: ["Content-Type", "Content-Length"] }, "method");
     add("method-override-get", { headers: [{ name: "X-HTTP-Method-Override", value: "GET" }] }, "method");
 
     if (input.secondary_identity) {
@@ -124,6 +144,14 @@
         headers: identityHeaders(input.secondary_identity)
       }, "session-binding");
     }
+    (input.paired_cookie_tests||[]).forEach(function(test){
+      var headers=identityHeaders(test.identity), patch={header_tombstones:["Cookie","Authorization","Proxy-Authorization"],headers:headers};
+      var token={name:String(test.token.name),value:String(test.token.value)};
+      if(test.token.location==="query") patch.query_params=[token];
+      else if(test.token.location==="header") patch.headers=headers.concat([token]);
+      else patch.body_params=[token];
+      add("paired-cookie:"+String(test.name),patch,"cookie-token-binding");
+    });
     return values.slice(0, Math.max(1, Math.min(Number(input.max_mutations || 50), 80)));
   }
   function operation(id, exchange, patch) {

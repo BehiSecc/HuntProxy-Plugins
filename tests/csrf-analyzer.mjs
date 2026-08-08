@@ -32,6 +32,7 @@ const input = {
   allow_state_change: true,
   token_names: ["csrf", "csrf_token", "X-CSRF-Token"],
   secondary_identity: { cookie: "sid=secondary", headers: [{ name: "Authorization", value: "Bearer secondary" }] },
+  paired_cookie_tests: [{ name: "double-submit", identity: { cookie: "sid=victim; csrf=paired" }, token: { location: "body", name: "csrf_token", value: "paired" } }],
   success_markers: ["updated"], failure_markers: ["rejected"], max_mutations: 80,
 };
 const plan = plugin.plan(input, context());
@@ -41,7 +42,7 @@ for (const required of [
   "query-duplicate-invalid-first:csrf", "query-duplicate-invalid-last:csrf",
   "header-duplicate-invalid-first:X-CSRF-Token", "header-duplicate-invalid-last:X-CSRF-Token",
   "body-duplicate-invalid-first:csrf_token", "body-duplicate-invalid-last:csrf_token",
-  "content-type-remove", "content-type-text-plain", "method-get-empty-body", "cross-session-original-token",
+  "content-type-remove", "content-type-text-plain", "method-get-form-query", "cross-session-original-token", "paired-cookie:double-submit",
 ]) assert.ok(mutations.includes(required), `missing mutation ${required}`);
 const crossSession = plan.operations.find((op) => op.id.startsWith(`mutation-${mutations.indexOf("cross-session-original-token")}-`));
 assert.ok(crossSession.header_tombstones.includes("Cookie"));
@@ -49,6 +50,14 @@ assert.ok(crossSession.headers.some((header) => header.name === "Cookie" && head
 const bodyDuplicate = plan.operations.find((op) => op.id.startsWith(`mutation-${mutations.indexOf("body-duplicate-invalid-first:csrf_token")}-`));
 const duplicateText = Buffer.from(bodyDuplicate.body_base64, "base64").toString();
 assert.match(duplicateText, /csrf_token=huntproxy-invalid-csrf&csrf_token=body-good/);
+const methodGet = plan.operations.find((op) => op.id.startsWith(`mutation-${mutations.indexOf("method-get-form-query")}-`));
+assert.equal(methodGet.method, "GET");
+assert.equal(methodGet.body_base64, b64(""));
+assert.ok(methodGet.query_params.some((part) => part.name === "name" && part.value === "alice"));
+assert.ok(methodGet.query_params.some((part) => part.name === "csrf" && part.value === null));
+const paired = plan.operations.find((op) => op.id.startsWith(`mutation-${mutations.indexOf("paired-cookie:double-submit")}-`));
+assert.ok(paired.headers.some((header) => header.name === "Cookie" && header.value.includes("csrf=paired")));
+assert.ok(paired.body_params.some((part) => part.name === "csrf_token" && part.value === "paired"));
 
 const observations = plan.operations.map((operation) => observation(operation));
 const originIndex = mutations.indexOf("origin-cross-site");
@@ -69,5 +78,15 @@ assert.ok(result.result.outcomes.some((outcome) => outcome.kind === "session-bin
 const failed = plan.operations.map((operation) => observation(operation));
 failed.find((item) => item.id === "baseline-0").error = "transport failed";
 assert.equal(plugin.analyze(input, failed, context()).result.baseline_stable, false);
+
+const nestedContext=context();
+nestedContext.base_exchange.identity.request_headers[0].value_base64=b64("application/json");
+nestedContext.base_exchange.identity.request_body_base64=b64(JSON.stringify({profile:{name:"alice",security:{csrf_token:"nested-good"}}}));
+const nestedPlan=plugin.plan({allow_state_change:true,token_names:["csrf_token"],max_mutations:10},nestedContext);
+const nestedMutations=Array.from(nestedPlan.result.mutations,(item)=>item.name);
+assert.ok(nestedMutations.includes("json-remove:/profile/security/csrf_token"));
+assert.ok(nestedMutations.includes("json-invalid:/profile/security/csrf_token"));
+const nestedInvalid=nestedPlan.operations.find((op)=>op.id.startsWith(`mutation-${nestedMutations.indexOf("json-invalid:/profile/security/csrf_token")}-`));
+assert.equal(JSON.parse(Buffer.from(nestedInvalid.body_base64,"base64")).profile.security.csrf_token,"huntproxy-invalid-csrf");
 
 console.log("CSRFAnalyzer hardening tests passed.");
