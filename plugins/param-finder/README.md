@@ -24,3 +24,5 @@ Supplied and harvested names are ordered first, followed by built-in
 high-signal names and the complete bundled resources. Screening defaults to
 bounded 64-name buckets so late wordlist entries remain covered;
 `planned_operation_count` and `truncated` expose any caller request cap.
+Plan results expose counts plus only a small prioritized candidate sample; the
+full bundled resources stay host-side and are not duplicated into job output.

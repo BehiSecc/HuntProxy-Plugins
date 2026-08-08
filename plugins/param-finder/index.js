@@ -129,7 +129,9 @@
     if (phase === "confirm" && operationLimit % 2 === 1) operationLimit -= 1;
     var plannedOperations = operations.length;
     operations = operations.slice(0, operationLimit);
-    return { operations: operations, result: { phase: phase, candidates: all, skipped_locations: Array.from(new Set(skipped)), operation_count: operations.length, planned_operation_count: plannedOperations, truncated: plannedOperations > operationLimit } };
+    var candidateCounts = {}, candidateSample = {};
+    Object.keys(all).forEach(function (location) { candidateCounts[location] = all[location].length; candidateSample[location] = all[location].slice(0, 20); });
+    return { operations: operations, result: { phase: phase, candidate_counts: candidateCounts, candidate_sample: candidateSample, skipped_locations: Array.from(new Set(skipped)), operation_count: operations.length, planned_operation_count: plannedOperations, truncated: plannedOperations > operationLimit } };
   }
 
   function byId(observations) {
