@@ -136,8 +136,8 @@
     }
     (familyEnabled(input, "parameter-cloaking") ? (input.parameter_cloaking || []) : []).slice(0, 20).forEach(function (entry, index) {
       var carrier = String(entry.carrier), target = String(entry.target), delimiter = String(entry.delimiter || ";"), markerValue = token + "p" + index;
-      var clean = addQuery(baseUrl, carrier, "hpclean" + index);
-      shapeVariants.push({ name: "cloaking:" + carrier.toLowerCase() + delimiter + target.toLowerCase(), poison_url: addQuery(baseUrl, carrier, "1" + delimiter + target + "=" + markerValue), clean_url: clean, headers: [], marker: markerValue });
+      var sharedValue = token + "k" + index, clean = addQuery(baseUrl, carrier, sharedValue);
+      shapeVariants.push({ name: "cloaking:" + carrier.toLowerCase() + delimiter + target.toLowerCase(), poison_url: addQuery(baseUrl, carrier, sharedValue + delimiter + target + "=" + markerValue), clean_url: clean, headers: [], marker: markerValue });
     });
     (familyEnabled(input, "fat-get") ? (input.fat_get_parameters || []) : []).slice(0, 20).forEach(function (name, index) {
       var markerValue = token + "f" + index, cleanValue = "hpclean" + cacheBuster(token + ":fat:" + name);
@@ -193,8 +193,8 @@
       var controlParsed = splitUrl(exchange.url), controlPath = controlParsed.path.replace(/\/$/, "");
       controlUrl = controlParsed.origin + controlPath + "/.huntproxy-control-" + cacheBuster(token);
     }
-    operations.push(request("baseline-auth", exchange.exchange_id, exchange.method, addQuery(controlUrl, "hp_control", token), [], false));
-    operations.push(request("baseline-anon", exchange.exchange_id, exchange.method, addQuery(controlUrl, "hp_control", token), [], true));
+    operations.push(request("baseline-auth", exchange.exchange_id, exchange.method, addQuery(controlUrl, "hp_cache_bust", cacheBuster(token + ":control")), [], false));
+    operations.push(request("baseline-anon", exchange.exchange_id, exchange.method, addQuery(controlUrl, "hp_cache_bust", cacheBuster(token + ":control")), [], true));
     var modes = input.modes && input.modes.length ? input.modes : ["poisoning", "deception"];
     if (modes.indexOf("poisoning") !== -1) {
       poisonVariants(exchange.url, token, input, context).slice(0, Math.max(1, Math.min(Number(input.max_poison_variants || 304), 504))).forEach(function (variant, index) {
@@ -307,7 +307,8 @@
         var poison = map["poison-" + index], clean = map["poison-clean-" + index], confirm = map["poison-confirm-" + index];
         var expectedMarker = String(variant.marker || token).toLowerCase();
         var persistedMarker = evidenceText(clean).indexOf(expectedMarker) !== -1 && evidenceText(confirm).indexOf(expectedMarker) !== -1;
-        var persistedMutation = poison && clean && confirm && same(poison, clean) && same(clean, confirm) && authBase && !same(authBase, clean);
+        var mutationComparable = /^(?:header:|headers:|query:)/.test(variant.name);
+        var persistedMutation = mutationComparable && poison && clean && confirm && same(poison, clean) && same(clean, confirm) && authBase && !same(authBase, clean);
         if (poison && clean && confirm && same(clean, confirm) && (persistedMarker || persistedMutation)) {
           findings.push({
             title: "Web cache poisoning via " + variant.name,

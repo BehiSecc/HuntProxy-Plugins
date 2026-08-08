@@ -156,7 +156,11 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const shapePlan = plugin.plan(shapeInput, context());
   const shapePoisons = shapePlan.operations.filter((op) => /^poison-\d+$/.test(op.id));
   assert.ok(shapePoisons.some((op) => op.url === "https://example.test/admin?hpmulti12345q0"), "full-query oracle uses the query-free clean key");
-  assert.ok(shapePoisons.some((op) => /utm_content=1%3Bcallback%3D/.test(op.url)), "delimiter cloaking is encoded as one carrier value");
+  assert.ok(shapePoisons.some((op) => /utm_content=hpmulti12345k0%3Bcallback%3D/.test(op.url)), "delimiter cloaking uses a shared unique carrier prefix");
+  const cloakingPoison = shapePoisons.find((op) => /utm_content=/.test(op.url));
+  const cloakingIndex = cloakingPoison.id.slice("poison-".length);
+  const cloakingClean = shapePlan.operations.find((op) => op.id === `poison-clean-${cloakingIndex}`);
+  assert.match(cloakingClean.url, /utm_content=hpmulti12345k0$/, "cloaking clean control preserves the poison carrier prefix");
   const fatGet = shapePoisons.find((op) => op.body_base64);
   assert.equal(fatGet.method, "GET");
   assert.match(Buffer.from(fatGet.body_base64, "base64").toString(), /^callback=hpmulti12345f0$/);
@@ -177,6 +181,9 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const rawResponse = (op, path) => ({ id: op.id, raw: { exchange_id: Math.floor(Math.random() * 100000) + 1, response_transcript_base64: Buffer.from(`HTTP/1.1 404 Not Found\r\nX-Cache: hit\r\n\r\nPath ${path}`).toString("base64"), responses: [{ offset: 0, length: 200 }] } });
   const rawNormalizationObservations = rawNormalizationPlan.operations.map((op) => op.type === "raw_http1" ? rawResponse(op, `<hprawnorm123n${op.id.endsWith("-0") ? 0 : 1}>`) : observation(op, 200, "ordinary", "ordinary"));
   assert.ok(plugin.analyze(rawNormalizationInput, rawNormalizationObservations, context()).findings.some((finding) => finding.metadata.variant === "url-normalization"));
+
+  const fullQueryFalsePositiveObservations = fullQueryOnlyPlan.operations.map((op) => observation(op, 200, op.id.startsWith("poison-") ? "already-cached" : "isolated-control", op.id.startsWith("poison-") ? "ordinary cached response" : "different control path"));
+  assert.equal(plugin.analyze(fullQueryOnlyInput, fullQueryFalsePositiveObservations, context()).findings.length, 0, "marker-free cache hits must not become full-query findings through cross-path mutation comparison");
 
   const cookieContext = context("https://example.test/");
   cookieContext.resources.cookies = "fehost\nsession\n";
