@@ -136,19 +136,20 @@
     if (input.prebuilt_tokens) ["embedded_jwk","jku","x5u"].forEach(function(name){ if(enabled.indexOf(name)!==-1 && typeof input.prebuilt_tokens[name]==="string" && input.prebuilt_tokens[name].split(".").length===3) list.push({name:name,token:input.prebuilt_tokens[name]}); });
     return list.slice(0, 20);
   }
-  function operation(id, baseId, located, replacement) {
+  function operation(id, baseId, located, replacement, targetUrl) {
     var op = { id: id, type: "http_request", base_exchange_id: baseId, protocol: "auto" };
+    if (targetUrl) op.url = String(targetUrl);
     if (located.kind === "cookie") op.cookie_params = [{ name: located.name, value: replacement }];
     else op.headers = [{ name: located.name, value: "Bearer " + replacement }];
     return op;
   }
   function plan(input, context) {
-    var jwt = parsed(input, context), operations = [];
+    var jwt = parsed(input, context), operations = [], targetUrl = input.target_url || null;
     if (input.active !== false) {
-      for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("baseline-" + repeat, context.base_exchange.exchange_id, jwt.located, jwt.located.token));
-      variants(input, context).forEach(function (variant, index) { for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("variant-" + index + "-" + repeat, context.base_exchange.exchange_id, jwt.located, variant.token)); });
+      for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("baseline-" + repeat, context.base_exchange.exchange_id, jwt.located, jwt.located.token, targetUrl));
+      variants(input, context).forEach(function (variant, index) { for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("variant-" + index + "-" + repeat, context.base_exchange.exchange_id, jwt.located, variant.token, targetUrl)); });
     }
-    return { operations: operations, result: { token_location: jwt.located.kind, algorithm: jwt.header.alg || null, weak_hmac_secret_found: !!weakSecret(input, context, jwt), active_variants: input.active === false ? [] : variants(input, context).map(function (item) { return item.name; }) } };
+    return { operations: operations, result: { token_location: jwt.located.kind, algorithm: jwt.header.alg || null, weak_hmac_secret_found: !!weakSecret(input, context, jwt), active_variants: input.active === false ? [] : variants(input, context).map(function (item) { return item.name; }), target_url: targetUrl, explicit_success_oracle: !!input.success } };
   }
   function byId(items) { var out = {}; items.forEach(function (item) { out[item.id] = item; }); return out; }
   function responseText(item) { return item && item.response_body_base64 ? decode64(item.response_body_base64) : String(item && item.response_preview && item.response_preview.text || ""); }
@@ -163,6 +164,40 @@
   function similarity(left,right){if(left===right)return 1;if(!left||!right)return 0;var a={},b={},u={},same=0,total=0;left.split(/[^a-z0-9_]+/).filter(Boolean).forEach(function(t){a[t]=1;u[t]=1;});right.split(/[^a-z0-9_]+/).filter(Boolean).forEach(function(t){b[t]=1;u[t]=1;});Object.keys(u).forEach(function(t){total+=1;if(a[t]&&b[t])same+=1;});return total?same/total:0;}
   function same(a, b, input) { return !!(a && b && !a.error && !b.error && a.status_code === b.status_code && similarity(normalized(a,input),normalized(b,input)) >= Math.max(0.5,Math.min(Number(input.similarity_threshold==null?0.92:input.similarity_threshold),1))); }
   function pair(map, prefix, input) { return same(map[prefix + "0"], map[prefix + "1"], input) ? map[prefix + "0"] : null; }
+  function responseHeaders(item, name) {
+    var output=[];
+    (item && item.response_headers || []).forEach(function(header){
+      if(String(header.name||"").toLowerCase()===String(name).toLowerCase()) output.push(header.value_base64 != null ? decode64(header.value_base64) : String(header.value||""));
+    });
+    return output;
+  }
+  function textMatches(value, predicate) {
+    value=String(value||""); predicate=predicate||{};
+    if(predicate.equals != null && value!==String(predicate.equals)) return false;
+    if(predicate.contains != null && value.indexOf(String(predicate.contains))===-1) return false;
+    if(predicate.regex != null) { try { if(!(new RegExp(String(predicate.regex))).test(value)) return false; } catch(_) { return false; } }
+    return true;
+  }
+  function pointer(value, path) {
+    if(path==="" || path==="$" || path==="/") return {exists:true,value:value};
+    if(String(path).charAt(0)!=="/") return {exists:false};
+    var current=value, pieces=String(path).slice(1).split("/").map(function(part){return part.replace(/~1/g,"/").replace(/~0/g,"~");});
+    for(var index=0;index<pieces.length;index+=1){if(current==null || !Object.prototype.hasOwnProperty.call(Object(current),pieces[index])) return {exists:false}; current=current[pieces[index]];}
+    return {exists:true,value:current};
+  }
+  function successMatches(item, predicate) {
+    if(!item || item.error || !predicate) return false;
+    if(predicate.status_codes && predicate.status_codes.length && predicate.status_codes.indexOf(Number(item.status_code))===-1) return false;
+    if(predicate.body_contains != null && responseText(item).indexOf(String(predicate.body_contains))===-1) return false;
+    if(predicate.body_regex != null) { try { if(!(new RegExp(String(predicate.body_regex))).test(responseText(item))) return false; } catch(_) { return false; } }
+    if(predicate.headers && !predicate.headers.every(function(expected){return responseHeaders(item,expected.name).some(function(value){return textMatches(value,expected);});})) return false;
+    if(predicate.redirect_location && !responseHeaders(item,"location").some(function(value){return textMatches(value,predicate.redirect_location);})) return false;
+    if(predicate.json) {
+      var parsedBody; try { parsedBody=JSON.parse(responseText(item)); } catch(_) { return false; }
+      if(!predicate.json.every(function(expected){var found=pointer(parsedBody,expected.pointer); if(expected.exists != null && found.exists!==expected.exists) return false; return expected.equals === undefined || (found.exists && JSON.stringify(found.value)===JSON.stringify(expected.equals));})) return false;
+    }
+    return true;
+  }
   function analyze(input, observations, context) {
     var jwt = parsed(input, context), map = byId(observations), findings = [], baseId = context.base_exchange.exchange_id, now = Math.floor(Date.now() / 1000);
     function passive(title, severity, explanation) { findings.push({ title: title, severity: severity, confidence: "firm", explanation: explanation, remediation: "Issue short-lived tokens with explicit validation policy and verify algorithm, signature, claims, and trusted key sources server-side.", evidence_exchange_ids: [baseId] }); }
@@ -171,17 +206,19 @@
     else if (Number(jwt.payload.exp) < now) passive("Captured JWT is expired", "informational", "The captured token expiration is in the past; acceptance would indicate missing claim validation.");
     if (jwt.header.jku || jwt.header.x5u) passive("JWT references a remote key URL", "medium", "The token header selects verification material through a URL and requires a strict allowlist.");
     if (weakSecret(input, context, jwt) !== null) passive("JWT is signed with a weak HMAC secret", "high", "The captured HS256 signature was verified using the bounded configured weak-secret dictionary.");
-    var baseline = pair(map, "baseline-", input);
+    var baseline = pair(map, "baseline-", input), explicitOracle=!!input.success;
     if (input.active !== false && baseline) variants(input, context).forEach(function (variant, index) {
       var accepted = pair(map, "variant-" + index + "-", input);
-      if (accepted && accepted.status_code >= 200 && accepted.status_code < 400 && same(baseline, accepted, input)) findings.push({
+      var oracleAccepted = explicitOracle && accepted && successMatches(map["variant-"+index+"-0"],input.success) && successMatches(map["variant-"+index+"-1"],input.success);
+      var negativeControl = explicitOracle && !successMatches(map["baseline-0"],input.success) && !successMatches(map["baseline-1"],input.success);
+      if (accepted && ((explicitOracle && oracleAccepted && negativeControl) || (!explicitOracle && accepted.status_code >= 200 && accepted.status_code < 400 && same(baseline, accepted, input)))) findings.push({
         title: "JWT validation bypass using " + variant.name.replace(/_/g, " "), severity: "high", confidence: "firm",
-        explanation: "A deliberately invalid JWT mutation reproduced the authenticated baseline response twice.",
+        explanation: explicitOracle ? "A specialist JWT mutation matched the explicit success oracle twice while the repeated original-token controls did not." : "A deliberately invalid JWT mutation reproduced the authenticated baseline response twice.",
         remediation: "Reject altered tokens and enforce an allowlisted algorithm, valid signature, expiration, and trusted key-selection metadata.",
-        evidence_exchange_ids: [baseline.exchange_id, accepted.exchange_id].filter(Boolean), metadata: { variant: variant.name }
+        evidence_exchange_ids: [baseline.exchange_id, accepted.exchange_id].filter(Boolean), metadata: { variant: variant.name, explicit_success_oracle: explicitOracle }
       });
     });
-    return { findings: findings, result: { algorithm: jwt.header.alg || null, claims: Object.keys(jwt.payload).sort(), tested_operations: observations.length } };
+    return { findings: findings, result: { algorithm: jwt.header.alg || null, claims: Object.keys(jwt.payload).sort(), tested_operations: observations.length, target_url: input.target_url || null, explicit_success_oracle: explicitOracle, negative_control_rejected: explicitOracle && !!baseline && !successMatches(map["baseline-0"],input.success) && !successMatches(map["baseline-1"],input.success) } };
   }
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };
 }());
