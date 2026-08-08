@@ -201,9 +201,12 @@
       }
     }
     set.items.forEach(function (technique, index) {
+      if (technique.mode !== "zero_cl_pair") return;
+      for (var controlRepeat = 0; controlRepeat < repeats; controlRepeat += 1) operations.push(raw("control-" + index + "-" + controlRepeat, set.parsed, technique.request.victim, input));
+    });
+    set.items.forEach(function (technique, index) {
       if (technique.mode === "zero_cl_pair") {
         var zeroControl = technique.request.victim, zeroClean = normalGet(set.path, set.parsed, set.inherited, true), observerCount = Math.max(1, Math.min(Number(input.zero_cl_observers || 2), 5));
-        for (var controlRepeat = 0; controlRepeat < repeats; controlRepeat += 1) operations.push(raw("control-" + index + "-" + controlRepeat, set.parsed, zeroControl, input));
         for (var zeroRepeat = 0; zeroRepeat < repeats; zeroRepeat += 1) {
           operations.push(rawGroup("pair-" + index + "-" + zeroRepeat, set.parsed, [
             { id: "probe-" + index + "-" + zeroRepeat, request: technique.request.early },

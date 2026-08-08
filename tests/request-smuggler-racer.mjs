@@ -50,6 +50,7 @@ function context(url = "https://example.test/account") {
   assert.equal(zeroCl.result.techniques.length, 26);
   assert.equal(zeroCl.result.request_count, 394);
   assert.ok(zeroCl.operations.indexOf(zeroCl.operations.find((operation) => operation.id === "control-0-2")) < zeroCl.operations.indexOf(zeroClPair));
+  assert.ok(zeroCl.operations.indexOf(zeroCl.operations.find((operation) => operation.id === "control-25-2")) < zeroCl.operations.indexOf(zeroClPair));
   assert.equal(zeroCl.operations.filter((operation) => operation.id.startsWith("observer-0-")).length, 6);
   const connectionState = plugin.plan({ ...input, families: ["connection_state"], connection_state_host: "192.0.2.10", connection_state_path: "/admin" }, ctx);
   const connectionProbe = Buffer.from(connectionState.operations.find((operation) => operation.id === "probe-0-0").request_base64, "base64").toString();
