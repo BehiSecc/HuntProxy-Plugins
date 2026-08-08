@@ -19,6 +19,8 @@ The poisoning matrix also tests a bounded `X-Forwarded-Host` plus
 `header_combinations`; every set receives its own isolated cache key.
 Explicit header templates are evaluated before built-in and bundled candidates,
 matching the existing explicit-before-resource order for cookie candidates.
+For a fixed `Header~value` template, the exact supplied value becomes the
+persistence marker; `%s` templates continue to use the generated run marker.
 
 Advanced request-shape oracles are opt-in. `parameter_cloaking` describes a
 carrier, nested target, and delimiter; `fat_get_parameters` sends harmless form

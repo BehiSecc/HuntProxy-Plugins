@@ -81,10 +81,11 @@
       if (!name || unsafe[key] || seen[key] || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) || variants.length >= headerLimit) return;
       seen[key] = true;
       var index = variants.length, markerValue = token + "h" + index;
-      var headerValue = special[key] || pieces.slice(1).join("~") || markerValue + ".invalid";
+      var suppliedValue = pieces.slice(1).join("~"), headerValue = special[key] || suppliedValue || markerValue + ".invalid";
       headerValue = headerValue.replace(/%s/g, markerValue).replace(/%h/g, "invalid");
+      var evidenceMarker = !special[key] && suppliedValue && suppliedValue.indexOf("%s") === -1 && suppliedValue.indexOf("%h") === -1 ? headerValue : markerValue;
       var clean = input.shared_header_cache_key_oracle === true ? baseUrl : addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":" + key));
-      variants.push({ name: "header:" + key, poison_url: clean, clean_url: clean, headers: [{ name: name, value: headerValue }], marker: markerValue });
+      variants.push({ name: "header:" + key, poison_url: clean, clean_url: clean, headers: [{ name: name, value: headerValue }], marker: evidenceMarker });
     }
     function combinationHeader(value, markerValue) {
       var pieces = String(value || "").trim().split("~"), name = pieces[0], key = name.toLowerCase();
