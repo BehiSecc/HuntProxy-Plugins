@@ -5,8 +5,17 @@ target and a harmless marker path, then alternates an independent clean control,
 an ambiguous pipeline, a victim request, and a recovery request. This catches
 both same-client-socket effects and contamination that emerges through a pooled
 backend connection after the front end closes the original client connection.
-CL.TE, TE.CL, TE.TE permutations, and CL.0 use a marker oracle. 0.CL and
-malformed length probes are diagnostic.
+CL.TE, TE.CL, TE.TE permutations, and CL.0 use a marker oracle. CL.0 leaves
+the smuggled header block incomplete so the next request completes it, matching
+real single-connection behavior. The 0.CL family pairs an early-response
+request containing `Content-Length : 1` and no body with an independent `XGET`
+victim; a normal victim response that is impossible without the hidden length
+interpretation confirms the discrepancy.
+
+`connection_state` compares a Host-bearing request directly and as the second
+request on one established connection. Set `connection_state_host` and
+`connection_state_path` to the authorized values you need to test. The default
+uses a unique subdomain of the target and the probe path.
 
 The default five-cycle gate requires at least three marker confirmations and
 zero contaminated controls before producing a firm finding. Repeated timeouts

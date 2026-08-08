@@ -65,15 +65,27 @@
     return message("POST", path, parsed.authority, inherited, ["Content-Length: " + (size.length + 2)].concat(transferLines), body, false);
   }
   function clZero(parsed, path, canaryPath, inherited, marker) {
-    var smuggled = "GET " + canaryPath + " HTTP/1.1\r\nHost: " + parsed.authority + "\r\nX-HuntProxy-Desync: " + marker + "\r\n\r\n";
+    var smuggled = "GET " + canaryPath + " HTTP/1.1\r\nX-HuntProxy-Desync: " + marker;
     return message("POST", path, parsed.authority, inherited, ["Content-Length: " + smuggled.length, "Content-Type: text/plain"], smuggled, false) + normalGet(path, parsed, inherited, true);
+  }
+  function malformedMethod(path, parsed, inherited, marker) {
+    return message("XGET", path, parsed.authority, inherited, ["X-HuntProxy-Desync: " + marker], "", true);
+  }
+  function zeroCl(parsed, path, inherited, marker) {
+    return message("GET", path, parsed.authority, inherited, ["Content-Length : 1", "X-HuntProxy-Desync: " + marker], "", false);
+  }
+  function withHost(path, parsed, inherited, host, close) {
+    var lines = ["GET " + path + " HTTP/1.1", "Host: " + host];
+    inherited.forEach(function (line) { lines.push(line); });
+    lines.push("Connection: " + (close ? "close" : "keep-alive"));
+    return lines.join("\r\n") + "\r\n\r\n";
   }
   function techniques(input, context) {
     var exchange = base(context), parsed = target(exchange.url), inherited = inheritedHeaders(exchange, input.include_auth === true), marker = String(input.marker).toLowerCase();
     var path = safePath(input.probe_path || parsed.path, "probe_path");
     var canaryPath = safePath(input.canary_path || ("/hp-" + marker + "-not-found"), "canary_path");
     var items = [];
-    function add(family, name, request, confirmable, polarity) { items.push({ family: family, name: name, request: request, confirmable: confirmable, polarity: polarity || family }); }
+    function add(family, name, request, confirmable, polarity, mode) { items.push({ family: family, name: name, request: request, confirmable: confirmable, polarity: polarity || family, mode: mode || "pipeline" }); }
     add("cl_te", "canonical CL.TE", clTe(parsed, path, canaryPath, inherited, marker, ["Transfer-Encoding: chunked"]), true);
     add("te_cl", "canonical TE.CL", teCl(parsed, path, canaryPath, inherited, marker, ["Transfer-Encoding: chunked"]), true);
     var permutations = [
@@ -90,11 +102,15 @@
     });
     add("cl_0", "CL.0 marker pipeline", clZero(parsed, path, canaryPath, inherited, marker), true);
     var body = "12345";
-    add("0_cl", "0.CL whitespace Content-Length diagnostic", message("GET", path, parsed.authority, inherited, ["Content-Length : " + body.length], body, false) + normalGet(path, parsed, inherited, true), false);
+    add("0_cl", "0.CL early-response confirmation", zeroCl(parsed, path, inherited, marker), true, "0_cl", "zero_cl_pair");
+    var connectionHost = String(input.connection_state_host || (marker + "." + parsed.authority));
+    if (!connectionHost || /[\r\n\s]/.test(connectionHost) || connectionHost.length > 255) throw new Error("connection_state_host must be a CRLF-free Host value");
+    var connectionPath = safePath(input.connection_state_path || path, "connection_state_path");
+    add("connection_state", "second-request Host validation", withHost(connectionPath, parsed, inherited, connectionHost, true), true, "connection_state", "connection_state");
     add("parser_discrepancy", "conflicting duplicate Content-Length", message("POST", path, parsed.authority, inherited, ["Content-Length: 4", "Content-Length: 5", "Content-Type: text/plain"], "12345", false) + normalGet(path, parsed, inherited, true), false);
     add("parser_discrepancy", "signed Content-Length", message("POST", path, parsed.authority, inherited, ["Content-Length: +5", "Content-Type: text/plain"], "12345", false) + normalGet(path, parsed, inherited, true), false);
-    var selected = input.families && input.families.length ? input.families : ["cl_te", "te_cl", "te_te", "cl_0", "0_cl", "parser_discrepancy"];
-    return { parsed: parsed, inherited: inherited, path: path, canary_path: canaryPath, items: items.filter(function (item) { return selected.indexOf(item.family) !== -1; }).slice(0, Math.max(1, Math.min(Number(input.max_techniques || 20), 20))) };
+    var selected = input.families && input.families.length ? input.families : ["cl_te", "te_cl", "te_te", "cl_0", "0_cl", "connection_state", "parser_discrepancy"];
+    return { parsed: parsed, inherited: inherited, path: path, canary_path: canaryPath, connection_host: connectionHost, connection_path: connectionPath, items: items.filter(function (item) { return selected.indexOf(item.family) !== -1; }).slice(0, Math.max(1, Math.min(Number(input.max_techniques || 20), 20))) };
   }
   function options(input) {
     return { response_mode: "until_idle", read_timeout_ms: Math.max(1000, Math.min(Number(input.read_timeout_ms || 8000), 30000)), idle_timeout_ms: Math.max(500, Math.min(Number(input.idle_timeout_ms || 1500), 5000)), half_close_write: false };
@@ -110,10 +126,17 @@
     }
     set.items.forEach(function (technique, index) {
       for (var repeat = 0; repeat < repeats; repeat += 1) {
-        var clean = normalGet(set.path, set.parsed, set.inherited, true);
-        operations.push(raw("control-" + index + "-" + repeat, set.parsed, clean, input));
-        operations.push(raw("probe-" + index + "-" + repeat, set.parsed, technique.request, input));
-        operations.push(raw("victim-" + index + "-" + repeat, set.parsed, clean, input));
+        var clean = normalGet(set.path, set.parsed, set.inherited, true), control = clean, victim = clean, probe = technique.request;
+        if (technique.mode === "zero_cl_pair") {
+          control = malformedMethod(set.path, set.parsed, set.inherited, String(input.marker));
+          victim = control;
+        } else if (technique.mode === "connection_state") {
+          control = technique.request;
+          probe = normalGet(set.path, set.parsed, set.inherited, false) + withHost(set.connection_path, set.parsed, set.inherited, set.connection_host, true);
+        }
+        operations.push(raw("control-" + index + "-" + repeat, set.parsed, control, input));
+        operations.push(raw("probe-" + index + "-" + repeat, set.parsed, probe, input));
+        operations.push(raw("victim-" + index + "-" + repeat, set.parsed, victim, input));
         operations.push(raw("recovery-" + index + "-" + repeat, set.parsed, clean, input));
       }
     });
@@ -127,7 +150,7 @@
     var value = rawResult(item), bytes = transcript(item); if (!value) return [];
     return (value.responses || []).map(function (response) { return { status: response.status_code || null, text: bytes.slice(response.offset, response.offset + response.length) }; });
   }
-  function normalized(value) { return String(value || "").toLowerCase().replace(/^(date|set-cookie|x-request-id|traceparent):.*$/gmi, "").replace(/\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/gi, "<id>").replace(/\b\d{10,13}\b/g, "<time>").replace(/\s+/g, " ").trim(); }
+  function normalized(value) { value = String(value || ""); if (value.length > 32768) value = value.slice(0, 16384) + value.slice(-16384); return value.toLowerCase().replace(/^(date|set-cookie|x-request-id|traceparent):.*$/gmi, "").replace(/\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/gi, "<id>").replace(/\b\d{10,13}\b/g, "<time>").replace(/\s+/g, " ").trim(); }
   function similarity(left, right) {
     left = normalized(left); right = normalized(right); if (left === right) return 1; if (!left || !right) return 0;
     var a = {}, b = {}, union = {}, same = 0, total = 0;
@@ -146,7 +169,7 @@
     return true;
   }
   function matchesCanary(segment, canary, base) { return !!(segment && canary && base && (canary.status !== base.status ? segment.status === canary.status : sameSegment(segment, canary))); }
-  function matchesBase(segment, base) { if (!segment || !base || segment.status !== base.status) return false; var longest=Math.max(segment.text.length,base.text.length,1),shortest=Math.min(segment.text.length,base.text.length);return sameSegment(segment,base)||shortest/longest>=0.9; }
+  function matchesBase(segment, base) { if (!segment || !base || segment.status !== base.status) return false; var longest=Math.max(segment.text.length,base.text.length,1),shortest=Math.min(segment.text.length,base.text.length);return shortest/longest>=0.9||sameSegment(segment,base); }
   function evidence(items) { return items.map(function (item) { var value = rawResult(item); return value && value.exchange_id; }).filter(Boolean); }
   function analyze(input, observations, context) {
     var map = byId(observations), set = techniques(input, context), repeats = Math.max(3, Math.min(Number(input.repeats || 5), 5)), findings = [], diagnostics = [];
@@ -160,8 +183,14 @@
       for (var repeat = 0; repeat < repeats; repeat += 1) {
         var control = map["control-" + index + "-" + repeat], probe = map["probe-" + index + "-" + repeat], victim=map["victim-"+index+"-"+repeat], recovery=map["recovery-"+index+"-"+repeat]; controls.push(control); probes.push(probe); victims.push(victim); recoveries.push(recovery);
         var controlSegments = segments(control); if (rawResult(control) && outcome(control) !== "timeout" && controlSegments.length >= 1 && controlSegments.every(function (segment) { return !canaryDistinct || !matchesCanary(segment, canarySignature, baseSignature); })) clean += 1;
-        var downstream=segments(probe).concat(segments(victim),segments(recovery));
-        if (technique.confirmable && canaryDistinct && downstream.some(function (segment) { return matchesCanary(segment, canarySignature, baseSignature) && !sameSegment(segment, baseSignature); })) contaminated += 1;
+        var probeSegments=segments(probe), victimSegments=segments(victim), recoverySegments=segments(recovery), downstream=probeSegments.concat(victimSegments,recoverySegments);
+        if (technique.mode === "zero_cl_pair") {
+          var mutantControl=segments(control)[0], mutantVictim=victimSegments[0];
+          if (mutantControl && mutantVictim && !matchesBase(mutantControl,baseSignature) && matchesBase(mutantVictim,baseSignature)) contaminated += 1;
+        } else if (technique.mode === "connection_state") {
+          var directHost=segments(control)[0], indirectHost=probeSegments.length > 1 ? probeSegments[probeSegments.length-1] : null;
+          if (directHost && indirectHost && directHost.status !== indirectHost.status && matchesBase(probeSegments[0],baseSignature)) contaminated += 1;
+        } else if (technique.confirmable && canaryDistinct && downstream.some(function (segment) { return matchesCanary(segment, canarySignature, baseSignature) && !sameSegment(segment, baseSignature); })) contaminated += 1;
         var victimFirst=segments(victim)[0],recoveryFirst=segments(recovery)[0]; if((victimFirst&&!matchesBase(victimFirst,baseSignature))||(recoveryFirst&&!matchesBase(recoveryFirst,baseSignature))) divergentVictims+=1;
         if (outcome(probe) === "timeout" && outcome(control) !== "timeout") timeouts += 1;
       }

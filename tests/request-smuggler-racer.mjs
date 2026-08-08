@@ -31,6 +31,17 @@ function context(url = "https://example.test/account") {
   const teClAttack = Buffer.from(teCl.operations.find((operation) => operation.id === "probe-0-0").request_base64, "base64").toString();
   assert.match(teClAttack, /POST \/hp-abc12345-not-found HTTP\/1\.1/);
   assert.match(teClAttack, /Content-Length: 15\r\n\r\n\r\n0\r\n\r\n$/);
+  const clZero = plugin.plan({ ...input, families: ["cl_0"], probe_path: "/resources/images/blog.svg" }, ctx);
+  const clZeroAttack = Buffer.from(clZero.operations.find((operation) => operation.id === "probe-0-0").request_base64, "base64").toString();
+  assert.match(clZeroAttack, /GET \/hp-abc12345-not-found HTTP\/1\.1\r\nX-HuntProxy-Desync: abc12345GET \/resources\/images\/blog\.svg HTTP\/1\.1/);
+  assert.doesNotMatch(clZeroAttack, /GET \/hp-abc12345-not-found HTTP\/1\.1\r\nHost:/);
+  const zeroCl = plugin.plan({ ...input, families: ["0_cl"], probe_path: "/resources/images/blog.svg" }, ctx);
+  assert.match(Buffer.from(zeroCl.operations.find((operation) => operation.id === "probe-0-0").request_base64, "base64").toString(), /Content-Length : 1\r\n/);
+  assert.match(Buffer.from(zeroCl.operations.find((operation) => operation.id === "control-0-0").request_base64, "base64").toString(), /^XGET /);
+  const connectionState = plugin.plan({ ...input, families: ["connection_state"], connection_state_host: "192.0.2.10", connection_state_path: "/admin" }, ctx);
+  const connectionProbe = Buffer.from(connectionState.operations.find((operation) => operation.id === "probe-0-0").request_base64, "base64").toString();
+  assert.match(connectionProbe, /^GET \/account HTTP\/1\.1/);
+  assert.match(connectionProbe, /GET \/admin HTTP\/1\.1\r\nHost: 192\.0\.2\.10/);
 
   function wire(responses) {
     let transcript = ""; const summaries = [];
@@ -54,10 +65,40 @@ function context(url = "https://example.test/account") {
   assert.equal(result.findings[0].metadata.family, "cl_te");
   assert.equal(result.findings[0].metadata.signal, "marker_contamination");
   assert.ok(result.result.limitations.some((value) => /HTTP\/2/.test(value)));
+  const zeroClObservations = zeroCl.operations.map((operation, index) => {
+    const responses = operation.id.startsWith("direct-canary") ? [{ status: 404, body: "canary" }]
+      : operation.id.startsWith("control-") ? [{ status: 400, body: "bad method" }]
+      : [{ status: 200, body: "normal account" }];
+    return { id: operation.id, raw: { exchange_id: 350 + index, ...wire(responses) } };
+  });
+  const zeroClResult = plugin.analyze({ ...input, families: ["0_cl"], probe_path: "/resources/images/blog.svg" }, zeroClObservations, ctx);
+  assert.equal(zeroClResult.findings[0].metadata.family, "0_cl");
+  const connectionObservations = connectionState.operations.map((operation, index) => {
+    const responses = operation.id.startsWith("direct-canary") ? [{ status: 404, body: "canary" }]
+      : operation.id.startsWith("control-") ? [{ status: 421, body: "invalid host" }]
+      : operation.id.startsWith("probe-") ? [{ status: 200, body: "normal account" }, { status: 200, body: "admin" }]
+      : [{ status: 200, body: "normal account" }];
+    return { id: operation.id, raw: { exchange_id: 400 + index, ...wire(responses) } };
+  });
+  const connectionResult = plugin.analyze({ ...input, families: ["connection_state"], connection_state_host: "192.0.2.10", connection_state_path: "/admin" }, connectionObservations, ctx);
+  assert.equal(connectionResult.findings[0].metadata.family, "connection_state");
   const all = plugin.plan({ marker: "abc12345", confirm_intrusive: true }, ctx);
   assert.ok(all.result.techniques.some((value) => value.family === "te_te"));
   assert.ok(all.result.techniques.some((value) => value.family === "cl_0"));
   assert.ok(all.result.limitations.some((value) => /Pause-based/.test(value)));
+
+  const teTeInput = { ...input, families: ["te_te"], repeats: 5 };
+  const teTePlan = plugin.plan(teTeInput, ctx);
+  const teTeObservations = teTePlan.operations.map((operation, index) => {
+    const responses = operation.id.startsWith("direct-canary") || operation.id.startsWith("victim-")
+      ? [{ status: 404, body: "canary" }]
+      : [{ status: 200, body: "normal" }];
+    return { id: operation.id, raw: { exchange_id: 500 + index, ...wire(responses) } };
+  });
+  const started = performance.now();
+  const teTeResult = plugin.analyze(teTeInput, teTeObservations, ctx);
+  assert.ok(performance.now() - started < 250, "TE.TE analysis must stay well below the host JavaScript stage budget");
+  assert.equal(teTeResult.result.diagnostics.length, 12);
 }
 
 {
