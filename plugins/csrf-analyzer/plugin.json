@@ -1,7 +1,7 @@
 {
-  "schema_version": 1, "id": "csrf-analyzer", "name": "CSRFAnalyzer", "version": "1.3.3",
+  "schema_version": 1, "id": "csrf-analyzer", "name": "CSRFAnalyzer", "version": "1.4.0",
   "description": "Reproduce state-changing requests with token, duplicate-token, cross-session, Origin, Referer, method, and content-type controls.",
-  "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "1e3dd353edb543173c88c8e936a79e65d536aba04056ad817f43b691ec67756c",
+  "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "48a1c6d1a284524f487688dae99bb928f1f9ab541fe7669aef1a551da9b10962",
   "capabilities": ["http.semantic", "identity.use"],
   "limits": { "timeout_ms": 600000, "max_operations": 324, "max_concurrency": 2, "memory_mb": 32 },
   "actions": [{ "name": "scan", "description": "Run bounded, repeated CSRF mutations after explicit confirmation that the request changes server state.", "required_capabilities": ["http.semantic", "identity.use"],
@@ -20,6 +20,10 @@
         "identity": { "$ref": "#/$defs/identity" },
         "token": { "type": "object", "additionalProperties": false, "required": ["location", "name", "value"], "properties": { "location": { "enum": ["body", "query", "header"] }, "name": { "type": "string", "minLength": 1 }, "value": { "type": "string" } } }
       } }, "description": "Explicit cookie/session and matching token combinations for double-submit and non-session-cookie binding checks." },
+      "per_request_values": { "type": "array", "maxItems": 10, "items": { "type": "object", "additionalProperties": false, "required": ["location", "name", "value_template"], "properties": {
+        "location": { "enum": ["body", "query", "header"] }, "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "value_template": { "type": "string", "minLength": 9, "maxLength": 512, "pattern": "\\{counter\\}", "description": "A caller-owned safe value template; every logical replay replaces {counter} with a unique integer." }
+      } }, "description": "Typed non-token fields that need a unique value for every repeated state-changing request." },
       "cross_site_origin": { "type": "string", "pattern": "^https?://[^/]+$", "default": "https://csrf.invalid" },
       "success_markers": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 200 } },
       "failure_markers": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 200 } },

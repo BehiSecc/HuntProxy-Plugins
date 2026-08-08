@@ -24,3 +24,7 @@ or automatically mutate multipart tokens; use a real browser flow for those case
 
 `paired_cookie_tests` always use the explicit identity and token pair supplied by
 the caller; the primary identity's `fresh_token` workflow does not replace it.
+
+For non-idempotent fields such as a unique email address, `per_request_values`
+can replace a typed body, query, or header value on every replay. Templates must
+contain `{counter}`; they cannot target configured CSRF token names.

@@ -106,7 +106,7 @@ assert.ok(nestedMutations.includes("json-invalid:/profile/security/csrf_token"))
 const nestedInvalid=nestedPlan.operations.find((op)=>op.id.startsWith(`mutation-${nestedMutations.indexOf("json-invalid:/profile/security/csrf_token")}-`));
 assert.equal(JSON.parse(Buffer.from(nestedInvalid.body_base64,"base64")).profile.security.csrf_token,"huntproxy-invalid-csrf");
 
-const freshInput={allow_state_change:true,token_names:["csrf_token"],max_mutations:80,fresh_token:{acquire_url:"https://example.test/profile",body_regex:'name="csrf_token" value="([^"]+)"',location:"body",name:"csrf_token"},secondary_identity:{cookie:"sid=secondary"},paired_cookie_tests:[{name:"explicit-pair",identity:{cookie:"sid=victim; csrf=paired"},token:{location:"body",name:"csrf_token",value:"paired-explicit"}}]};
+const freshInput={allow_state_change:true,token_names:["csrf_token"],max_mutations:80,fresh_token:{acquire_url:"https://example.test/profile",body_regex:'name="csrf_token" value="([^"]+)"',location:"body",name:"csrf_token"},secondary_identity:{cookie:"sid=secondary"},paired_cookie_tests:[{name:"explicit-pair",identity:{cookie:"sid=victim; csrf=paired"},token:{location:"body",name:"csrf_token",value:"paired-explicit"}}],per_request_values:[{location:"body",name:"email",value_template:"hp-{counter}@invalid.example"}]};
 const freshPlan=plugin.plan(freshInput,context());
 assert.equal(freshPlan.result.fresh_token_workflows,true);
 assert.equal(freshPlan.execution,"sequential","rotating token acquisition and submit workflows cannot overlap");
@@ -116,11 +116,17 @@ assert.equal(freshPlan.operations[0].steps[0].extract[0].name,"csrf_fresh");
 assert.ok(freshPlan.operations[0].steps[1].request.body_params.some((part)=>part.name==="csrf_token"&&part.value==="{{extract:csrf_fresh}}"));
 const freshMutations=Array.from(freshPlan.result.mutations,(item)=>item.name);
 function freshSubmit(name){const index=freshMutations.indexOf(name);assert.ok(index>=0,`missing ${name}`);return freshPlan.operations.find((op)=>op.id===`mutation-${index}-0`).steps[1].request;}
-assert.deepEqual(Array.from(freshSubmit("body-remove:csrf_token").body_params,(item)=>item.value),[null]);
-assert.deepEqual(Array.from(freshSubmit("body-invalid:csrf_token").body_params,(item)=>item.value),["huntproxy-invalid-csrf"]);
-assert.deepEqual(Array.from(freshSubmit("body-duplicate-invalid-first:csrf_token").body_params,(item)=>item.value),["huntproxy-invalid-csrf","{{extract:csrf_fresh}}"]);
-assert.deepEqual(Array.from(freshSubmit("body-duplicate-invalid-last:csrf_token").body_params,(item)=>item.value),["{{extract:csrf_fresh}}","huntproxy-invalid-csrf"]);
-assert.deepEqual(Array.from(freshSubmit("paired-cookie:explicit-pair").body_params,(item)=>item.value),["paired-explicit"],"paired-cookie probes preserve the caller-supplied token instead of replacing it with the primary fresh token");
+function freshTokenValues(name){return Array.from(freshSubmit(name).body_params.filter((item)=>item.name==="csrf_token"),(item)=>item.value);}
+assert.deepEqual(freshTokenValues("body-remove:csrf_token"),[null]);
+assert.deepEqual(freshTokenValues("body-invalid:csrf_token"),["huntproxy-invalid-csrf"]);
+assert.deepEqual(freshTokenValues("body-duplicate-invalid-first:csrf_token"),["huntproxy-invalid-csrf","{{extract:csrf_fresh}}"]);
+assert.deepEqual(freshTokenValues("body-duplicate-invalid-last:csrf_token"),["{{extract:csrf_fresh}}","huntproxy-invalid-csrf"]);
+assert.deepEqual(freshTokenValues("paired-cookie:explicit-pair"),["paired-explicit"],"paired-cookie probes preserve the caller-supplied token instead of replacing it with the primary fresh token");
+const dynamicValues=freshPlan.operations.map((op)=>op.steps[1].request.body_params.find((item)=>item.name==="email").value);
+assert.equal(new Set(dynamicValues).size,freshPlan.operations.length,"every logical submit receives a distinct caller-owned value");
+assert.deepEqual(Array.from(freshSubmit("body-remove:csrf_token").body_params.filter((item)=>item.name==="csrf_token"),(item)=>item.value),[null],"dynamic fields preserve token removal semantics");
+assert.deepEqual(Array.from(freshSubmit("paired-cookie:explicit-pair").body_params.filter((item)=>item.name==="csrf_token"),(item)=>item.value),["paired-explicit"],"dynamic fields preserve paired identity token semantics");
+assert.throws(()=>plugin.plan({...freshInput,per_request_values:[{location:"body",name:"csrf_token",value_template:"value-{counter}"}]},context()),/cannot target/);
 const freshObservations=freshPlan.operations.map((op)=>{const final=observation({id:op.id});return {id:op.id,steps:[],terminal:final,error:null};});
 const freshAnalysis=plugin.analyze(freshInput,freshObservations,context());
 assert.equal(freshAnalysis.result.baseline_successful,true);

@@ -73,6 +73,16 @@
     else patch.body_params=[token];
     return patch;
   }
+  function perRequestPatch(input,counter) {
+    var patch={};
+    (input.per_request_values||[]).forEach(function(item){
+      var value=String(item.value_template).replace(/\{counter\}/g,String(counter)), part={name:String(item.name),value:value};
+      var key=item.location==="query"?"query_params":item.location==="header"?"headers":"body_params";
+      if(!patch[key]) patch[key]=[];
+      patch[key].push(part);
+    });
+    return patch;
+  }
   function freshValue(input,location,name,value){var config=freshToken(input);return config&&config.location===location&&config.name.toLowerCase()===String(name).toLowerCase()?"{{extract:csrf_fresh}}":value;}
   function jsonPointer(parts) { return "/" + parts.map(function(part){return String(part).replace(/~/g,"~0").replace(/\//g,"~1");}).join("/"); }
   function jsonTokenPaths(value, wanted, parts, output, depth) {
@@ -233,14 +243,21 @@
   function plan(input, context) {
     if (input.allow_state_change !== true) throw new Error("CSRF testing repeats the state-changing request and requires allow_state_change=true");
     var exchange = base(context), operations = [], mutations = mutationList(input, context), fresh=freshToken(input);
-    for (var repeat = 0; repeat < 2; repeat += 1) operations.push(fresh?workflow("baseline-"+repeat,exchange,fresh,{},true):operation("baseline-" + repeat, exchange, {}));
+    var wanted=lowerSet(tokenNames(input));
+    (input.per_request_values||[]).forEach(function(item){if(wanted[String(item.name).toLowerCase()]) throw new Error("per_request_values cannot target a configured CSRF token name");});
+    var counter=0;
+    for (var repeat = 0; repeat < 2; repeat += 1) {
+      var baselinePatch=perRequestPatch(input,counter++);
+      operations.push(fresh?workflow("baseline-"+repeat,exchange,fresh,baselinePatch,true):operation("baseline-" + repeat, exchange, baselinePatch));
+    }
     mutations.forEach(function (mutation, index) {
       for (var repeat = 0; repeat < 2; repeat += 1) {
         var id="mutation-"+index+"-"+repeat, refresh=!/^method-get-/.test(mutation.name)&&(!fresh||!patchTouchesToken(mutation.patch,fresh));
-        operations.push(fresh?workflow(id,exchange,fresh,mutation.patch,refresh):operation(id,exchange,mutation.patch));
+        var requestPatch=mergePatch(mutation.patch,perRequestPatch(input,counter++));
+        operations.push(fresh?workflow(id,exchange,fresh,requestPatch,refresh):operation(id,exchange,requestPatch));
       }
     });
-    var planned={ operations: operations, result: { mutations: mutations.map(function (item) { return { name: item.name, kind: item.kind, negative_control: item.negative_control }; }), repeated_state_changes: operations.length, planned_requests:operations.length*(fresh?2:1), fresh_token_workflows:!!fresh, semantic_comparison: true } };
+    var planned={ operations: operations, result: { mutations: mutations.map(function (item) { return { name: item.name, kind: item.kind, negative_control: item.negative_control }; }), repeated_state_changes: operations.length, planned_requests:operations.length*(fresh?2:1), fresh_token_workflows:!!fresh, per_request_values:(input.per_request_values||[]).length, semantic_comparison: true } };
     if(fresh) planned.execution="sequential";
     return planned;
   }
