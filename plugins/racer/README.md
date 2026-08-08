@@ -19,10 +19,12 @@ must all match for an attempt to qualify. These requests are intentionally
 static and bounded; workflows requiring tokens extracted dynamically between
 steps should prepare the state separately.
 
-Techniques are `sequential`, ordinary `parallel`, and exact HTTP/1
-`last_byte_sync`. Parallel and last-byte synchronization are not described as
-single-packet attacks. HuntProxy does not currently implement true HTTP/2
-single-packet release, so `h2_single_packet` returns an explicit
-`protocol_incompatible` observation and never falls back.
+Techniques are `sequential`, ordinary `parallel`, exact HTTP/1
+`last_byte_sync`, and `h2_single_packet`. The HTTP/2 technique negotiates ALPN
+`h2`, opens one stream per request, withholds the final DATA fragment from every
+stream, then releases all final fragments in one TLS write. It requires a
+non-empty body on every request and one shared HTTPS origin. An incompatible
+target returns `protocol_incompatible`; HuntProxy never falls back to ordinary
+parallel dispatch.
 
 See `RACE_GROUP_CONTRACT.md` for the host operation format.

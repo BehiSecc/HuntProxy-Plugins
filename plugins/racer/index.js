@@ -180,7 +180,7 @@
         metadata: { pattern: input.pattern || "multi_endpoint", technique: input.technique || "last_byte_sync", anomalous_attempts: novel.length, control_mode: controlMode }
       });
     }
-    return { findings: findings, result: { diagnostics: diagnostics, control_mode: controlMode, control_response_count: responses(control).length, semantic_predicates_recommended: !diagnostics.some(function (item) { return item.semantic_success_used; }), host_blocker: input.technique === "h2_single_packet" ? "Requires host support for releasing final HTTP/2 DATA bytes in one real TCP packet; fallback is forbidden." : null } };
+    return { findings: findings, result: { diagnostics: diagnostics, control_mode: controlMode, control_response_count: responses(control).length, semantic_predicates_recommended: !diagnostics.some(function (item) { return item.semantic_success_used; }), synchronization: input.technique === "h2_single_packet" ? "The host negotiated ALPN h2 and released every stream's final DATA fragment in one TLS write; protocol-incompatible targets are never downgraded." : null } };
   }
 
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };

@@ -67,6 +67,13 @@ assert.equal(racer.analyze({ ...input, technique: "sequential", attempts: 1 }, [
 const h2 = racer.plan({ ...input, technique: "h2_single_packet", attempts: 1 }, context);
 assert.equal(h2.operations[1].technique, "h2_single_packet");
 assert.match(h2.result.no_fallback, /real HTTP\/2 packet/);
+const h2Result = racer.analyze(
+  { ...input, technique: "h2_single_packet", attempts: 1 },
+  [group("race-0", [response("a", 201, true), response("b", 202, true)], true)],
+  context,
+);
+assert.match(h2Result.result.synchronization, /ALPN h2/);
+assert.equal("host_blocker" in h2Result.result, false);
 
 assert.throws(() => racer.plan({ ...input, requests: [{ url: "https://example.test", body_text: "a", body_base64: "Yg==" }] }, context), /cannot combine/);
 

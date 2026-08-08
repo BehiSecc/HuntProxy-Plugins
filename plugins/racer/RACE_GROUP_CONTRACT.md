@@ -66,7 +66,10 @@ truncated response is marked `indeterminate` and is not counted as success.
 
 `last_byte_sync` materializes each request as HTTP/1, opens every connection,
 withholds the final byte, and releases it through one barrier. It rejects an
-explicit HTTP/2 request. `h2_single_packet` remains unsupported until the host
-can release final HTTP/2 DATA fragments in one real TCP packet; it must return
-`protocol_incompatible`, never ordinary parallel dispatch. Every resulting
+explicit HTTP/2 request. `h2_single_packet` requires HTTPS, one shared origin,
+and a non-empty body for every request. The host negotiates ALPN `h2`, opens one
+stream per request, withholds each final DATA fragment, and releases the final
+fragments in one TLS write. It returns `synchronized: true` only when that
+single write occurred. Protocol-incompatible targets return an explicit error
+and are never retried through ordinary parallel dispatch. Every resulting
 exchange is stored and tagged by the host.
