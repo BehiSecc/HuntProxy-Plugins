@@ -1,0 +1,183 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import vm from "node:vm";
+
+const root = new URL("../plugins/", import.meta.url);
+async function load(id) {
+  const source = await readFile(new URL(`${id}/index.js`, root), "utf8");
+  const sandbox = { globalThis: {} };
+  vm.runInNewContext(source, sandbox, { timeout: 250 });
+  return sandbox.globalThis.HuntProxyPlugin;
+}
+function context(url = "https://example.test/admin") {
+  return { api_version: 1, action: "scan", base_exchange: { exchange_id: 42, method: "GET", url, headers: [] }, resources: {} };
+}
+function observation(operation, status = 403, hash = "base", text = "denied") {
+  return { id: operation.id, exchange_id: Math.floor(Math.random() * 100000) + 1, status_code: status, response_length: text.length, response_body_hash: hash, response_preview: { text }, response_headers: [] };
+}
+
+{
+  const plugin = await load("param-finder");
+  const params = await readFile(new URL("param-finder/resources/params", root), "utf8");
+  const resourceContext = context(); resourceContext.resources = { params };
+  const resourcePlan = plugin.plan({ locations: ["query"], max_words: 20 }, resourceContext);
+  assert.ok(resourcePlan.result.candidates.query.includes("account"));
+  const input = { phase: "confirm", locations: ["query"], words_by_location: { query: ["debug"] }, max_words: 20 };
+  const plan = plugin.plan(input, context());
+  assert.ok(plan.operations.length >= 4);
+  assert.ok(plan.operations.every((op) => op.type === "http_request" && op.base_exchange_id === 42));
+  const observations = plan.operations.map((op) => observation(op, 200, op.id.startsWith("baseline") ? "a" : "b", op.id));
+  const result = plugin.analyze(input, observations, context());
+  assert.ok(result.findings.some((finding) => finding.metadata.parameter === "debug"));
+  assert.ok(plugin.plan({ phase: "screen", locations: ["cookie"], words: ["debug"], max_words: 10 }, context()).operations.some((op) => Array.isArray(op.cookie_params)));
+  assert.ok(plugin.plan({ phase: "screen", locations: ["body"], words: ["debug"], max_words: 10 }, context()).operations.some((op) => Array.isArray(op.body_params)));
+}
+
+{
+  const plugin = await load("403-bypasser");
+  const plan = plugin.plan({}, context());
+  assert.ok(plan.operations.length > 10 && plan.operations.length <= 202);
+  const observations = plan.operations.map((op) => observation(op));
+  for (const item of observations.filter((item) => item.id === "variant-0-0" || item.id === "variant-0-1")) {
+    item.status_code = 200; item.response_body_hash = "allowed"; item.response_preview.text = "allowed";
+  }
+  const result = plugin.analyze({}, observations, context());
+  assert.equal(result.findings.length, 1);
+  assert.match(result.findings[0].title, /Access-control bypass/);
+}
+
+{
+  const plugin = await load("cache-analyzer");
+  const input = { marker: "a1b2c3d4e5", allow_cache_side_effects: true };
+  const plan = plugin.plan(input, context("https://example.test/account"));
+  assert.ok(plan.operations.length <= 50);
+  const observations = plan.operations.map((op) => observation(op, 200, op.id === "baseline-anon" ? "anon" : "private", "normal"));
+  for (const item of observations.filter((item) => ["poison-0", "poison-clean-0", "poison-confirm-0"].includes(item.id))) {
+    item.response_body_hash = "poisoned"; item.response_preview.text = "hpa1b2c3d4e5";
+  }
+  const result = plugin.analyze(input, observations, context("https://example.test/account"));
+  assert.ok(result.findings.some((finding) => /cache poisoning/i.test(finding.title)));
+  assert.ok(result.findings.some((finding) => /cache deception/i.test(finding.title)));
+}
+
+function privilegedContext({ url = "https://example.test/admin", method = "GET", headers = [], body = "", related = [] } = {}) {
+  return {
+    api_version: 1,
+    action: "scan",
+    base_exchange: {
+      exchange_id: 42, method, url, headers: [],
+      identity: {
+        request_headers: headers.map(([name, value]) => ({ name, value_base64: Buffer.from(value).toString("base64") })),
+        request_body_base64: Buffer.from(body, "binary").toString("base64"), request_body_truncated: false,
+      },
+    },
+    related_exchanges: related,
+    resources: {},
+  };
+}
+
+{
+  const plugin = await load("auth-analyzer");
+  const ctx = privilegedContext({ related: [{ exchange_id: 43, method: "POST", url: "https://api.example.test/change" }] });
+  const input = { primary: { cookie: "sid=one" }, secondary: { headers: [{ name: "Authorization", value: "Bearer two" }] }, domains: ["example.test", "*.example.test"] };
+  const plan = plugin.plan(input, ctx);
+  assert.equal(plan.operations.length, 6, "unsafe related shape is skipped by default");
+  assert.ok(plan.operations.every((op) => op.header_tombstones.includes("Cookie") && op.header_tombstones.includes("Authorization")));
+  const observations = plan.operations.map((op) => observation(op, op.id.includes("anonymous") ? 403 : 200, op.id.includes("anonymous") ? "denied" : "private", "response"));
+  const result = plugin.analyze(input, observations, ctx);
+  assert.equal(result.findings.length, 1);
+  assert.match(result.findings[0].title, /cross-user/i);
+}
+
+{
+  const plugin = await load("jwt-analyzer");
+  const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const token = `${encode({ alg: "RS256", typ: "JWT" })}.${encode({ sub: "1", exp: 4102444800 })}.signature`;
+  const ctx = privilegedContext({ headers: [["Authorization", `Bearer ${token}`]] });
+  const input = { active: true, tests: ["none", "invalid_signature", "expired"] };
+  const plan = plugin.plan(input, ctx);
+  assert.equal(plan.operations.length, 8);
+  assert.ok(plan.operations.every((op) => op.type === "http_request" && op.headers[0].name === "Authorization"));
+  const observations = plan.operations.map((op) => observation(op, 200, "authenticated", "account"));
+  const result = plugin.analyze(input, observations, ctx);
+  assert.equal(result.findings.filter((finding) => /bypass/i.test(finding.title)).length, 3);
+  assert.throws(() => plugin.plan({ tests: ["jku"], key_url: "file:///tmp/key" }, ctx), /HTTP\(S\)/);
+}
+
+{
+  const plugin = await load("csrf-analyzer");
+  const ctx = privilegedContext({
+    method: "POST", url: "https://example.test/profile?csrf=query-token",
+    headers: [["Content-Type", "application/x-www-form-urlencoded"], ["X-CSRF-Token", "header-token"]],
+    body: "name=alice&csrf_token=body-token",
+  });
+  assert.throws(() => plugin.plan({}, ctx), /allow_state_change/);
+  const input = { allow_state_change: true, token_names: ["csrf", "csrf_token", "X-CSRF-Token"] };
+  const plan = plugin.plan(input, ctx);
+  assert.ok(plan.operations.some((op) => op.query_params));
+  assert.ok(plan.operations.some((op) => op.body_params));
+  assert.ok(plan.operations.some((op) => op.header_tombstones && op.header_tombstones.includes("Origin")));
+  const observations = plan.operations.map((op) => observation(op, 200, "success", "updated"));
+  assert.ok(plugin.analyze(input, observations, ctx).findings.length >= 3);
+}
+
+{
+  const plugin = await load("upload-analyzer");
+  const boundary = "huntproxy-boundary";
+  const body = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="original.txt"\r\nContent-Type: text/plain\r\n\r\noriginal\r\n--${boundary}--\r\n`;
+  const ctx = privilegedContext({ method: "POST", url: "https://example.test/upload", headers: [["Content-Type", `multipart/form-data; boundary=${boundary}`]], body });
+  assert.throws(() => plugin.plan({}, ctx), /allow_uploads/);
+  const input = { allow_uploads: true, marker: "hp-upload", max_files: 4 };
+  const plan = plugin.plan(input, ctx);
+  assert.equal(plan.operations.length, 10);
+  const decoded = Buffer.from(plan.operations[2].body_base64, "base64").toString("binary");
+  assert.match(decoded, /filename="hp-upload\.txt\.jpg"/);
+  assert.match(decoded, /--huntproxy-boundary--/);
+  const observations = plan.operations.map((op) => observation(op, 201, "accepted", "uploaded"));
+  assert.equal(plugin.analyze(input, observations, ctx).findings.length, 4);
+}
+
+{
+  const plugin = await load("request-smuggler");
+  const smuggleContext = context("https://example.test/account");
+  smuggleContext.base_exchange.raw_request_base64 = Buffer.from("GET /account HTTP/1.1\r\nHost: example.test\r\nCookie: sid=secret\r\n\r\n").toString("base64");
+  const input = { marker: "abc12345", confirm_intrusive: true, families: ["cl_te"] };
+  const plan = plugin.plan(input, smuggleContext);
+  assert.equal(plan.operations.length, 6);
+  assert.ok(plan.operations.every((operation) => operation.type === "raw_http1"));
+  assert.match(Buffer.from(plan.operations[4].request_base64, "base64").toString(), /Cookie: sid=secret/);
+  const observations = plan.operations.map((operation, index) => ({
+    id: operation.id,
+    raw: {
+      exchange_id: index + 200,
+      read_outcome: operation.id.startsWith("probe-") ? "timeout" : "idle",
+      responses: operation.id.startsWith("control-pipeline") ? [{ status_code: 200 }, { status_code: 200 }] : [{ status_code: 200 }],
+    },
+  }));
+  const result = plugin.analyze(input, observations, smuggleContext);
+  assert.equal(result.findings.length, 1);
+  assert.equal(result.findings[0].metadata.family, "cl_te");
+  assert.ok(result.result.limitations.some((value) => /HTTP\/2/.test(value)));
+}
+
+{
+  const plugin = await load("racer");
+  const input = { allow_state_changes: true, exchange_ids: [42, 43], copies: 1, attempts: 2, technique: "last_byte_sync", expected_max_successes: 1 };
+  const plan = plugin.plan(input, context());
+  assert.equal(plan.operations[0].technique, "sequential_control");
+  assert.equal(plan.operations[1].technique, "last_byte_sync");
+  assert.deepEqual(Array.from(plan.operations[1].requests, (request) => request.base_exchange_id), [42, 43]);
+  const makeResponses = (start, statuses) => statuses.map((status, index) => ({ id: `request-${index}`, exchange_id: start + index, status_code: status, response_length: 10, response_body_hash: status === 200 ? "ok" : "denied", duration_ms: 20, error: null }));
+  const observations = [
+    { id: "control-0", technique: "sequential_control", attempt: 0, synchronized: false, release_skew_ms: null, responses: makeResponses(300, [200, 409]) },
+    { id: "race-0", technique: "last_byte_sync", attempt: 0, synchronized: true, release_skew_ms: 0.5, responses: makeResponses(310, [200, 200]) },
+    { id: "race-1", technique: "last_byte_sync", attempt: 1, synchronized: true, release_skew_ms: 0.4, responses: makeResponses(320, [200, 200]) },
+  ];
+  const result = plugin.analyze(input, observations, context());
+  assert.ok(result.findings.some((finding) => /limit overrun/i.test(finding.title)));
+  const h2Plan = plugin.plan({ ...input, technique: "h2_single_packet" }, context());
+  assert.equal(h2Plan.operations[1].technique, "h2_single_packet");
+  assert.match(h2Plan.result.no_fallback, /real HTTP\/2 packet/);
+}
+
+console.log("Implemented plugin VM tests passed.");
