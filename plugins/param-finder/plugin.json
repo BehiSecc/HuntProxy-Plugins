@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "id": "param-finder",
+  "name": "ParamFinder",
+  "version": "0.1.0",
+  "description": "Discover hidden query, body, cookie, and header parameters using batched differential probing and harvested words.",
+  "enabled": true,
+  "entrypoint": "index.js",
+  "entrypoint_sha256": "4efd54244653e726b44f8498ce16215d54ee9b2580eb1ed717bdbea1949f30d3",
+  "resources": {
+    "assetnote-params": { "path": "resources/assetnote-params", "sha256": "9cf95d2dbd129cc51df9c88f31b5514578ac052357c4ef3d010b2883fd40850b" },
+    "boring_headers": { "path": "resources/boring_headers", "sha256": "c96c9b29315bd9afb4c1bad40fc26d95f8bebab16f8409ef72f69bc90d73f01a" },
+    "fierce-subdomains": { "path": "resources/fierce-subdomains", "sha256": "ea48f8c6e8d19d6614e07eba7859519dd379908d79bc031dee5e78cea9249980" },
+    "functions": { "path": "resources/functions", "sha256": "c49ec36c2794b343059fedbcbf610019e56e3182058c80a1ab32eaf2c6079cd1" },
+    "headers": { "path": "resources/headers", "sha256": "175619d3e49c28431b4ced6363ba63544771db298834195fd3ccb3fc422e9af7" },
+    "params": { "path": "resources/params", "sha256": "5f7a187cf7765c1d8d1040f66681b02dfa18116c478c29637f0ac70feeb2852f" },
+    "wafparams": { "path": "resources/wafparams", "sha256": "dcd20a1f66d79885a88b1074e42f9010526e40e855a007c6143742f56c1aa787" },
+    "words": { "path": "resources/words", "sha256": "4e4df85994746357d2ab239b85d83dedb3f3bcb504ad150964c8c7157f96acc4" }
+  },
+  "capabilities": ["http.semantic"],
+  "limits": { "timeout_ms": 900000, "max_operations": 5000, "max_concurrency": 8, "memory_mb": 64 },
+  "actions": [{
+    "name": "scan",
+    "description": "Mine one saved request for hidden parameters, optionally supplementing the built-in words.",
+    "required_capabilities": ["http.semantic"],
+    "input_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "locations": { "type": "array", "items": { "enum": ["query", "body", "cookie", "header"] }, "uniqueItems": true },
+        "phase": { "enum": ["screen", "confirm"], "default": "screen" },
+        "bucket_size": { "type": "integer", "minimum": 2, "maximum": 64, "default": 16 },
+        "max_words": { "type": "integer", "minimum": 1, "maximum": 5000, "default": 500 },
+        "words": { "type": "array", "maxItems": 10000, "items": { "type": "string", "minLength": 1, "maxLength": 256 } },
+        "harvested_words": { "type": "array", "maxItems": 10000, "items": { "type": "string", "minLength": 1, "maxLength": 256 } },
+        "words_by_location": { "type": "object", "additionalProperties": { "type": "array", "maxItems": 5000, "items": { "type": "string", "minLength": 1, "maxLength": 256 } } },
+        "use_only_supplied_words": { "type": "boolean", "default": false, "description": "Used by the generated confirmation follow-up so only narrowed candidates are retested." },
+        "marker": { "type": "string", "minLength": 4, "maxLength": 80 },
+        "max_requests": { "type": "integer", "minimum": 4, "maximum": 5000, "default": 500 }
+      }
+    }
+  }]
+}
