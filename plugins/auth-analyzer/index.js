@@ -114,12 +114,20 @@
     return similarity(left, right) >= threshold;
   }
   function pair(map, prefix, input) { var a = map[prefix + "0"], b = map[prefix + "1"]; return a && b && same(a, b, input) ? a : null; }
-  function allowed(item) { return item && item.status_code >= 200 && item.status_code < 400; }
+  function markersMatch(item, input) {
+    var value = text(item).toLowerCase(), success = input.success_markers || [], failure = input.failure_markers || [];
+    return (!success.length || success.some(function (marker) { return value.indexOf(String(marker).toLowerCase()) !== -1; })) &&
+      !failure.some(function (marker) { return value.indexOf(String(marker).toLowerCase()) !== -1; });
+  }
+  function allowed(item, input) {
+    return !!item && markersMatch(item, input) &&
+      ((item.status_code >= 200 && item.status_code < 400) || (input.success_markers || []).length > 0);
+  }
   function analyze(input, observations, context) {
     var map = mapById(observations), findings = [], classifications = [];
     if (context.action === "anonymous_audit") {
       shapes(input, context).forEach(function (shape, index) {
-        var anonymous = pair(map, "shape-" + index + "-anonymous-", input), anonymousAllowed = allowed(anonymous);
+        var anonymous = pair(map, "shape-" + index + "-anonymous-", input), anonymousAllowed = allowed(anonymous, input);
         classifications.push({ exchange_id: shape.exchange_id, anonymous_stable: !!anonymous, anonymous_allowed: !!anonymousAllowed, mode: "anonymous_audit" });
         if (anonymousAllowed) findings.push({
           title: "Possible unauthenticated authorization exposure", severity: "high", confidence: "firm",
@@ -135,7 +143,7 @@
     shapes(input, context).forEach(function (shape, index) {
       var prefix = "shape-" + index + "-", primary = pair(map, prefix + "primary-", input), secondary = pair(map, prefix + "secondary-", input);
       var anonymous = input.include_anonymous === false ? null : pair(map, prefix + "anonymous-", input);
-      var primaryAllowed = allowed(primary), secondaryAllowed = allowed(secondary), anonymousAllowed = allowed(anonymous);
+      var primaryAllowed = allowed(primary, input), secondaryAllowed = allowed(secondary, input), anonymousAllowed = allowed(anonymous, input);
       var crossIdentity = primaryAllowed && secondaryAllowed && same(primary, secondary, input);
       var protectedResource = !anonymous || !anonymousAllowed || !same(primary, anonymous, input);
       classifications.push({ exchange_id: shape.exchange_id, primary_stable: !!primary, secondary_stable: !!secondary, anonymous_stable: !!anonymous, primary_allowed: !!primaryAllowed, secondary_allowed: !!secondaryAllowed, anonymous_allowed: !!anonymousAllowed, protected_resource: !!protectedResource, responses_equal: !!crossIdentity });

@@ -192,6 +192,12 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
   assert.equal(anonymousResult.result.classifications[0].mode, "anonymous_audit");
   assert.equal(Object.hasOwn(anonymousResult.result.classifications[0], "primary_allowed"), false);
   assert.throws(() => plugin.plan({ domains: ["example.test"], confirm_expected_protected: true, anonymous_context: {} }, anonymousContext), /anonymous_context/);
+
+  const semanticInput = { ...input, success_markers: ["could not change user role"], failure_markers: ["unauthorized"] };
+  const semanticPlan = plugin.plan(semanticInput, ctx);
+  const semanticObservations = semanticPlan.operations.map((op) => observation(op, op.id.includes("anonymous") ? 401 : 400, op.id.includes("anonymous") ? "denied" : "handler", op.id.includes("anonymous") ? "Unauthorized" : "Could not change user role"));
+  const semanticResult = plugin.analyze(semanticInput, semanticObservations, ctx);
+  assert.ok(semanticResult.findings.some((finding) => /cross-user authorization exposure/i.test(finding.title)), "explicit semantic markers support stable non-2xx application outcomes");
 }
 
 {
