@@ -2,11 +2,11 @@
   "schema_version": 1,
   "id": "request-smuggler",
   "name": "Request Smuggler",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Detect HTTP/1 request desynchronization with interleaved controls, parser permutations, and same-connection marker confirmation.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "7ed929f95ebefb4d904e01a0d21ef3eed98d50abd7b0aa9d2ca0777ceacf4bcf",
+  "entrypoint_sha256": "507d9a5cb5ba161c0217326ec88f9bb63f96c3e8c66b2bc51e245a74b0f1ffa1",
   "capabilities": ["http.raw"],
   "limits": { "timeout_ms": 1200000, "max_operations": 450, "max_concurrency": 1, "memory_mb": 32 },
   "actions": [{

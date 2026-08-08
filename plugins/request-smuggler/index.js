@@ -55,7 +55,7 @@
   }
   function normalGet(path, parsed, inherited, close) { return message("GET", path, parsed.authority, inherited, [], "", close); }
   function clTe(parsed, path, canaryPath, inherited, marker, transferLines) {
-    var prefix = "GET " + canaryPath + " HTTP/1.1\r\nHost: " + parsed.authority + "\r\nX-HuntProxy-Desync: " + marker;
+    var prefix = "GET " + canaryPath + " HTTP/1.1\r\nX-HuntProxy-Desync: " + marker;
     var body = "0\r\n\r\n" + prefix;
     return message("POST", path, parsed.authority, inherited, ["Content-Length: " + body.length].concat(transferLines), body, false) + normalGet(path, parsed, inherited, true);
   }
