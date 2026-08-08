@@ -72,6 +72,8 @@
       { name: "encoded-null-suffix", role: "filename-bypass", filename: value + "." + prohibited + "%00." + allowed, type: capturedType, content: text },
       { name: "encoded-slash-suffix", role: "filename-bypass", filename: value + "." + prohibited + "%2f." + allowed, type: capturedType, content: text },
       { name: "windows-ads-suffix", role: "filename-bypass", filename: value + "." + prohibited + "::$DATA." + allowed, type: capturedType, content: text },
+      { name: "parent-directory", role: "path-traversal", filename: "../" + value + "." + prohibited, type: capturedType, content: text },
+      { name: "encoded-parent-directory", role: "path-traversal", filename: "..%2f" + value + "." + prohibited, type: capturedType, content: text },
       { name: "declared-image-plain-text", role: "content-validation", filename: value + "." + allowed, type: declaredImageType, content: text },
       { name: "octet-stream-plain-text", role: "content-validation", filename: value + "." + allowed, type: "application/octet-stream", content: text },
       { name: "png-signature-text", role: "content-validation", filename: value + "." + allowed, type: "text/plain", content: "\x89PNG\r\n\x1a\n" + text },
@@ -129,6 +131,12 @@
     return similarity(first, second) >= 0.9 ? first : null;
   }
   function includesMarker(item, markers) { var text = preview(item); return (markers || []).some(function (marker) { return text.indexOf(String(marker).toLowerCase()) !== -1; }); }
+  function reflectedParentPath(item, variant) {
+    var text=preview(item).replace(/&#x2f;|&#47;|&sol;/gi,"/");
+    try { text=decodeURIComponent(text); } catch (_) {}
+    var basename=variant.filename.replace(/^.*(?:\/|%2f|\\)/i,"").toLowerCase();
+    return text.indexOf("../"+basename)!==-1 || text.indexOf("..\\"+basename)!==-1;
+  }
   function rejected(item, input) {
     return !item || item.error || item.status_code >= 400
       || /invalid (?:file|upload|filename)|not allowed|unsupported (?:file|media)|prohibited|blocked|extension denied|upload failed/.test(preview(item))
@@ -155,6 +163,15 @@
           remediation: "Decode and normalize filenames once, generate server-side names, apply an extension allowlist after normalization, and store uploads outside the web root.",
           evidence_exchange_ids: [allowed.exchange_id, prohibited.exchange_id, result.exchange_id].filter(Boolean),
           metadata: { variant: variant.name, role: variant.role, marker: marker(input), prohibited_extension: extension(input, "prohibited_extension", "php"), allowed_similarity: Math.round(score * 1000) / 1000 }
+        });
+      }
+      if (variant.role === "path-traversal" && isAccepted && reflectedParentPath(result,variant)) {
+        findings.push({
+          title: "Upload path traversal sequence accepted using " + variant.name, severity: "high", confidence: "firm",
+          explanation: "The upload response reproducibly reflected the inert file beneath a parent-directory path after filename decoding. This demonstrates unsafe path normalization, but does not claim that the object is executable.",
+          remediation: "Discard client path components, decode once, generate server-side filenames, enforce the resolved storage root, and keep uploads outside the web root.",
+          evidence_exchange_ids: [result.exchange_id].filter(Boolean),
+          metadata: { variant: variant.name, role: variant.role, marker: marker(input), reflected_parent_path: true }
         });
       }
       if (variant.role === "content-validation" && input.expect_content_validation === true && allowedAccepted && isAccepted && (score >= 0.82 || includesMarker(result, input.success_markers))) {

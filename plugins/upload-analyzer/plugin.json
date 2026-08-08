@@ -1,9 +1,9 @@
 {
-  "schema_version": 1, "id": "upload-analyzer", "name": "UploadAnalyzer", "version": "1.1.1",
+  "schema_version": 1, "id": "upload-analyzer", "name": "UploadAnalyzer", "version": "1.2.0",
   "description": "Compare inert allowed and prohibited upload controls against a bounded filename-normalization and content-validation matrix.",
-  "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "0108d4812e3f96a4d19f7341f12e87cbae8449d66ff729ca729680aea6c0481d",
+  "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "cfb90a4ca6b5975166c614a418d0d82e1b4de9fe5a87406c5ac8ea0f43cf1698",
   "capabilities": ["http.semantic", "identity.use"],
-  "limits": { "timeout_ms": 900000, "max_operations": 34, "max_concurrency": 2, "memory_mb": 64 },
+  "limits": { "timeout_ms": 900000, "max_operations": 38, "max_concurrency": 2, "memory_mb": 64 },
   "actions": [{ "name": "scan", "description": "Mutate the first multipart file part after explicit confirmation that repeated uploads are authorized.", "required_capabilities": ["http.semantic", "identity.use"],
     "input_schema": { "type": "object", "additionalProperties": false, "required": ["allow_uploads"], "properties": {
       "allow_uploads": { "const": true },
@@ -13,7 +13,7 @@
       "expect_content_validation": { "type": "boolean", "default": false },
       "success_markers": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 200 } },
       "failure_markers": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 200 } },
-      "max_files": { "type": "integer", "minimum": 2, "maximum": 17, "default": 17 }
+      "max_files": { "type": "integer", "minimum": 2, "maximum": 19, "default": 19 }
     } }
   }]
 }
