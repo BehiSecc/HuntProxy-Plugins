@@ -163,6 +163,7 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.throws(() => plugin.plan({ ...combinationInput, target_url: "https://other.test/" }, context()), /base exchange origin/);
   const pacedInput = { ...combinationInput, oracle_families: ["parameter-cloaking"], parameter_cloaking: [{ carrier: "utm_content", target: "callback", delimiter: ";" }], max_poison_variants: 1, poison_attempts: 3, poison_interval_ms: 500 };
   const pacedPlan = plugin.plan(pacedInput, context());
+  assert.equal(pacedPlan.execution, "sequential", "poison retries must finish before clean and confirm even if manifest concurrency changes");
   assert.equal(pacedPlan.operations.length, 7, "three poison attempts precede clean and confirm after two isolated controls");
   assert.equal(pacedPlan.operations.find((op) => op.id === "poison-0-retry-1").delay_before_ms, 500);
   assert.equal(pacedPlan.operations.find((op) => op.id === "poison-0-retry-2").delay_before_ms, 500);

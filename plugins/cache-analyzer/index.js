@@ -252,7 +252,7 @@
         operations.push(request("deception-confirm-" + index, exchange.exchange_id, exchange.method, variant.url, [], true));
       });
     }
-    return { operations: operations, result: { marker: token, operation_count: operations.length, poison_attempts: Math.max(1, Math.min(Number(input.poison_attempts || 1), 20)), sequential_execution_required: true } };
+    return { execution: "sequential", operations: operations, result: { marker: token, operation_count: operations.length, poison_attempts: Math.max(1, Math.min(Number(input.poison_attempts || 1), 20)), sequential_execution_required: true } };
   }
 
   function byId(observations) {
