@@ -17,3 +17,9 @@ tentative.
 The poisoning matrix also tests a bounded `X-Forwarded-Host` plus
 `X-Forwarded-Scheme` pair. Supply additional two-to-four-header sets through
 `header_combinations`; every set receives its own isolated cache key.
+
+Advanced request-shape oracles are opt-in. `parameter_cloaking` describes a
+carrier, nested target, and delimiter; `fat_get_parameters` sends harmless form
+markers in GET bodies. `full_query_oracle` deliberately compares a marked query
+with the query-free URL and therefore additionally requires
+`allow_shared_cache_key_tests=true`.

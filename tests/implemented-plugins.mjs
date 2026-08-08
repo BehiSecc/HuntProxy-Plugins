@@ -128,6 +128,16 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const customCombination = plugin.plan({ ...combinationInput, header_combinations: [["X-Host~%s.invalid", "X-Forwarded-Proto~http"]] }, context()).operations.find((op) => op.id === "poison-0");
   assert.deepEqual(Array.from(customCombination.headers, (header) => header.name), ["X-Host", "X-Forwarded-Proto"]);
 
+  assert.throws(() => plugin.plan({ ...combinationInput, full_query_oracle: true }, context()), /allow_shared_cache_key_tests/);
+  const shapeInput = { ...combinationInput, full_query_oracle: true, allow_shared_cache_key_tests: true, parameter_cloaking: [{ carrier: "utm_content", target: "callback", delimiter: ";" }], fat_get_parameters: ["callback"], max_poison_variants: 3 };
+  const shapePlan = plugin.plan(shapeInput, context());
+  const shapePoisons = shapePlan.operations.filter((op) => /^poison-\d+$/.test(op.id));
+  assert.ok(shapePoisons.some((op) => op.url === "https://example.test/admin?hpmulti12345q0"), "full-query oracle uses the query-free clean key");
+  assert.ok(shapePoisons.some((op) => /utm_content=1%3Bcallback%3D/.test(op.url)), "delimiter cloaking is encoded as one carrier value");
+  const fatGet = shapePoisons.find((op) => op.body_base64);
+  assert.equal(fatGet.method, "GET");
+  assert.match(Buffer.from(fatGet.body_base64, "base64").toString(), /^callback=hpmulti12345f0$/);
+
   const cookieContext = context("https://example.test/");
   cookieContext.resources.cookies = "fehost\nsession\n";
   const cookieInput = { marker: "cookie1234", allow_cache_side_effects: true, modes: ["poisoning"], cookie_names: ["fehost"], use_header_wordlist: false, max_header_candidates: 1 };

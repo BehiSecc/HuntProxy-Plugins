@@ -18,6 +18,15 @@
     return url + (url.indexOf("?") === -1 ? "?" : "&") + encodeURIComponent(name) + "=" + encodeURIComponent(value);
   }
 
+  function encodeBase64(value) {
+    var bytes = unescape(encodeURIComponent(String(value))), output = "", alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    for (var index = 0; index < bytes.length; index += 3) {
+      var a = bytes.charCodeAt(index), b = index + 1 < bytes.length ? bytes.charCodeAt(index + 1) : 0, c = index + 2 < bytes.length ? bytes.charCodeAt(index + 2) : 0;
+      output += alphabet[a >> 2] + alphabet[((a & 3) << 4) | (b >> 4)] + (index + 1 < bytes.length ? alphabet[((b & 15) << 2) | (c >> 6)] : "=") + (index + 2 < bytes.length ? alphabet[c & 63] : "=");
+    }
+    return output;
+  }
+
   function cacheBuster(token) {
     var value = 2166136261;
     for (var index = 0; index < token.length; index += 1) {
@@ -34,7 +43,7 @@
   }
 
   function poisonVariants(baseUrl, token, input, context) {
-    var variants = [], combinationVariants = [], seen = {}, headerLimit = Math.max(1, Math.min(Number(input.max_header_candidates || 300), 500));
+    var variants = [], combinationVariants = [], shapeVariants = [], seen = {}, headerLimit = Math.max(1, Math.min(Number(input.max_header_candidates || 300), 500));
     var unsafe = { "content-length": 1, "transfer-encoding": 1, "connection": 1, "proxy-connection": 1, "cookie": 1, "set-cookie": 1 };
     var special = {
       "x-forwarded-scheme": "http", "x-forwarded-proto": "http", "x-forwarded-protocol": "http",
@@ -106,7 +115,28 @@
       var clean = addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":query:" + name));
       variants.push({ name: "query:" + name, poison_url: addQuery(clean, name, token), clean_url: clean, headers: [], marker: token });
     });
-    return cookieVariants.concat(combinationVariants, variants);
+    if (input.full_query_oracle === true) {
+      if (input.allow_shared_cache_key_tests !== true) throw new Error("full-query testing requires allow_shared_cache_key_tests=true");
+      var parsed = splitUrl(baseUrl), shared = parsed.origin + parsed.path, fullMarker = token + "q0";
+      shapeVariants.push({ name: "full-query", poison_url: shared + "?" + encodeURIComponent(fullMarker), clean_url: shared, headers: [], marker: fullMarker });
+    }
+    (input.parameter_cloaking || []).slice(0, 20).forEach(function (entry, index) {
+      var carrier = String(entry.carrier), target = String(entry.target), delimiter = String(entry.delimiter || ";"), markerValue = token + "p" + index;
+      var clean = addQuery(baseUrl, carrier, "hpclean" + index);
+      shapeVariants.push({ name: "cloaking:" + carrier.toLowerCase() + delimiter + target.toLowerCase(), poison_url: addQuery(baseUrl, carrier, "1" + delimiter + target + "=" + markerValue), clean_url: clean, headers: [], marker: markerValue });
+    });
+    (input.fat_get_parameters || []).slice(0, 20).forEach(function (name, index) {
+      var markerValue = token + "f" + index, cleanValue = "hpclean" + cacheBuster(token + ":fat:" + name);
+      var clean = addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":fat-key:" + name));
+      shapeVariants.push({
+        name: "fat-get:" + String(name).toLowerCase(), poison_url: clean, clean_url: clean,
+        headers: [{ name: "Content-Type", value: "application/x-www-form-urlencoded" }],
+        clean_headers: [{ name: "Content-Type", value: "application/x-www-form-urlencoded" }],
+        poison_body_base64: encodeBase64(encodeURIComponent(String(name)) + "=" + encodeURIComponent(markerValue)),
+        clean_body_base64: encodeBase64(encodeURIComponent(String(name)) + "=" + encodeURIComponent(cleanValue)), marker: markerValue
+      });
+    });
+    return cookieVariants.concat(shapeVariants, combinationVariants, variants);
   }
 
   function deceptionVariants(baseUrl, token, input) {
@@ -138,9 +168,12 @@
     var modes = input.modes && input.modes.length ? input.modes : ["poisoning", "deception"];
     if (modes.indexOf("poisoning") !== -1) {
       poisonVariants(exchange.url, token, input, context).slice(0, Math.max(1, Math.min(Number(input.max_poison_variants || 304), 504))).forEach(function (variant, index) {
-        operations.push(request("poison-" + index, exchange.exchange_id, exchange.method, variant.poison_url, variant.headers, false, variant.poison_cookies));
-        operations.push(request("poison-clean-" + index, exchange.exchange_id, exchange.method, variant.clean_url, [], false, variant.clean_cookies));
-        operations.push(request("poison-confirm-" + index, exchange.exchange_id, exchange.method, variant.clean_url, [], false, variant.clean_cookies));
+        var poison = request("poison-" + index, exchange.exchange_id, exchange.method, variant.poison_url, variant.headers, false, variant.poison_cookies);
+        var clean = request("poison-clean-" + index, exchange.exchange_id, exchange.method, variant.clean_url, variant.clean_headers || [], false, variant.clean_cookies);
+        var confirm = request("poison-confirm-" + index, exchange.exchange_id, exchange.method, variant.clean_url, variant.clean_headers || [], false, variant.clean_cookies);
+        if (variant.poison_body_base64 != null) poison.body_base64 = variant.poison_body_base64;
+        if (variant.clean_body_base64 != null) { clean.body_base64 = variant.clean_body_base64; confirm.body_base64 = variant.clean_body_base64; }
+        operations.push(poison); operations.push(clean); operations.push(confirm);
       });
     }
     if (modes.indexOf("deception") !== -1) {
