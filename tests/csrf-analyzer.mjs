@@ -105,4 +105,16 @@ assert.ok(nestedMutations.includes("json-invalid:/profile/security/csrf_token"))
 const nestedInvalid=nestedPlan.operations.find((op)=>op.id.startsWith(`mutation-${nestedMutations.indexOf("json-invalid:/profile/security/csrf_token")}-`));
 assert.equal(JSON.parse(Buffer.from(nestedInvalid.body_base64,"base64")).profile.security.csrf_token,"huntproxy-invalid-csrf");
 
+const freshInput={allow_state_change:true,token_names:["csrf_token"],max_mutations:3,fresh_token:{acquire_url:"https://example.test/profile",body_regex:'name="csrf_token" value="([^"]+)"',location:"body",name:"csrf_token"},secondary_identity:{cookie:"sid=secondary"}};
+const freshPlan=plugin.plan(freshInput,context());
+assert.equal(freshPlan.result.fresh_token_workflows,true);
+assert.equal(freshPlan.result.planned_requests,freshPlan.operations.length*2);
+assert.ok(freshPlan.operations.every((op)=>op.type==="http_workflow"&&op.steps.length===2));
+assert.equal(freshPlan.operations[0].steps[0].extract[0].name,"csrf_fresh");
+assert.ok(freshPlan.operations[0].steps[1].request.body_params.some((part)=>part.name==="csrf_token"&&part.value==="{{extract:csrf_fresh}}"));
+const freshObservations=freshPlan.operations.map((op)=>{const final=observation({id:op.id});return {id:op.id,steps:[],terminal:final,error:null};});
+const freshAnalysis=plugin.analyze(freshInput,freshObservations,context());
+assert.equal(freshAnalysis.result.baseline_successful,true);
+assert.equal(freshAnalysis.result.fresh_token_workflows,true);
+
 console.log("CSRFAnalyzer hardening tests passed.");

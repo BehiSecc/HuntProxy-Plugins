@@ -62,6 +62,17 @@
     if (identity && identity.cookie) headers.push({ name: "Cookie", value: String(identity.cookie) });
     return headers;
   }
+  function freshToken(input) {
+    if(!input.fresh_token) return null;
+    return {acquire_url:String(input.fresh_token.acquire_url),body_regex:String(input.fresh_token.body_regex),location:String(input.fresh_token.location),name:String(input.fresh_token.name),identity:input.fresh_token.identity||null};
+  }
+  function tokenPatch(config,value) {
+    var token={name:config.name,value:value}, patch={};
+    if(config.location==="query") patch.query_params=[token];
+    else if(config.location==="header") patch.headers=[token];
+    else patch.body_params=[token];
+    return patch;
+  }
   function jsonPointer(parts) { return "/" + parts.map(function(part){return String(part).replace(/~/g,"~0").replace(/\//g,"~1");}).join("/"); }
   function jsonTokenPaths(value, wanted, parts, output, depth) {
     if(!value || typeof value!=="object" || depth>8 || output.length>=40) return;
@@ -184,7 +195,8 @@
     }
     (input.paired_cookie_tests||[]).forEach(function(test){
       var headers=identityHeaders(test.identity), patch={header_tombstones:["Cookie","Authorization","Proxy-Authorization"],headers:headers};
-      var token={name:String(test.token.name),value:String(test.token.value)};
+      var fresh=freshToken(input), useFresh=fresh&&fresh.location===test.token.location&&fresh.name.toLowerCase()===String(test.token.name).toLowerCase();
+      var token={name:String(test.token.name),value:useFresh?"{{extract:csrf_fresh}}":String(test.token.value)};
       if(test.token.location==="query") patch.query_params=[token];
       else if(test.token.location==="header") patch.headers=headers.concat([token]);
       else patch.body_params=[token];
@@ -197,15 +209,33 @@
     Object.keys(patch || {}).forEach(function (key) { op[key] = patch[key]; });
     return op;
   }
+  function workflowRequest(id,exchange,patch) {
+    var request={id:id,base_exchange_id:exchange.exchange_id,method:exchange.method,protocol:"auto"};
+    Object.keys(patch||{}).forEach(function(key){request[key]=patch[key];});
+    return request;
+  }
+  function workflow(id,exchange,config,patch,refresh) {
+    var acquirePatch={method:"GET",url:config.acquire_url,body_base64:encode64(""),header_tombstones:["Content-Type","Content-Length"]};
+    if(config.identity){acquirePatch.header_tombstones=acquirePatch.header_tombstones.concat(["Cookie","Authorization","Proxy-Authorization"]);acquirePatch.headers=identityHeaders(config.identity);}
+    var submitPatch=refresh===false?patch:mergePatch(tokenPatch(config,"{{extract:csrf_fresh}}"),patch);
+    return {id:id,type:"http_workflow",steps:[
+      {id:"acquire",request:workflowRequest("ignored",exchange,acquirePatch),extract:[{from:"body_regex",name:"csrf_fresh",pattern:config.body_regex,group:1,required:true}]},
+      {id:"submit",request:workflowRequest("ignored",exchange,submitPatch)}
+    ]};
+  }
   function plan(input, context) {
     if (input.allow_state_change !== true) throw new Error("CSRF testing repeats the state-changing request and requires allow_state_change=true");
-    var exchange = base(context), operations = [], mutations = mutationList(input, context);
-    for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("baseline-" + repeat, exchange, {}));
+    var exchange = base(context), operations = [], mutations = mutationList(input, context), fresh=freshToken(input);
+    for (var repeat = 0; repeat < 2; repeat += 1) operations.push(fresh?workflow("baseline-"+repeat,exchange,fresh,{},true):operation("baseline-" + repeat, exchange, {}));
     mutations.forEach(function (mutation, index) {
-      for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("mutation-" + index + "-" + repeat, exchange, mutation.patch));
+      for (var repeat = 0; repeat < 2; repeat += 1) {
+        var id="mutation-"+index+"-"+repeat, refresh=!/^method-get-/.test(mutation.name);
+        operations.push(fresh?workflow(id,exchange,fresh,mutation.patch,refresh):operation(id,exchange,mutation.patch));
+      }
     });
-    return { operations: operations, result: { mutations: mutations.map(function (item) { return { name: item.name, kind: item.kind, negative_control: item.negative_control }; }), repeated_state_changes: operations.length, semantic_comparison: true } };
+    return { operations: operations, result: { mutations: mutations.map(function (item) { return { name: item.name, kind: item.kind, negative_control: item.negative_control }; }), repeated_state_changes: operations.length, planned_requests:operations.length*(fresh?2:1), fresh_token_workflows:!!fresh, semantic_comparison: true } };
   }
+  function terminalObservations(items){return items.map(function(item){if(!item||!item.terminal)return item;var terminal={};Object.keys(item.terminal||{}).forEach(function(key){terminal[key]=item.terminal[key];});terminal.id=item.id;if(item.error)terminal.error=item.error;return terminal;});}
   function byId(items) { var map = {}; items.forEach(function (item) { map[item.id] = item; }); return map; }
   function preview(item) { return String(item && item.response_preview && item.response_preview.text || "").toLowerCase(); }
   function normalized(item) {
@@ -245,6 +275,7 @@
     return !(input.success_markers && input.success_markers.length) || includesMarker(item, input.success_markers);
   }
   function analyze(input, observations, context) {
+    observations=terminalObservations(observations);
     var map = byId(observations), baseline = stablePair(map, "baseline-"), findings = [], outcomes = [], mutations = mutationList(input, context);
     var baselineSuccess = successful(baseline, input);
     mutations.forEach(function (mutation, index) {
@@ -265,7 +296,7 @@
         metadata: { mutation: mutation.name, kind: mutation.kind, baseline_similarity: Math.round(score * 1000) / 1000 }
       });
     });
-    return { findings: findings, result: { baseline_stable: !!baseline, baseline_successful: !!baselineSuccess, outcomes: outcomes, tested_operations: observations.length, limitations: ["State-changing response comparison cannot prove server-side state without a caller-supplied success marker or a separate read-back request.", "Nested JSON and multipart CSRF token fields are not mutated automatically."] } };
+    return { findings: findings, result: { baseline_stable: !!baseline, baseline_successful: !!baselineSuccess, fresh_token_workflows:!!freshToken(input), outcomes: outcomes, tested_operations: observations.length, limitations: ["State-changing response comparison cannot prove server-side state without a caller-supplied success marker or a separate read-back request.", "Multipart CSRF token fields are not mutated automatically."] } };
   }
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };
 }());
