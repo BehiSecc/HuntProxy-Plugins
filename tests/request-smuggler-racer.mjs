@@ -105,10 +105,12 @@ function context(url = "https://example.test/account") {
 
   const teTeInput = { ...input, families: ["te_te"], repeats: 5 };
   const teTePlan = plugin.plan(teTeInput, ctx);
+  const largeNormal = "normal-page-".repeat(1200);
+  const largeCanary = "canary-page-".repeat(1200);
   const teTeObservations = teTePlan.operations.map((operation, index) => {
     const responses = operation.id.startsWith("direct-canary") || operation.id.startsWith("victim-")
-      ? [{ status: 404, body: "canary" }]
-      : [{ status: 200, body: "normal" }];
+      ? [{ status: 404, body: largeCanary }]
+      : [{ status: 200, body: largeNormal }];
     return { id: operation.id, raw: { exchange_id: 500 + index, ...wire(responses) } };
   });
   const started = performance.now();
@@ -137,8 +139,10 @@ function context(url = "https://example.test/account") {
   const tunnel = plugin.plan({ ...input, families: ["h2_tunnel"], repeats: 3 }, ctx);
   const nameTunnel = tunnel.operations.find((operation) => operation.id === "probe-0-0").streams[0];
   const pathTunnel = tunnel.operations.find((operation) => operation.id === "probe-1-0").streams[0];
+  const hostInjection = tunnel.operations.find((operation) => operation.id === "probe-2-0").streams[0];
   assert.ok(nameTunnel.headers.some((header) => header.name.includes("\r\n\r\nGET")));
   assert.ok(pathTunnel.headers.some((header) => header.name === ":path" && header.value.includes("\r\n\r\nGET")));
+  assert.ok(hostInjection.headers.some((header) => header.name.includes("\r\nHost: abc12345.example.test")));
   const tunnelObservations = tunnel.operations.map((operation, index) => {
     if (operation.type !== "raw_http2") return { id: operation.id, raw: { exchange_id: 1100 + index, ...wire([{ status: 200, body: "normal" }]) } };
     const canary = operation.id.startsWith("h2-direct-canary"), nested = operation.id.startsWith("probe-");
@@ -147,7 +151,7 @@ function context(url = "https://example.test/account") {
   });
   const tunnelStarted = performance.now();
   const tunnelResult = plugin.analyze({ ...input, families: ["h2_tunnel"], repeats: 3 }, tunnelObservations, ctx);
-  assert.equal(tunnelResult.findings.length, 2);
+  assert.equal(tunnelResult.findings.length, 3);
   assert.ok(performance.now() - tunnelStarted < 250, "H2 tunnelling analysis must stay below the host JavaScript stage budget");
 }
 

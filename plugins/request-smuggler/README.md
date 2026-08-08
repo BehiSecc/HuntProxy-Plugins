@@ -35,9 +35,13 @@ requires HTTPS with ALPN `h2`, preserves duplicate and malformed field order,
 and never falls back to HTTP/1. H2 probes use the same independent
 control/probe/victim/recovery oracle as HTTP/1. Tunnelling is only firm when a
 nested HTTP/1 response is repeatedly visible in the HTTP/2 response body.
+`tunnel_path` selects the harmless inner response and `tunnel_outer_path`
+selects a shorter outer response (default `/login`). A separate header-name
+Host-injection diagnostic confirms the parser primitive without accessing an
+internal resource.
 
 The default scan is intentionally thorough: five cycles across every framing
-variant can schedule up to 508 requests. Use `families`, `max_techniques`, and
+variant can schedule up to 528 requests. Use `families`, `max_techniques`, and
 `repeats` to reduce volume on fragile targets. Browser-proven client-side
 desync remains out of scope. Pause-based coverage requires the separate
 opt-in `pause` family because its default three-or-more 61-second cycles are

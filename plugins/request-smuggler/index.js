@@ -91,18 +91,19 @@
     (inherited || []).forEach(function(line){var split=line.indexOf(":");if(split>0)fields.push({name:line.slice(0,split).trim().toLowerCase(),value:line.slice(split+1).trim()});});
     return fields.concat(extras || []);
   }
-  function h2Probe(parsed, path, canaryPath, inherited, marker, variant) {
+  function h2Probe(parsed, path, canaryPath, inherited, marker, variant, tunnelPath, tunnelOuterPath) {
     var prefix = "GET " + canaryPath + " HTTP/1.1\r\nX-HuntProxy-Desync: " + marker;
     if (variant === "h2_cl") return { headers: h2Headers(parsed, "POST", path, inherited, [{ name: "content-length", value: "0" }]), body: prefix };
     if (variant === "h2_te") return { headers: h2Headers(parsed, "POST", path, inherited, [{ name: "transfer-encoding", value: "chunked" }]), body: "0\r\n\r\n" + prefix };
     if (variant === "h2_crlf") return { headers: h2Headers(parsed, "POST", path, inherited, [{ name: "x-huntproxy", value: "probe\r\nTransfer-Encoding: chunked" }]), body: "0\r\n\r\n" + prefix };
     if (variant === "h2_split") return { headers: h2Headers(parsed, "GET", path, inherited, [{ name: "x-huntproxy", value: "probe\r\n\r\nGET " + canaryPath + " HTTP/1.1\r\nHost: " + parsed.authority }]), body: "" };
-    if (variant === "h2_tunnel_name") return { headers: h2Headers(parsed, "HEAD", "/login", inherited, [{ name: "x: y\r\n\r\nGET " + canaryPath + " HTTP/1.1\r\nHost", value: parsed.authority + "\r\nX-HuntProxy-Desync: " + marker + "\r\n\r\n" }]), body: "" };
+    if (variant === "h2_tunnel_name") return { headers: h2Headers(parsed, "HEAD", tunnelOuterPath, inherited, [{ name: "x: y\r\n\r\nGET " + tunnelPath + " HTTP/1.1\r\nHost", value: parsed.authority + "\r\nX-HuntProxy-Desync: " + marker + "\r\n\r\n" }]), body: "" };
+    if (variant === "h2_header_name_host") return { headers: h2Headers(parsed,"GET",path,inherited,[{name:"foo: bar\r\nHost: "+marker+"."+parsed.authority,value:"xyz"}]),body:"" };
     return { headers: [
       { name: ":method", value: "HEAD" },
       { name: ":scheme", value: "https" },
       { name: ":authority", value: parsed.authority },
-      { name: ":path", value: "/login HTTP/1.1\r\nHost: " + parsed.authority + "\r\n\r\nGET " + canaryPath + " HTTP/1.1\r\nX-HuntProxy-Desync: " + marker }
+      { name: ":path", value: tunnelOuterPath + " HTTP/1.1\r\nHost: " + parsed.authority + "\r\n\r\nGET " + tunnelPath + " HTTP/1.1\r\nX-HuntProxy-Desync: " + marker }
     ], body: "" };
   }
   function pauseProbe(parsed, path, canaryPath, inherited, marker) {
@@ -114,6 +115,7 @@
     var exchange = base(context), parsed = target(exchange.url), inherited = inheritedHeaders(exchange, input.include_auth === true), marker = String(input.marker).toLowerCase();
     var path = safePath(input.probe_path || parsed.path, "probe_path");
     var canaryPath = safePath(input.canary_path || ("/hp-" + marker + "-not-found"), "canary_path");
+    var tunnelPath=safePath(input.tunnel_path||path,"tunnel_path"),tunnelOuterPath=safePath(input.tunnel_outer_path||"/login","tunnel_outer_path");
     var items = [];
     function add(family, name, request, confirmable, polarity, mode) { items.push({ family: family, name: name, request: request, confirmable: confirmable, polarity: polarity || family, mode: mode || "pipeline" }); }
     add("cl_te", "canonical CL.TE", clTe(parsed, path, canaryPath, inherited, marker, ["Transfer-Encoding: chunked"]), true);
@@ -137,12 +139,13 @@
     if (!connectionHost || /[\r\n\s]/.test(connectionHost) || connectionHost.length > 255) throw new Error("connection_state_host must be a CRLF-free Host value");
     var connectionPath = safePath(input.connection_state_path || path, "connection_state_path");
     add("connection_state", "second-request Host validation", withHost(connectionPath, parsed, inherited, connectionHost, true), true, "connection_state", "connection_state");
-    add("h2_cl", "H2.CL downgrade", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_cl"), true, "h2_cl", "h2");
-    add("h2_te", "H2.TE downgrade / response queue", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_te"), true, "h2_te", "h2");
-    add("h2_crlf", "H2 CRLF Transfer-Encoding injection", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_crlf"), true, "h2_te", "h2");
-    add("h2_split", "H2 CRLF request splitting", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_split"), true, "h2_split", "h2");
-    add("h2_tunnel", "H2 header-name request tunnelling", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_tunnel_name"), false, "h2_tunnel", "h2_tunnel");
-    add("h2_tunnel", "H2 pseudo-path request tunnelling", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_tunnel_path"), false, "h2_tunnel", "h2_tunnel");
+    add("h2_cl", "H2.CL downgrade", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_cl",tunnelPath,tunnelOuterPath), true, "h2_cl", "h2");
+    add("h2_te", "H2.TE downgrade / response queue", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_te",tunnelPath,tunnelOuterPath), true, "h2_te", "h2");
+    add("h2_crlf", "H2 CRLF Transfer-Encoding injection", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_crlf",tunnelPath,tunnelOuterPath), true, "h2_te", "h2");
+    add("h2_split", "H2 CRLF request splitting", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_split",tunnelPath,tunnelOuterPath), true, "h2_split", "h2");
+    add("h2_tunnel", "H2 header-name request tunnelling", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_tunnel_name",tunnelPath,tunnelOuterPath), false, "h2_tunnel", "h2_tunnel");
+    add("h2_tunnel", "H2 pseudo-path request tunnelling", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_tunnel_path",tunnelPath,tunnelOuterPath), false, "h2_tunnel", "h2_tunnel");
+    add("h2_tunnel", "H2 header-name Host injection", h2Probe(parsed,path,canaryPath,inherited,marker,"h2_header_name_host",tunnelPath,tunnelOuterPath),true,"h2_tunnel","h2_header_injection");
     add("pause", "server-side pause-based CL.0", pauseProbe(parsed,path,canaryPath,inherited,marker), true, "pause", "pause");
     add("parser_discrepancy", "conflicting duplicate Content-Length", message("POST", path, parsed.authority, inherited, ["Content-Length: 4", "Content-Length: 5", "Content-Type: text/plain"], "12345", false) + normalGet(path, parsed, inherited, true), false);
     add("parser_discrepancy", "signed Content-Length", message("POST", path, parsed.authority, inherited, ["Content-Length: +5", "Content-Type: text/plain"], "12345", false) + normalGet(path, parsed, inherited, true), false);
@@ -154,6 +157,7 @@
   }
   function raw(id, parsed, request, input) { return { id: id, type: "raw_http1", target_url: parsed.url, request_base64: toBase64(request), use_project_cookies: false, options: options(input) }; }
   function rawH2(id, parsed, request, input) { return { id: id, type: "raw_http2", target_url: parsed.url, streams: [{ id: id + "-stream", headers: request.headers, body_text: request.body }], options: { timeout_ms: Math.max(1000, Math.min(Number(input.read_timeout_ms || 8000), 30000)), final_data_together: false } }; }
+  function isH2Mode(mode){return mode==="h2"||mode==="h2_tunnel"||mode==="h2_header_injection";}
   function rawPause(id,parsed,request,input){return {id:id,type:"raw_http1",target_url:parsed.url,request_base64:toBase64(request.bytes),use_project_cookies:false,options:{pause_at_byte:request.split,pause_ms:Math.max(1,Math.min(Number(input.pause_ms||61000),120000)),await_response_before_continue:input.pause_await_response===true,half_close_write:false,response_mode:"until_idle",read_timeout_ms:Math.max(1000,Math.min(Number(input.read_timeout_ms||30000),120000)),idle_timeout_ms:Math.max(500,Math.min(Number(input.idle_timeout_ms||1500),5000))}};}
   function plan(input, context) {
     if (input.confirm_intrusive !== true) throw new Error("desynchronization testing requires confirm_intrusive=true");
@@ -163,7 +167,7 @@
       operations.push(raw("direct-base-" + direct, set.parsed, normalGet(set.path, set.parsed, set.inherited, true), input));
       operations.push(raw("direct-canary-" + direct, set.parsed, normalGet(set.canary_path, set.parsed, set.inherited, true), input));
     }
-    if (set.items.some(function (item) { return item.mode === "h2" || item.mode === "h2_tunnel"; })) {
+    if (set.items.some(function (item) { return isH2Mode(item.mode); })) {
       for (var h2Direct = 0; h2Direct < 2; h2Direct += 1) {
         operations.push(rawH2("h2-direct-base-" + h2Direct, set.parsed, { headers: h2Headers(set.parsed, "GET", set.path, set.inherited), body: "" }, input));
         operations.push(rawH2("h2-direct-canary-" + h2Direct, set.parsed, { headers: h2Headers(set.parsed, "GET", set.canary_path, set.inherited), body: "" }, input));
@@ -184,7 +188,7 @@
           operations.push(rawPause("probe-"+index+"-"+repeat,set.parsed,probe,input));
           operations.push(raw("victim-"+index+"-"+repeat,set.parsed,victim,input));
           operations.push(raw("recovery-"+index+"-"+repeat,set.parsed,clean,input));
-        } else if (technique.mode === "h2" || technique.mode === "h2_tunnel") {
+        } else if (isH2Mode(technique.mode)) {
           operations.push(rawH2("control-" + index + "-" + repeat, set.parsed, { headers: h2Headers(set.parsed, "GET", set.path, set.inherited), body: "" }, input));
           operations.push(rawH2("probe-" + index + "-" + repeat, set.parsed, probe, input));
           operations.push(rawH2("victim-" + index + "-" + repeat, set.parsed, { headers: h2Headers(set.parsed, "GET", set.path, set.inherited), body: "" }, input));
@@ -204,12 +208,17 @@
   function hasResult(item) { return !!rawResult(item) || !!(item && !item.error && Array.isArray(item.streams)); }
   function outcome(item) { var value = rawResult(item); if (value) return String(value.read_outcome || "missing"); if (item && Array.isArray(item.streams)) return item.timed_out ? "timeout" : "idle"; return "error"; }
   function transcript(item) { var value = rawResult(item); return value ? fromBase64(value.response_transcript_base64 || value.response_base64 || "") : ""; }
+  var segmentMemo=null,transcriptMemo=null;
   function segments(item) {
-    if (item && Array.isArray(item.streams)) return item.streams.map(function (stream) { var encoded=String(stream.response_body_base64||"");return { status: stream.status_code || null, text: item.id&&item.id.indexOf("probe-")===0?fromBase64(encoded.slice(0,87384)):"", hash:stream.response_body_hash||"", length:stream.response_length==null?0:Number(stream.response_length) }; });
-    var value = rawResult(item), bytes = transcript(item); if (!value) return [];
-    return (value.responses || []).map(function (response) { return { status: response.status_code || null, text: bytes.slice(response.offset, response.offset + response.length) }; });
+    var key=item&&item.id;if(segmentMemo&&key&&Object.prototype.hasOwnProperty.call(segmentMemo,key))return segmentMemo[key];
+    var output;
+    if (item && Array.isArray(item.streams)) output=item.streams.map(function (stream) { var encoded=String(stream.response_body_base64||"");return { status: stream.status_code || null, text: item.id&&item.id.indexOf("probe-")===0?fromBase64(encoded.slice(0,87384)):"", hash:stream.response_body_hash||"", length:stream.response_length==null?0:Number(stream.response_length) }; });
+    else { var value = rawResult(item); output=value?(value.responses || []).map(function (response) { return { status: response.status_code || null, text: null, source:item, offset:response.offset, length:response.length }; }):[]; }
+    if(segmentMemo&&key)segmentMemo[key]=output;return output;
   }
   function normalized(value) { value = String(value || ""); if (value.length > 32768) value = value.slice(0, 16384) + value.slice(-16384); return value.toLowerCase().replace(/^(date|set-cookie|x-request-id|traceparent):.*$/gmi, "").replace(/\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/gi, "<id>").replace(/\b\d{10,13}\b/g, "<time>").replace(/\s+/g, " ").trim(); }
+  function segmentText(segment){if(!segment)return "";if(segment.text!=null)return segment.text;var item=segment.source,key=item&&item.id,bytes=transcriptMemo&&key&&transcriptMemo[key];if(bytes==null){bytes=transcript(item);if(transcriptMemo&&key)transcriptMemo[key]=bytes;}segment.text=bytes.slice(segment.offset,segment.offset+Math.min(segment.length,32768));return segment.text;}
+  function segmentLength(segment){return segment&&segment.length!=null?Number(segment.length):segmentText(segment).length;}
   function similarity(left, right) {
     left = normalized(left); right = normalized(right); if (left === right) return 1; if (!left || !right) return 0;
     var a = {}, b = {}, union = {}, same = 0, total = 0;
@@ -217,29 +226,30 @@
     right.split(/[^a-z0-9_<>]+/).filter(Boolean).forEach(function (token) { b[token] = 1; union[token] = 1; });
     Object.keys(union).forEach(function (token) { total += 1; if (a[token] && b[token]) same += 1; }); return total ? same / total : 0;
   }
-  function sameSegment(left, right) { if(!left||!right||left.status!==right.status)return false;if(left.hash&&right.hash)return left.hash===right.hash;if(left.length!=null&&right.length!=null&&left.length===right.length&&!left.text&&!right.text)return true;return similarity(left.text,right.text)>=0.9; }
+  function sameSegment(left, right) { if(!left||!right||left.status!==right.status)return false;if(left.hash&&right.hash)return left.hash===right.hash;return similarity(segmentText(left),segmentText(right))>=0.9; }
   function stable(left, right) {
     var a = segments(left), b = segments(right); if (!hasResult(left) || !hasResult(right) || outcome(left) !== outcome(right) || a.length !== b.length) return false;
     for (var index = 0; index < a.length; index += 1) {
       if (a[index].status !== b[index].status) return false;
-      var longest = Math.max(a[index].text.length, b[index].text.length, 1), shortest = Math.min(a[index].text.length, b[index].text.length);
+      var longest = Math.max(segmentLength(a[index]),segmentLength(b[index]),1), shortest = Math.min(segmentLength(a[index]),segmentLength(b[index]));
       if (!sameSegment(a[index], b[index]) && shortest / longest < 0.9) return false;
     }
     return true;
   }
   function matchesCanary(segment, canary, base) { return !!(segment && canary && base && (canary.status !== base.status ? segment.status === canary.status : sameSegment(segment, canary))); }
-  function matchesBase(segment, base) { if (!segment || !base || segment.status !== base.status) return false; var longest=Math.max(segment.text.length,base.text.length,1),shortest=Math.min(segment.text.length,base.text.length);return shortest/longest>=0.9||sameSegment(segment,base); }
+  function matchesBase(segment, base) { if (!segment || !base || segment.status !== base.status) return false; var longest=Math.max(segmentLength(segment),segmentLength(base),1),shortest=Math.min(segmentLength(segment),segmentLength(base));return shortest/longest>=0.9||sameSegment(segment,base); }
   function evidence(items) { var output=[]; items.forEach(function(item){var value=rawResult(item);if(value&&value.exchange_id)output.push(value.exchange_id);if(item&&Array.isArray(item.streams))item.streams.forEach(function(stream){if(stream.exchange_id)output.push(stream.exchange_id);});});return output; }
   function analyze(input, observations, context) {
+    segmentMemo={};transcriptMemo={};
     var map = byId(observations), set = techniques(input, context), repeats = Math.max(3, Math.min(Number(input.repeats || 5), 5)), findings = [], diagnostics = [];
-    var hasH2=set.items.some(function(item){return item.mode==="h2"||item.mode==="h2_tunnel";});
+    var hasH2=set.items.some(function(item){return isH2Mode(item.mode);});
     var h1BaseDirect=[map["direct-base-0"],map["direct-base-1"]],h1CanaryDirect=[map["direct-canary-0"],map["direct-canary-1"]];
     var h2BaseDirect=[map["h2-direct-base-0"],map["h2-direct-base-1"]],h2CanaryDirect=[map["h2-direct-canary-0"],map["h2-direct-canary-1"]];
     var h1Stable=stable(h1BaseDirect[0],h1BaseDirect[1])&&stable(h1CanaryDirect[0],h1CanaryDirect[1]);
     var h2Stable=!hasH2||(stable(h2BaseDirect[0],h2BaseDirect[1])&&stable(h2CanaryDirect[0],h2CanaryDirect[1]));
     var threshold = Math.max(3, Math.ceil(repeats * 0.6));
     set.items.forEach(function (technique, index) {
-      var h2Mode=technique.mode==="h2"||technique.mode==="h2_tunnel",baseDirect=h2Mode?h2BaseDirect:h1BaseDirect,canaryDirect=h2Mode?h2CanaryDirect:h1CanaryDirect;
+      var h2Mode=isH2Mode(technique.mode),baseDirect=h2Mode?h2BaseDirect:h1BaseDirect,canaryDirect=h2Mode?h2CanaryDirect:h1CanaryDirect;
       var directStable=h2Mode?h2Stable:h1Stable,baseSignature=segments(baseDirect[0])[0],canarySignature=segments(canaryDirect[0])[0];
       var canaryDistinct=directStable&&baseSignature&&canarySignature&&(baseSignature.status!==canarySignature.status||!sameSegment(baseSignature,canarySignature));
       var controls = [], probes = [], victims = [], recoveries = [], clean = 0, contaminated = 0, divergentVictims = 0, timeouts = 0;
@@ -254,7 +264,8 @@
           var directHost=segments(control)[0], indirectHost=probeSegments.length > 1 ? probeSegments[probeSegments.length-1] : null;
           if (directHost && indirectHost && directHost.status !== indirectHost.status && matchesBase(probeSegments[0],baseSignature)) contaminated += 1;
         } else if (technique.confirmable && canaryDistinct && downstream.some(function (segment) { return matchesCanary(segment, canarySignature, baseSignature) && !sameSegment(segment, baseSignature); })) contaminated += 1;
-        if (technique.mode === "h2_tunnel" && probeSegments.some(function(segment){return /HTTP\/1\.[01]\s+[1-5][0-9][0-9]/i.test(segment.text);})) contaminated += 1;
+        if (technique.mode === "h2_tunnel" && probeSegments.some(function(segment){return /HTTP\/1\.[01]\s+[1-5][0-9][0-9]/i.test(segment.text)||matchesCanary(segment,canarySignature,baseSignature);})) contaminated += 1;
+        if(technique.mode==="h2_header_injection"&&probeSegments[0]&&!matchesBase(probeSegments[0],baseSignature))contaminated+=1;
         var victimFirst=segments(victim)[0],recoveryFirst=segments(recovery)[0]; if((victimFirst&&!matchesBase(victimFirst,baseSignature))||(recoveryFirst&&!matchesBase(recoveryFirst,baseSignature))) divergentVictims+=1;
         if (outcome(probe) === "timeout" && outcome(control) !== "timeout") timeouts += 1;
       }
@@ -263,8 +274,8 @@
       var responseCandidate=directStable&&clean===repeats&&divergentVictims>=threshold;
       diagnostics.push({ family: technique.family, technique: technique.name, polarity: technique.polarity, clean_controls: clean, canary_confirmations: contaminated, divergent_victims: divergentVictims, probe_only_timeouts: timeouts, repeats: repeats, signal: confirmed ? "marker_contamination" : responseCandidate ? "victim_divergence" : candidate ? "timing_candidate" : "none" });
       if (confirmed) findings.push({
-        title: "Confirmed " + (h2Mode ? "HTTP/2 downgrade/tunnelling" : "HTTP/1 request desynchronization") + ": " + technique.name, severity: "high", confidence: "firm",
-        explanation: (technique.mode === "h2_tunnel" ? "A nested HTTP/1 response was reproducibly exposed inside the HTTP/2 response body" : "A harmless marker request was reproducibly parsed out of the ambiguous pipeline") + " in " + contaminated + " of " + repeats + " attempts, while every interleaved clean pipeline remained uncontaminated.",
+        title: "Confirmed " + (h2Mode ? "HTTP/2 downgrade/tunnelling" : "HTTP/1 request desynchronization") + ": " + technique.name, severity: technique.mode==="h2_header_injection"?"medium":"high", confidence: "firm",
+        explanation: (technique.mode === "h2_tunnel" ? "A nested or directly routed canary response was reproducibly exposed by the HTTP/2 tunnelling probe" : technique.mode==="h2_header_injection"?"The malformed HTTP/2 header name reproducibly changed the downstream response":"A harmless marker request was reproducibly parsed out of the ambiguous pipeline") + " in " + contaminated + " of " + repeats + " attempts, while every interleaved clean pipeline remained uncontaminated.",
         remediation: "Reject ambiguous framing at the first hop, normalize Transfer-Encoding and Content-Length consistently across every hop, and close connections after parser errors.",
         evidence_exchange_ids: evidence(baseDirect.concat(canaryDirect, controls, probes, victims, recoveries)), metadata: { family: technique.family, polarity: technique.polarity, signal: "marker_contamination", confirmations: contaminated, attempts: repeats }
       });
@@ -275,7 +286,7 @@
         evidence_exchange_ids: evidence(controls.concat(probes,victims,recoveries)), metadata: { family: technique.family, polarity: technique.polarity, signal: responseCandidate?"victim_divergence":"timing_candidate", attempts: repeats }
       });
     });
-    return { findings: findings, result: { direct_controls_stable: h1Stable && h2Stable, diagnostics: diagnostics, limitations: ["Firm framing findings require repeated downstream marker contamination; timeout-only signals remain tentative.", "HTTP/2 probes require HTTPS with ALPN h2 and never fall back to HTTP/1.", "Pause-based findings require the explicit pause family; browser client-side desync remains out of scope."] } };
+    var result={ findings: findings, result: { direct_controls_stable: h1Stable && h2Stable, diagnostics: diagnostics, limitations: ["Firm framing findings require repeated downstream marker contamination; timeout-only signals remain tentative.", "HTTP/2 probes require HTTPS with ALPN h2 and never fall back to HTTP/1.", "Pause-based findings require the explicit pause family; browser client-side desync remains out of scope."] } };segmentMemo=null;transcriptMemo=null;return result;
   }
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };
 }());
