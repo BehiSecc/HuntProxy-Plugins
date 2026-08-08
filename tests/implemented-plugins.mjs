@@ -29,6 +29,12 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.ok(latePlan.result.candidates.query.includes("chosen_discount"));
   assert.ok(latePlan.result.candidates.header.includes("X-Custom-IP-Authorization"));
   assert.equal(latePlan.result.truncated, false);
+  const lateObservations = latePlan.operations.map((op) => observation(op, 200, op.id.startsWith("screen-") ? "changed" : "baseline", op.id.startsWith("screen-") ? "changed response" : "baseline response"));
+  const lateScreen = plugin.analyze({ locations: ["query", "header"], cache_key_tests: false }, lateObservations, lateContext);
+  assert.ok(lateScreen.result.candidate_buckets.query.length > 500);
+  assert.ok(lateScreen.result.follow_up.max_words >= lateScreen.result.candidate_buckets.query.length);
+  const lateConfirmPlan = plugin.plan(lateScreen.result.follow_up, lateContext);
+  assert.equal(lateConfirmPlan.result.candidates.query.length, lateScreen.result.candidate_buckets.query.length);
   const input = { phase: "confirm", locations: ["query"], words_by_location: { query: ["debug"] }, max_words: 20 };
   const plan = plugin.plan(input, context());
   assert.ok(plan.operations.length >= 4);

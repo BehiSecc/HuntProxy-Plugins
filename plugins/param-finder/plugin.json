@@ -2,11 +2,11 @@
   "schema_version": 1,
   "id": "param-finder",
   "name": "ParamFinder",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Discover hidden and unkeyed query, body, cookie, and header parameters using batched differential and cache-key probing.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "a29edf0d1acf085a6012a4bfabd1951105ce071cc58c81a5baef4cbc71ee8bef",
+  "entrypoint_sha256": "1fbea3eda51948f4d93baaf744925f97d2f9b1d17695ac56322f378b87c9117e",
   "resources": {
     "assetnote-params": { "path": "resources/assetnote-params", "sha256": "9cf95d2dbd129cc51df9c88f31b5514578ac052357c4ef3d010b2883fd40850b" },
     "boring_headers": { "path": "resources/boring_headers", "sha256": "c96c9b29315bd9afb4c1bad40fc26d95f8bebab16f8409ef72f69bc90d73f01a" },

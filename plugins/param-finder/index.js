@@ -239,13 +239,14 @@
       }
       narrowed[location] = narrowed[location].filter(function (word, index, words) { return words.indexOf(word) === index; });
     });
+    var followUpMaxWords = Math.max(Number(input.max_words || 100000), Object.keys(narrowed).reduce(function (largest, location) { return Math.max(largest, narrowed[location].length); }, 0));
     return {
       findings: [],
       result: {
         phase: "screen",
         baseline_unstable: baselineUnstable,
         candidate_buckets: narrowed,
-        follow_up: Object.keys(narrowed).some(function (location) { return narrowed[location].length > 0; }) ? { phase: "confirm", locations: Object.keys(narrowed).filter(function (location) { return narrowed[location].length > 0; }), words_by_location: narrowed, use_only_supplied_words: true, max_words: Number(input.max_words || 500), max_requests: Number(input.max_requests || 5000), marker: input.marker, cache_bust: input.cache_bust !== false, cache_key_tests: input.cache_key_tests !== false, cache_buster_name: input.cache_buster_name, similarity_threshold: input.similarity_threshold, ignore_patterns: input.ignore_patterns } : null,
+        follow_up: Object.keys(narrowed).some(function (location) { return narrowed[location].length > 0; }) ? { phase: "confirm", locations: Object.keys(narrowed).filter(function (location) { return narrowed[location].length > 0; }), words_by_location: narrowed, use_only_supplied_words: true, max_words: Math.min(followUpMaxWords, 100000), max_requests: Number(input.max_requests || 5000), marker: input.marker, cache_bust: input.cache_bust !== false, cache_key_tests: input.cache_key_tests !== false, cache_buster_name: input.cache_buster_name, similarity_threshold: input.similarity_threshold, ignore_patterns: input.ignore_patterns } : null,
         note: "Candidate buckets are cache-busted and include isolated poison-clean cache-key checks; run the returned follow-up for individual confirmation."
       }
     };
