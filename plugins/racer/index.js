@@ -41,14 +41,38 @@
       request.url = bindExtractValue(request.url, bindings);
       request.body_text = bindExtractValue(request.body_text, bindings);
       if (Array.isArray(request.headers)) request.headers.forEach(function (header) { header.value = bindExtractValue(header.value, bindings); });
+      if (request.success) request.success = bindExtractPredicate(request.success, bindings);
       return request;
     });
   }
 
-  function namespaceSetupExtracts(requests, namespace) {
+  function bindExtractPredicate(source, bindings) {
+    var predicate = clone(source);
+    if (predicate.body_contains != null) predicate.body_contains = bindExtractValue(predicate.body_contains, bindings);
+    if (predicate.body_regex && predicate.body_regex.indexOf("{{extract:") !== -1) throw new Error("extract placeholders are not supported in regex predicates; use body_contains");
+    (predicate.headers || []).forEach(function (header) {
+      if (header.equals != null) header.equals = bindExtractValue(header.equals, bindings);
+      if (header.contains != null) header.contains = bindExtractValue(header.contains, bindings);
+      if (header.regex && header.regex.indexOf("{{extract:") !== -1) throw new Error("extract placeholders are not supported in regex predicates; use equals or contains");
+    });
+    if (predicate.redirect_location) {
+      if (predicate.redirect_location.equals != null) predicate.redirect_location.equals = bindExtractValue(predicate.redirect_location.equals, bindings);
+      if (predicate.redirect_location.contains != null) predicate.redirect_location.contains = bindExtractValue(predicate.redirect_location.contains, bindings);
+      if (predicate.redirect_location.regex && predicate.redirect_location.regex.indexOf("{{extract:") !== -1) throw new Error("extract placeholders are not supported in regex predicates; use equals or contains");
+    }
+    (predicate.json || []).forEach(function (check) { if (typeof check.equals === "string") check.equals = bindExtractValue(check.equals, bindings); });
+    return predicate;
+  }
+
+  function requestConsumesExtract(request) {
+    var encoded = JSON.stringify({ url: request.url, body_text: request.body_text, headers: request.headers, success: request.success });
+    return encoded.indexOf("{{extract:") !== -1;
+  }
+
+  function namespaceExtracts(requests, namespace, allowPriorExtracts) {
     var bindings = {}, output = clone(requests), count = 0;
     output.forEach(function (request) {
-      if ((request.url && request.url.indexOf("{{extract:") !== -1) || (request.body_text && request.body_text.indexOf("{{extract:") !== -1) || (request.headers || []).some(function (header) { return header.value.indexOf("{{extract:") !== -1; })) throw new Error("setup_requests cannot consume extracts produced by the same setup group");
+      if (!allowPriorExtracts && requestConsumesExtract(request)) throw new Error("setup_requests cannot consume extracts produced by the same setup group");
       (request.extract || []).forEach(function (rule) {
         var name = String(rule.name || "");
         if (!/^[A-Za-z0-9_.-]{1,40}$/.test(name)) throw new Error("setup extract names must be 1-40 ASCII letters, digits, dot, dash, or underscore");
@@ -121,6 +145,16 @@
     return { id: id, type: "race_group", technique: technique, attempt: attempt, requests: requests, options: options };
   }
 
+  function validationProvesPrivateMatch(definitions) {
+    var available = {}, proved = false;
+    definitions.forEach(function (definition) {
+      var success = JSON.stringify(definition.request.success || {}), match, pattern = /\{\{extract:([A-Za-z0-9_.-]+)\}\}/g;
+      while ((match = pattern.exec(success)) !== null) if (available[match[1]]) proved = true;
+      (definition.request.extract || []).forEach(function (rule) { available[String(rule.name || "")] = true; });
+    });
+    return proved;
+  }
+
   function plan(input, context) {
     if (input.allow_state_changes !== true) throw new Error("race testing requires allow_state_changes=true");
     var requestedTechnique = input.technique || "last_byte_sync";
@@ -130,37 +164,49 @@
     var raceDefinitions = templates(input, context, "requests", "race", input.success);
     var setupDefinitions = templates(input, context, "setup_requests", "setup", input.setup_success);
     var validationDefinitions = templates(input, context, "validation_requests", "validation", input.validation_success);
-    if (raceDefinitions.some(function (definition) { return Array.isArray(definition.request.extract) && definition.request.extract.length; }) || validationDefinitions.some(function (definition) { return Array.isArray(definition.request.extract) && definition.request.extract.length; })) throw new Error("response extraction is supported only on setup_requests");
-    if (setupDefinitions.some(function (definition) { return Array.isArray(definition.request.extract) && definition.request.extract.length && definition.copies !== 1; })) throw new Error("setup requests with extracts must use copies=1");
+    if (raceDefinitions.some(function (definition) { return Array.isArray(definition.request.extract) && definition.request.extract.length; })) throw new Error("response extraction is supported only on setup_requests and sequential validation_requests");
+    if (setupDefinitions.concat(validationDefinitions).some(function (definition) { return Array.isArray(definition.request.extract) && definition.request.extract.length && definition.copies !== 1; })) throw new Error("setup or validation requests with extracts must use copies=1");
+    var privateValidationProof = validationProvesPrivateMatch(validationDefinitions);
+    if ((input.pattern || "limit_overrun") === "time_sensitive" && !privateValidationProof) throw new Error("time_sensitive testing requires a later validation success predicate to consume an extract from an earlier validation request");
     var raceRequests = expand(raceDefinitions, 100, "race");
     var setupRequests = setupDefinitions.length ? expand(setupDefinitions, 20, "setup") : [];
-    var validationRequests = validationDefinitions.length ? expand(validationDefinitions, 20, "validation") : [];
     var timeout = boundedInteger(input.timeout_ms, 30000, 1000, 120000, "timeout_ms");
     var holdTimeout = boundedInteger(input.hold_timeout_ms, 5000, 100, 15000, "hold_timeout_ms");
     var options = { timeout_ms: timeout, hold_timeout_ms: holdTimeout };
     var controlMode = input.control_mode || "single_each";
     if (["none", "single_each", "full_group"].indexOf(controlMode) === -1) throw new Error("unsupported control_mode");
     var operations = [];
-    var hasExtracts = setupDefinitions.some(function (definition) { return Array.isArray(definition.request.extract) && definition.request.extract.length; });
+    var hasExtracts = setupDefinitions.concat(validationDefinitions).some(function (definition) { return Array.isArray(definition.request.extract) && definition.request.extract.length; });
     var extractsPerSetup = setupDefinitions.reduce(function (count, definition) { return count + (definition.request.extract || []).length; }, 0);
-    if (extractsPerSetup * (attempts + (controlMode === "none" ? 0 : 1)) > 256) throw new Error("setup extraction plan exceeds 256 bounded extracts; reduce attempts or extract rules");
+    var extractsPerValidation = validationDefinitions.reduce(function (count, definition) { return count + (definition.request.extract || []).length; }, 0);
+    if ((extractsPerSetup + extractsPerValidation) * (attempts + (controlMode === "none" ? 0 : 1)) > 256) throw new Error("race extraction plan exceeds 256 bounded extracts; reduce attempts or extract rules");
     function setup(id, attempt, namespace) {
       if (!setupRequests.length) return {};
-      var prepared = namespaceSetupExtracts(bindAttemptRequests(setupRequests, attempt), namespace);
+      var prepared = namespaceExtracts(bindAttemptRequests(setupRequests, attempt), namespace, false);
       operations.push(group(id, "sequential_control", attempt, prepared.requests, options));
       return prepared.bindings;
     }
     function bound(requests, attempt, bindings) { return bindExtractRequests(bindAttemptRequests(requests, attempt), bindings); }
-    function validate(id, attempt, bindings) { if (validationRequests.length) operations.push(group(id, "sequential_control", attempt, bound(validationRequests, attempt, bindings), options)); }
+    function validate(id, attempt, bindings, namespace) {
+      var current = clone(bindings);
+      validationDefinitions.forEach(function (definition, index) {
+        var requests = expand([definition], 20, "validation-" + index);
+        var consumed = bound(requests, attempt, current);
+        var prepared = namespaceExtracts(consumed, namespace + ".validation" + index, true);
+        operations.push(group(id + "-" + index, "sequential_control", attempt, prepared.requests, options));
+        Object.keys(prepared.bindings).forEach(function (name) { current[name] = prepared.bindings[name]; });
+      });
+      return current;
+    }
     if (controlMode !== "none") {
       var controlBindings = setup("setup-control", 0, "control");
       operations.push(group("control-0", "sequential_control", 0, bound(controlMode === "full_group" ? raceRequests : singleEach(raceDefinitions, "control"), 0, controlBindings), options));
-      validate("validate-control", 0, controlBindings);
+      validate("validate-control", 0, controlBindings, "control");
     }
     for (var attempt = 0; attempt < attempts; attempt += 1) {
       var attemptBindings = setup("setup-" + attempt, attempt, "attempt" + attempt);
       operations.push(group("race-" + attempt, hostTechnique, attempt, bound(raceRequests, attempt, attemptBindings), options));
-      validate("validate-" + attempt, attempt, attemptBindings);
+      validate("validate-" + attempt, attempt, attemptBindings, "attempt" + attempt);
     }
     return {
       execution: "sequential",
@@ -175,7 +221,10 @@
         control_mode: controlMode,
         setup_per_attempt: setupRequests.length,
         setup_extracts_per_attempt: extractsPerSetup,
-        validation_per_attempt: validationRequests.length,
+        validation_per_attempt: validationDefinitions.reduce(function (count, definition) { return count + definition.copies; }, 0),
+        validation_groups_per_attempt: validationDefinitions.length,
+        validation_extracts_per_attempt: extractsPerValidation,
+        private_validation_proof: privateValidationProof,
         semantic_success: !!input.success || raceDefinitions.some(function (item) { return !!item.request.success; }),
         no_fallback: requestedTechnique === "h2_single_packet" ? "The host must use one real HTTP/2 packet or return protocol_incompatible." : null
       }
@@ -202,30 +251,58 @@
     return values.length > 0 && values.every(function (response) { return isSuccess(response, input); });
   }
 
+  function validationGroups(map, prefix, input) {
+    var count = Array.isArray(input.validation_requests) ? input.validation_requests.length : 0, output = [];
+    for (var index = 0; index < count; index += 1) output.push(map[prefix + "-" + index]);
+    return output;
+  }
+
   function analyze(input, observations) {
     var map = byId(observations), attempts = boundedInteger(input.attempts, 3, 1, 20, "attempts");
     var controlMode = input.control_mode || "single_each", control = map["control-0"];
     var maximum = boundedInteger(input.expected_max_successes, 1, 0, 100, "expected_max_successes");
     var controlSignatures = {};
     responses(control).forEach(function (response) { controlSignatures[signature(response)] = true; });
-    var anomalous = [], novel = [], diagnostics = [], supporting = [];
+    var privateValidationProof = validationProvesPrivateMatch(templates(input, {}, "validation_requests", "validation", input.validation_success));
+    var anomalous = [], novel = [], diagnostics = [], supporting = [], timeSensitiveEvidence = [], timeSensitiveAttempts = 0;
     for (var attempt = 0; attempt < attempts; attempt += 1) {
-      var race = map["race-" + attempt], setup = map["setup-" + attempt], validation = map["validate-" + attempt];
+      var race = map["race-" + attempt], setup = map["setup-" + attempt], validations = validationGroups(map, "validate-" + attempt, input);
       var groupResponses = responses(race), successes = groupResponses.filter(function (response) { return isSuccess(response, input); }).length;
       var semantic = groupResponses.some(function (response) { return response && response.success && typeof response.success.matched === "boolean"; });
       var setupPassed = !setup || groupSucceeded(setup, input);
-      var validationPassed = !validation || groupSucceeded(validation, input);
+      var validationPassed = !validations.length || validations.every(function (validation) { return groupSucceeded(validation, input); });
       var synchronized = input.technique === "parallel" || (race && race.synchronized === true);
       if (input.technique === "sequential") synchronized = false;
       var newSignatures = groupResponses.map(signature).filter(function (value) { return control && !controlSignatures[value]; });
       var qualifies = setupPassed && validationPassed && input.technique !== "sequential" && (synchronized || input.technique === "parallel");
-      if (qualifies && successes > maximum) { anomalous.push(race); supporting.push(setup, validation); }
+      if (qualifies && successes > maximum) { anomalous.push(race); supporting.push(setup);supporting=supporting.concat(validations); }
+      if (qualifies && (input.pattern || "limit_overrun") === "time_sensitive" && privateValidationProof && groupResponses.length >= 2 && successes === groupResponses.length) { timeSensitiveAttempts += 1; timeSensitiveEvidence.push(setup,race);timeSensitiveEvidence=timeSensitiveEvidence.concat(validations); }
       if (qualifies && control && newSignatures.length) novel.push(race);
       var operationErrors = race && race.error ? [race.error] : [];
       diagnostics.push({ attempt: attempt, synchronized: !!synchronized, release_skew_ms: race && race.release_skew_ms, successes: successes, semantic_success_used: semantic, setup_passed: setupPassed, validation_passed: validationPassed, novel_signatures: newSignatures, errors: operationErrors.concat(groupResponses.filter(function (response) { return !!response.error; }).map(function (response) { return response.error; })) });
     }
     var findings = [], requiredRepeats = Math.min(2, attempts);
-    if (anomalous.length >= requiredRepeats) {
+    if (timeSensitiveAttempts >= requiredRepeats) {
+      findings.push({
+        title: "Reproducible time-sensitive state collision",
+        severity: "high",
+        confidence: "firm",
+        explanation: "Multiple synchronized attempts satisfied a private post-race comparison between independently fetched artifacts. Extracted values remained inside the host and were not returned to the plugin.",
+        remediation: "Use cryptographically random per-operation values and avoid deriving security tokens solely from coarse timestamps or shared mutable state.",
+        evidence_exchange_ids: evidence(timeSensitiveEvidence.filter(Boolean)),
+        metadata: { pattern: "time_sensitive", technique: input.technique || "last_byte_sync", anomalous_attempts: timeSensitiveAttempts, private_validation: true }
+      });
+    } else if (timeSensitiveAttempts > 0) {
+      findings.push({
+        title: "Time-sensitive state collision observed",
+        severity: "medium",
+        confidence: "tentative",
+        explanation: "One synchronized attempt satisfied the private post-race artifact comparison, but it did not repeat enough times for firm confirmation.",
+        remediation: "Use cryptographically random per-operation values and repeat a bounded confirmation with fresh state.",
+        evidence_exchange_ids: evidence(timeSensitiveEvidence.filter(Boolean)),
+        metadata: { pattern: "time_sensitive", technique: input.technique || "last_byte_sync", anomalous_attempts: timeSensitiveAttempts, private_validation: true }
+      });
+    } else if (anomalous.length >= requiredRepeats) {
       findings.push({
         title: "Reproducible race-condition limit overrun",
         severity: "high",

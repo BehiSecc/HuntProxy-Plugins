@@ -25,7 +25,7 @@ const input = {
 
 const plan = racer.plan(input, context);
 assert.equal(plan.execution, "sequential");
-assert.deepEqual(Array.from(plan.operations, (operation) => operation.id), ["setup-0", "race-0", "validate-0", "setup-1", "race-1", "validate-1"]);
+assert.deepEqual(Array.from(plan.operations, (operation) => operation.id), ["setup-0", "race-0", "validate-0-0", "setup-1", "race-1", "validate-1-0"]);
 assert.equal(plan.operations[1].technique, "last_byte_sync");
 assert.equal(plan.operations[1].requests.length, 3);
 assert.equal(plan.operations[1].requests[0].url, "https://example.test/apply");
@@ -116,10 +116,10 @@ function group(id, responses, synchronized = false) {
 const observations = [
   group("setup-0", [response("reset", 100, true)]),
   group("race-0", [response("a", 101, true), response("b", 102, true), response("c", 103, false)], true),
-  group("validate-0", [response("state", 104, true)]),
+  group("validate-0-0", [response("state", 104, true)]),
   group("setup-1", [response("reset", 110, true)]),
   group("race-1", [response("a", 111, true), response("b", 112, true), response("c", 113, false)], true),
-  group("validate-1", [response("state", 114, true)]),
+  group("validate-1-0", [response("state", 114, true)]),
 ];
 const result = racer.analyze(input, observations, context);
 assert.equal(result.findings.length, 1);
@@ -138,6 +138,47 @@ const oneHit = racer.analyze(input, [
 ], context);
 assert.equal(oneHit.findings.length, 1);
 assert.equal(oneHit.findings[0].confidence, "tentative");
+
+const timeSensitiveInput = {
+  allow_state_changes: true,
+  pattern: "time_sensitive",
+  technique: "h2_single_packet",
+  control_mode: "none",
+  attempts: 2,
+  expected_max_successes: 2,
+  requests: [{ method: "POST", url: "https://example.test/reset", copies: 2, success: { status_codes: [200] } }],
+  validation_requests: [{
+    method: "GET",
+    url: "https://example.test/message/one",
+    extract: [{ from: "body_regex", name: "token_a", pattern: "token=([^&]+)", group: 1 }],
+  }, {
+    method: "GET",
+    url: "https://example.test/message/two",
+    success: { body_contains: "{{extract:token_a}}" },
+  }],
+};
+const timePlan = racer.plan(timeSensitiveInput, context);
+assert.deepEqual(Array.from(timePlan.operations, (operation) => operation.id), ["race-0", "validate-0-0", "validate-0-1", "race-1", "validate-1-0", "validate-1-1"]);
+assert.equal(timePlan.result.private_validation_proof, true);
+assert.equal(timePlan.operations[1].requests[0].extract[0].name, "token_a.attempt0.validation0");
+assert.equal(timePlan.operations[2].requests[0].success.body_contains, "{{extract:token_a.attempt0.validation0}}");
+assert.throws(() => racer.plan({ ...timeSensitiveInput, validation_requests: [{ method: "GET", url: "https://example.test/message", success: { status_codes: [200] } }] }, context), /requires a later validation success predicate/);
+const timeObservations = [
+  group("race-0", [response("a", 500, true), response("b", 501, true)], true),
+  group("validate-0-0", [response("first", 502, true)]),
+  group("validate-0-1", [response("second", 503, true)]),
+  group("race-1", [response("a", 510, true), response("b", 511, true)], true),
+  group("validate-1-0", [response("first", 512, true)]),
+  group("validate-1-1", [response("second", 513, true)]),
+];
+const timeResult = racer.analyze(timeSensitiveInput, timeObservations, context);
+assert.equal(timeResult.findings.length, 1);
+assert.equal(timeResult.findings[0].confidence, "firm");
+assert.equal(timeResult.findings[0].metadata.private_validation, true);
+const failedPrivateComparison = timeObservations.map((observation) => observation.id.startsWith("validate-") && observation.id.endsWith("-1")
+  ? { ...observation, responses: observation.responses.map((item) => ({ ...item, success: { matched: false } })) }
+  : observation);
+assert.equal(racer.analyze(timeSensitiveInput, failedPrivateComparison, context).findings.length, 0);
 
 const rejected = observations.map((observation) => observation.id.startsWith("race-")
   ? { ...observation, responses: observation.responses.map((item) => ({ ...item, success: { matched: false } })) }

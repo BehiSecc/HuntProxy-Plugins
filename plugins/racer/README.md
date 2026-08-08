@@ -21,12 +21,15 @@ header values for race, setup, and validation requests. This supports unique
 usernames, emails, idempotency keys, and similar per-attempt state without raw
 byte-offset scripting. It is deliberately rejected in `body_base64`.
 
-Setup requests can privately extract a bounded body-regex, header, or JSON
-value and bind it into later race and validation URL, `body_text`, or header
-values with `{{extract:name}}`. Values are unique per attempt, never returned
-in plugin results, and required-extract failures stop the remaining plan.
-Extraction from a race response, chaining within one setup group, arbitrary
-scripts, and `body_base64` substitution remain unsupported.
+Setup and ordered validation requests can privately extract a bounded
+body-regex, header, or JSON value. Later requests can bind it into URL,
+`body_text`, headers, and literal semantic predicates with
+`{{extract:name}}`. Values are unique per attempt, never returned in plugin
+results, and required-extract failures stop the remaining plan. A
+`time_sensitive` finding specifically requires a later validation predicate to
+match a value extracted from an earlier independent validation response.
+Extraction from a raced response, setup-group chaining, arbitrary scripts,
+regex interpolation, and `body_base64` substitution remain unsupported.
 
 Techniques are `sequential`, ordinary `parallel`, exact HTTP/1
 `last_byte_sync`, and `h2_single_packet`. The HTTP/2 technique negotiates ALPN

@@ -41,12 +41,13 @@ override the saved request through the normal Reply materialization path.
 `use_project_cookies` defaults to true so inline last-byte requests can use the
 host-managed cookie jar without placing session values in plugin input.
 
-A `sequential_control` setup request may declare up to 16 response `extract`
-rules (`body_regex`, `header`, or `json`). Sequential plans with
+A `sequential_control` setup or validation request may declare up to 16
+response `extract` rules (`body_regex`, `header`, or `json`). Sequential plans with
 `stop_on_error: true` can reference them later as `{{extract:name}}` in typed
-URL, `body_text`, and header values. Names are unique across the plan, values
-are capped at 8 KiB each/64 KiB total, and only names—not values—reach plugin
-analysis. A plan may contain at most 256 extracts.
+URL, `body_text`, header values, literal body/header/redirect predicates, and
+string JSON equality predicates. Regex interpolation is rejected. Names are
+unique across the plan, values are capped at 8 KiB each/64 KiB total, and only
+names—not values—reach plugin analysis. A plan may contain at most 256 extracts.
 
 Responses include the host-evaluated semantic predicate without returning the
 matched body:
