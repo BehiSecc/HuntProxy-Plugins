@@ -1,18 +1,28 @@
 # Racer
 
-Racer models limit-overrun, multi-endpoint, object-state, partial-construction,
-time-sensitive, and deferred race tests. Each job first runs an equivalent
-sequential control, then at least two synchronized attempts. One request shape
-is repeated; multiple `exchange_ids` are released together for multi-endpoint
-tests. All state-changing execution requires `allow_state_changes=true`.
+Racer runs bounded same-request and multi-endpoint tests for limit overruns,
+object-state collisions, partial construction, time-sensitive flows, and
+deferred processing. Every state-changing job requires
+`allow_state_changes=true`.
 
-The required `race_group` host contract is documented in
-`RACE_GROUP_CONTRACT.md`. Parallel and HTTP/1 last-byte synchronization are not
-called single-packet attacks. `h2_single_packet` must release the final HTTP/2
-DATA fragments in one real TCP packet or fail with `protocol_incompatible`.
+Requests can inherit a saved exchange or be supplied as an unsent inline
+template. Each shape has its own copy count and optional semantic success
+predicate. Predicates can match status codes, headers, body text or regexes,
+JSON pointers, and redirect locations. Prefer them over `success_statuses`:
+many applications return HTTP 200 for both accepted and rejected operations.
 
-The plugin is enabled for sequential controls, bounded parallel dispatch, and
-real HTTP/1 last-byte synchronization. HuntProxy does not yet implement true
-HTTP/2 single-packet release, so that requested technique returns an explicit
-`protocol_incompatible` observation and never falls back. Its other techniques
-remain usable.
+For one-shot transitions, use `control_mode: "none"`. `single_each` runs one
+copy of each distinct shape as a low-impact benchmark, while `full_group`
+preserves the older full sequential comparison. Optional `setup_requests` run
+before the control and every attempt; `validation_requests` run afterward and
+must all match for an attempt to qualify. These requests are intentionally
+static and bounded; workflows requiring tokens extracted dynamically between
+steps should prepare the state separately.
+
+Techniques are `sequential`, ordinary `parallel`, and exact HTTP/1
+`last_byte_sync`. Parallel and last-byte synchronization are not described as
+single-packet attacks. HuntProxy does not currently implement true HTTP/2
+single-packet release, so `h2_single_packet` returns an explicit
+`protocol_incompatible` observation and never falls back.
+
+See `RACE_GROUP_CONTRACT.md` for the host operation format.
