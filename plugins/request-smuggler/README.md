@@ -1,8 +1,9 @@
 # Request Smuggler
 
 `scan` is a bounded HTTP/1 desynchronization scanner. It measures the normal
-target and a harmless marker path, then alternates an independent clean control,
-an ambiguous pipeline, a victim request, and a recovery request. This catches
+target and a harmless marker path, establishes every selected technique's clean
+controls before sending any ambiguous request, then uses dedicated post-probe
+observers. This catches
 both same-client-socket effects and contamination that emerges through a pooled
 backend connection after the front end closes the original client connection.
 CL.TE, TE.CL, TE.TE permutations, and CL.0 use a marker oracle. CL.0 leaves
@@ -31,7 +32,7 @@ request on one established connection. Set `connection_state_host` and
 uses a unique subdomain of the target and the probe path.
 
 The default five-cycle gate requires at least three marker confirmations and
-zero contaminated controls before producing a firm finding. Repeated timeouts
+every front-loaded control to remain clean before producing a firm finding. Repeated timeouts
 without marker contamination are reported only as tentative parser-discrepancy
 candidates. Requests run sequentially and every exchange is tagged with its
 operation ID.
@@ -45,8 +46,8 @@ The HTTP/2 families use HuntProxy's ordered raw HPACK fields without semantic
 normalization. They cover H2.CL, H2.TE, CRLF header-value injection, CRLF
 request splitting, header-name tunnelling, and pseudo-path tunnelling. The host
 requires HTTPS with ALPN `h2`, preserves duplicate and malformed field order,
-and never falls back to HTTP/1. H2 probes use the same independent
-control/probe/victim/recovery oracle as HTTP/1. Tunnelling is only firm when a
+and never falls back to HTTP/1. H2 probes use the same front-loaded control and
+dedicated post-probe observer oracle as HTTP/1. Tunnelling is only firm when a
 nested HTTP/1 response is repeatedly visible in the HTTP/2 response body.
 `tunnel_path` selects the harmless inner response and `tunnel_outer_path`
 selects a shorter outer response (default `/login`). A separate header-name

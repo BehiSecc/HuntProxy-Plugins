@@ -200,9 +200,15 @@
         operations.push(rawH2("h2-direct-canary-" + h2Direct, set.parsed, { headers: h2Headers(set.parsed, "GET", set.canary_path, set.inherited), body: "" }, input));
       }
     }
+    // Establish every clean baseline before any ambiguous request can taint a
+    // reused upstream pool. Post-probe observations are separate requests and
+    // are never recycled as controls for a later cycle.
     set.items.forEach(function (technique, index) {
-      if (technique.mode !== "zero_cl_pair") return;
-      for (var controlRepeat = 0; controlRepeat < repeats; controlRepeat += 1) operations.push(raw("control-" + index + "-" + controlRepeat, set.parsed, technique.request.victim, input));
+      for (var controlRepeat = 0; controlRepeat < repeats; controlRepeat += 1) {
+        if (technique.mode === "zero_cl_pair") operations.push(raw("control-" + index + "-" + controlRepeat, set.parsed, technique.request.victim, input));
+        else if (isH2Mode(technique.mode)) operations.push(rawH2("control-" + index + "-" + controlRepeat, set.parsed, { headers: h2Headers(set.parsed, "GET", set.path, set.inherited), body: "" }, input));
+        else operations.push(raw("control-" + index + "-" + controlRepeat, set.parsed, technique.mode === "connection_state" ? technique.request : normalGet(set.path, set.parsed, set.inherited, true), input));
+      }
     });
     set.items.forEach(function (technique, index) {
       if (technique.mode === "zero_cl_pair") {
@@ -217,26 +223,22 @@
         return;
       }
       for (var repeat = 0; repeat < repeats; repeat += 1) {
-        var clean = normalGet(set.path, set.parsed, set.inherited, true), control = clean, victim = clean, probe = technique.request;
+        var clean = normalGet(set.path, set.parsed, set.inherited, true), probe = technique.request;
         if (technique.mode === "connection_state") {
-          control = technique.request;
           probe = normalGet(set.path, set.parsed, set.inherited, false) + withHost(set.connection_path, set.parsed, set.inherited, set.connection_host, true);
         }
         if(technique.mode==="pause"){
-          operations.push(raw("control-"+index+"-"+repeat,set.parsed,control,input));
           operations.push(rawPause("probe-"+index+"-"+repeat,set.parsed,probe,input));
-          operations.push(raw("victim-"+index+"-"+repeat,set.parsed,victim,input));
-          operations.push(raw("recovery-"+index+"-"+repeat,set.parsed,clean,input));
+          operations.push(raw("observer-"+index+"-"+repeat+"-0",set.parsed,clean,input));
+          operations.push(raw("observer-"+index+"-"+repeat+"-1",set.parsed,clean,input));
         } else if (isH2Mode(technique.mode)) {
-          operations.push(rawH2("control-" + index + "-" + repeat, set.parsed, { headers: h2Headers(set.parsed, "GET", set.path, set.inherited), body: "" }, input));
           operations.push(rawH2("probe-" + index + "-" + repeat, set.parsed, probe, input));
-          operations.push(rawH2("victim-" + index + "-" + repeat, set.parsed, { headers: h2Headers(set.parsed, "GET", set.path, set.inherited), body: "" }, input));
-          operations.push(rawH2("recovery-" + index + "-" + repeat, set.parsed, { headers: h2Headers(set.parsed, "GET", set.path, set.inherited), body: "" }, input));
+          operations.push(rawH2("observer-" + index + "-" + repeat + "-0", set.parsed, { headers: h2Headers(set.parsed, "GET", set.path, set.inherited), body: "" }, input));
+          operations.push(rawH2("observer-" + index + "-" + repeat + "-1", set.parsed, { headers: h2Headers(set.parsed, "GET", set.path, set.inherited), body: "" }, input));
         } else {
-          operations.push(raw("control-" + index + "-" + repeat, set.parsed, control, input));
           operations.push(raw("probe-" + index + "-" + repeat, set.parsed, probe, input));
-          operations.push(raw("victim-" + index + "-" + repeat, set.parsed, victim, input));
-          operations.push(raw("recovery-" + index + "-" + repeat, set.parsed, clean, input));
+          operations.push(raw("observer-" + index + "-" + repeat + "-0", set.parsed, clean, input));
+          operations.push(raw("observer-" + index + "-" + repeat + "-1", set.parsed, clean, input));
         }
       }
     });
@@ -292,15 +294,15 @@
       var h2Mode=isH2Mode(technique.mode),baseDirect=h2Mode?h2BaseDirect:h1BaseDirect,canaryDirect=h2Mode?h2CanaryDirect:h1CanaryDirect;
       var directStable=h2Mode?h2Stable:h1Stable,baseSignature=segments(baseDirect[0])[0],canarySignature=segments(canaryDirect[0])[0];
       var canaryDistinct=directStable&&baseSignature&&canarySignature&&(baseSignature.status!==canarySignature.status||!sameSegment(baseSignature,canarySignature));
-      var controls = [], probes = [], victims = [], recoveries = [], observers = [], clean = 0, contaminated = 0, divergentVictims = 0, timeouts = 0, observerCount = technique.mode === "zero_cl_pair" ? Math.max(1, Math.min(Number(input.zero_cl_observers || 2), 5)) : 0;
+      var controls = [], probes = [], victims = [], recoveries = [], observers = [], clean = 0, contaminated = 0, divergentVictims = 0, timeouts = 0, observerCount = technique.mode === "zero_cl_pair" ? Math.max(1, Math.min(Number(input.zero_cl_observers || 2), 5)) : 2;
       for (var repeat = 0; repeat < repeats; repeat += 1) {
         var control = map["control-" + index + "-" + repeat], probe = map["probe-" + index + "-" + repeat], victim=map["victim-"+index+"-"+repeat], recovery=map["recovery-"+index+"-"+repeat]; controls.push(control); probes.push(probe); victims.push(victim); recoveries.push(recovery);
-        var repeatObservers=[];for(var observer=0;observer<observerCount;observer+=1){var observed=map["observer-"+index+"-"+repeat+"-"+observer];repeatObservers.push(observed);observers.push(observed);}
+        var repeatObservers=[];for(var observer=0;observer<observerCount;observer+=1){var observed=map["observer-"+index+"-"+repeat+"-"+observer];repeatObservers.push(observed);observers.push(observed);}if(technique.mode!=="zero_cl_pair"&&repeatObservers.every(function(item){return !item;})){repeatObservers=[victim,recovery];observers.push(victim,recovery);}
         var controlSegments = segments(control), controlClean = hasResult(control) && outcome(control) !== "timeout" && controlSegments.length >= 1 && controlSegments.every(function (segment) { return !canaryDistinct || !matchesCanary(segment, canarySignature, baseSignature); }); if (controlClean) clean += 1;
         var probeSegments=segments(probe), victimSegments=segments(victim), recoverySegments=segments(recovery),observerSegments=[];repeatObservers.forEach(function(item){observerSegments=observerSegments.concat(segments(item));});var downstream=probeSegments.concat(victimSegments,recoverySegments,observerSegments);
         if (technique.mode === "zero_cl_pair") {
           var mutantControl=segments(control)[0], mutantVictim=victimSegments[0];
-          if (mutantControl && matchesBase(mutantControl,baseSignature) && downstream.some(function(segment){return matchesCanary(segment,canarySignature,baseSignature);})) contaminated += 1;
+          if (canaryDistinct && mutantControl && matchesBase(mutantControl,baseSignature) && downstream.some(function(segment){return matchesCanary(segment,canarySignature,baseSignature);})) contaminated += 1;
         } else if (technique.mode === "connection_state") {
           var directHost=segments(control)[0], indirectHost=probeSegments.length > 1 ? probeSegments[probeSegments.length-1] : null;
           if (directHost && indirectHost && directHost.status !== indirectHost.status && matchesBase(probeSegments[0],baseSignature)) contaminated += 1;

@@ -36,6 +36,12 @@ function context(url = "https://example.test/account") {
   const clZeroAttack = Buffer.from(clZero.operations.find((operation) => operation.id === "probe-0-0").request_base64, "base64").toString();
   assert.match(clZeroAttack, /GET \/hp-abc12345-not-found HTTP\/1\.1\r\nX-HuntProxy-Desync: abc12345GET \/resources\/images\/blog\.svg HTTP\/1\.1/);
   assert.doesNotMatch(clZeroAttack, /GET \/hp-abc12345-not-found HTTP\/1\.1\r\nHost:/);
+  const pooled = plugin.plan({ ...input, families: ["cl_te", "te_cl"] }, ctx);
+  const firstPooledProbe = pooled.operations.findIndex((operation) => operation.id.startsWith("probe-"));
+  assert.ok(pooled.operations.filter((operation) => operation.id.startsWith("control-")).every((operation) => pooled.operations.indexOf(operation) < firstPooledProbe));
+  assert.ok(pooled.operations.findIndex((operation) => operation.id === "control-1-2") < firstPooledProbe, "all selected techniques establish controls before any probe");
+  assert.ok(pooled.operations.findIndex((operation) => operation.id === "observer-0-0-0") > pooled.operations.findIndex((operation) => operation.id === "probe-0-0"));
+  assert.equal(pooled.operations.some((operation) => /^(victim|recovery)-/.test(operation.id)), false, "post-pair observations are never reused as controls");
   const zeroCl = plugin.plan({ ...input, families: ["0_cl"], probe_path: "/resources/images/blog.svg" }, ctx);
   const zeroClPair = zeroCl.operations.find((operation) => operation.id === "pair-0-0");
   assert.equal(zeroClPair.type, "raw_http1_group");
@@ -68,8 +74,8 @@ function context(url = "https://example.test/account") {
   const observations = plan.operations.map((operation, index) => {
     const responses = operation.id.startsWith("direct-canary") ? [{ status: 404, body: "unique canary page" }]
       : operation.id === "control-0-1" ? [{ status: 200, body: "globally changed account state" }]
-      : operation.id.startsWith("control-") || operation.id.startsWith("recovery-") ? [{ status: 200, body: "normal account" }]
-      : operation.id.startsWith("victim-") ? [{ status: 404, body: "unique canary page" }]
+      : operation.id.startsWith("control-") ? [{ status: 200, body: "normal account" }]
+      : operation.id.startsWith("observer-") && operation.id.endsWith("-0") ? [{ status: 404, body: "unique canary page" }]
       : operation.id.startsWith("probe-") ? [{ status: 200, body: "normal account" }]
       : [{ status: 200, body: "normal account" }];
     return { id: operation.id, raw: { exchange_id: index + 200, ...wire(responses) } };
@@ -128,6 +134,17 @@ function context(url = "https://example.test/account") {
   assert.equal(delayedMarkerResult.findings[0].confidence, "tentative");
   assert.equal(delayedMarkerResult.findings[0].metadata.signal, "marker_contamination_unstable");
   assert.equal(delayedMarkerResult.findings[0].metadata.confirmations, 1);
+  const uniformEdgeObservations = unstablePlan.operations.map((operation, index) => {
+    if (operation.type === "raw_http1_group") return {
+      id: operation.id,
+      dispatch: "parallel_barrier",
+      members: operation.members.map((member, memberIndex) => ({ id: member.id, raw: { exchange_id: 900 + index * 2 + memberIndex, ...wire([{ status: 504, body: "edge timeout" }]) } })),
+    };
+    return { id: operation.id, raw: { exchange_id: 900 + index, ...wire([{ status: 504, body: "edge timeout" }]) } };
+  });
+  const uniformEdgeResult = plugin.analyze(unstableInput, uniformEdgeObservations, ctx);
+  assert.equal(uniformEdgeResult.findings.length, 0);
+  assert.equal(uniformEdgeResult.result.diagnostics[0].canary_confirmations, 0, "a non-distinct canary baseline cannot increment confirmations");
   const connectionObservations = connectionState.operations.map((operation, index) => {
     const responses = operation.id.startsWith("direct-canary") ? [{ status: 404, body: "canary" }]
       : operation.id.startsWith("control-") ? [{ status: 421, body: "invalid host" }]
@@ -162,7 +179,7 @@ function context(url = "https://example.test/account") {
   const largeNormal = "normal-page-".repeat(1200);
   const largeCanary = "canary-page-".repeat(1200);
   const teTeObservations = teTePlan.operations.map((operation, index) => {
-    const responses = operation.id.startsWith("direct-canary") || operation.id.startsWith("victim-")
+    const responses = operation.id.startsWith("direct-canary") || operation.id.startsWith("observer-")
       ? [{ status: 404, body: largeCanary }]
       : [{ status: 200, body: largeNormal }];
     return { id: operation.id, raw: { exchange_id: 500 + index, ...wire(responses) } };
@@ -183,7 +200,7 @@ function context(url = "https://example.test/account") {
   assert.ok(h2Probe.streams[0].headers.some((header) => header.name === "content-length" && header.value === "0"));
   assert.match(h2Probe.streams[0].body_text, /^GET \/hp-abc12345-not-found HTTP\/1\.1/);
   function h2Observation(operation, index) {
-    const status = operation.id.startsWith("h2-direct-canary") || operation.id.startsWith("victim-") ? 404 : 200;
+    const status = operation.id.startsWith("h2-direct-canary") || operation.id.startsWith("observer-") ? 404 : 200;
     return operation.type === "raw_http2" ? { id: operation.id, protocol: "h2", timed_out: false, streams: [{ id: `${operation.id}-stream`, exchange_id: 900 + index, status_code: status, response_body_base64: Buffer.from(status === 404 ? "canary" : "normal").toString("base64") }] }
       : { id: operation.id, raw: { exchange_id: 900 + index, ...wire([{ status: 200, body: "normal" }]) } };
   }
