@@ -92,6 +92,7 @@
       var headerValue = special[key] || pieces.slice(1).join("~") || markerValue + ".invalid";
       return { name: name, value: headerValue.replace(/%s/g, markerValue).replace(/%h/g, "invalid") };
     }
+    if (familyEnabled(input, "headers")) (input.headers || []).forEach(addHeader);
     (familyEnabled(input, "headers") ? [
       "X-Forwarded-Host", "X-Host", "X-Original-URL", "X-Rewrite-URL", "X-Forwarded-Scheme",
       "X-Forwarded-Proto", "X-Forwarded-Port", "Forwarded", "X-HTTP-Method-Override", "X-Method-Override",
@@ -99,7 +100,6 @@
       "X-Real-IP", "X-Forwarded-For", "True-Client-IP", "Client-IP", "Fastly-Host", "X-Cache-Key",
       "X-ProxyUser-IP", "X-Original-User-Agent", "X-Request-URI", "X-Accel-Redirect", "Authorization"
     ] : []).forEach(addHeader);
-    if (familyEnabled(input, "headers")) (input.headers || []).forEach(addHeader);
     if (familyEnabled(input, "headers") && input.use_header_wordlist !== false && context.resources && typeof context.resources.headers === "string") context.resources.headers.split(/\r?\n/).forEach(addHeader);
     var combinations = input.header_combinations || [["X-Forwarded-Host~%s.invalid", "X-Forwarded-Scheme~http"]];
     (familyEnabled(input, "header-combinations") ? combinations : []).slice(0, Math.max(0, Math.min(Number(input.max_header_combinations == null ? 12 : input.max_header_combinations), 20))).forEach(function (combination, index) {

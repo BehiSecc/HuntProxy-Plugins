@@ -149,6 +149,8 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.ok(strictHeaderPlan.operations.find((op) => op.id === "baseline-auth").url.includes("/.huntproxy-control-"), "strict header controls cannot pre-fill the shared target key");
   const strictNegative = strictHeaderPlan.operations.map((op) => observation(op, 200, op.id.startsWith("poison-") ? "shared-target" : "isolated-control", op.id.startsWith("poison-") ? "ordinary cached target" : "different control path"));
   assert.equal(plugin.analyze(strictHeaderInput, strictNegative, context("https://example.test/js/geolocate.js?callback=clean")).findings.length, 0, "shared header-key proof cannot use incomparable mutation fallback");
+  const explicitHeaderPlan = plugin.plan({ ...strictHeaderInput, headers: ["X-Forwarded-Host~%s.example.com"] }, context("https://example.test/"));
+  assert.match(explicitHeaderPlan.operations.find((op) => op.id === "poison-0").headers[0].value, /^hpmulti12345h0\.example\.com$/, "explicit header templates take priority over built-in fallback values");
   const fullQueryOnlyInput = { ...combinationInput, oracle_families: ["full-query"], full_query_oracle: true, allow_shared_cache_key_tests: true, max_poison_variants: 1 };
   const fullQueryOnlyPlan = plugin.plan(fullQueryOnlyInput, context());
   assert.equal(fullQueryOnlyPlan.operations.length, 5, "full-query-only scan has two controls and one poison/clean/confirm triple");
