@@ -39,6 +39,7 @@ const plan = plugin.plan(input, context());
 const mutations = Array.from(plan.result.mutations, (item) => item.name);
 for (const required of [
   "origin-remove", "origin-cross-site", "referer-remove", "referer-cross-site",
+  "origin-cross-site+token-remove", "referer-cross-site+token-remove", "control-invalid-all-tokens",
   "query-duplicate-invalid-first:csrf", "query-duplicate-invalid-last:csrf",
   "header-duplicate-invalid-first:X-CSRF-Token", "header-duplicate-invalid-last:X-CSRF-Token",
   "body-duplicate-invalid-first:csrf_token", "body-duplicate-invalid-last:csrf_token",
@@ -66,13 +67,28 @@ for (const item of observations.filter((entry) => entry.id.startsWith(`mutation-
   item.response_preview.text = `profile updated at 2026-08-08T08:00:${item.id.endsWith("0") ? "01" : "02"}Z token=${item.id}`;
   item.response_length = item.response_preview.text.length;
 }
+const combinedOriginIndex = mutations.indexOf("origin-cross-site+token-remove");
+for (const item of observations.filter((entry) => entry.id.startsWith(`mutation-${combinedOriginIndex}-`))) {
+  item.response_body_hash = null;
+  item.response_preview.text = `profile updated at 2026-08-08T08:00:${item.id.endsWith("0") ? "01" : "02"}Z token=${item.id}`;
+  item.response_length = item.response_preview.text.length;
+}
 const invalidIndex = mutations.indexOf("body-invalid:csrf_token");
 for (const item of observations.filter((entry) => entry.id.startsWith(`mutation-${invalidIndex}-`))) {
   item.status_code = 403; item.response_body_hash = "rejected"; item.response_preview.text = "request rejected";
 }
+const invalidAllIndex = mutations.indexOf("control-invalid-all-tokens");
+for (const item of observations.filter((entry) => entry.id.startsWith(`mutation-${invalidAllIndex}-`))) {
+  item.status_code = 403; item.response_body_hash = "rejected-all"; item.response_preview.text = "request rejected";
+}
 const result = plugin.analyze(input, observations, context());
-assert.ok(result.findings.some((finding) => finding.metadata.mutation === "origin-cross-site"), "dynamic successful responses compare semantically");
+assert.ok(result.findings.some((finding) => finding.metadata.mutation === "origin-cross-site+token-remove"), "combined dynamic successful responses compare semantically");
+assert.ok(!result.findings.some((finding) => finding.metadata.mutation === "origin-cross-site"), "isolated header acceptance with a valid token is diagnostic only");
 assert.ok(!result.findings.some((finding) => finding.metadata.mutation === "body-invalid:csrf_token"), "rejected token controls do not become findings");
+const combinedOrigin = plan.operations.find((op) => op.id.startsWith(`mutation-${combinedOriginIndex}-`));
+assert.ok(combinedOrigin.header_tombstones.includes("X-CSRF-Token"));
+assert.ok(combinedOrigin.query_params.some((part) => part.name === "csrf" && part.value === null));
+assert.ok(combinedOrigin.body_params.some((part) => part.name === "csrf_token" && part.value === null));
 assert.ok(result.result.outcomes.some((outcome) => outcome.kind === "session-binding"));
 
 const failed = plan.operations.map((operation) => observation(operation));

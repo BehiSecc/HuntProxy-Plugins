@@ -77,14 +77,38 @@
     if(remove) delete current[path[path.length-1]]; else current[path[path.length-1]]=replacement;
     return encode64(JSON.stringify(copy));
   }
+  function jsonChangedAll(value, paths, replacement, remove) {
+    var copy=JSON.parse(JSON.stringify(value));
+    paths.forEach(function(path){
+      var current=copy;
+      for(var index=0;index<path.length-1;index+=1) current=current && current[path[index]];
+      if(!current) return;
+      if(remove) delete current[path[path.length-1]]; else current[path[path.length-1]]=replacement;
+    });
+    return encode64(JSON.stringify(copy));
+  }
+  function mergePatch(left,right) {
+    var output={}, keys={}, arrayKeys={headers:true,header_tombstones:true,query_params:true,cookie_params:true,body_params:true};
+    Object.keys(left||{}).concat(Object.keys(right||{})).forEach(function(key){keys[key]=true;});
+    Object.keys(keys).forEach(function(key){
+      if(arrayKeys[key]) output[key]=(output[key]||[]).concat((left&&left[key])||[],(right&&right[key])||[]);
+      else if(right && Object.prototype.hasOwnProperty.call(right,key)) output[key]=right[key];
+      else if(left && Object.prototype.hasOwnProperty.call(left,key)) output[key]=left[key];
+    });
+    return output;
+  }
   function mutationList(input, context) {
     var exchange = base(context), data = raw(context), wanted = lowerSet(tokenNames(input)), values = [], seen = {};
     var invalid = "huntproxy-invalid-csrf", contentType = firstHeader(data, "content-type").toLowerCase();
-    function add(name, patch, kind) {
-      if (!seen[name]) { seen[name] = true; values.push({ name: name, patch: patch, kind: kind || "token" }); }
+    var combinedRemoval={}, combinedInvalid={}, tokenFields=0;
+    function add(name, patch, kind, negativeControl) {
+      if (!seen[name]) { seen[name] = true; values.push({ name: name, patch: patch, kind: kind || "token", negative_control: negativeControl || null }); }
     }
     queryParts(exchange.url).forEach(function (part) {
       if (!wanted[part.name.toLowerCase()]) return;
+      tokenFields+=1;
+      combinedRemoval=mergePatch(combinedRemoval,{query_params:[{name:part.name,value:null}]});
+      combinedInvalid=mergePatch(combinedInvalid,{query_params:[{name:part.name,value:invalid}]});
       add("query-remove:" + part.name, { query_params: [{ name: part.name, value: null }] });
       add("query-invalid:" + part.name, { query_params: [{ name: part.name, value: invalid }] });
       add("query-duplicate-invalid-first:" + part.name, { query_params: [{ name: part.name, value: invalid }, { name: part.name, value: part.value }] }, "duplicate-token");
@@ -92,6 +116,9 @@
     });
     data.ordered_headers.forEach(function (header) {
       if (!wanted[header.name.toLowerCase()]) return;
+      tokenFields+=1;
+      combinedRemoval=mergePatch(combinedRemoval,{header_tombstones:[header.name]});
+      combinedInvalid=mergePatch(combinedInvalid,{header_tombstones:[header.name],headers:[{name:header.name,value:invalid}]});
       add("header-remove:" + header.name, { header_tombstones: [header.name] });
       add("header-invalid:" + header.name, { headers: [{ name: header.name, value: invalid }] });
       add("header-duplicate-invalid-first:" + header.name, { header_tombstones: [header.name], headers: [{ name: header.name, value: invalid }, { name: header.name, value: header.value }] }, "duplicate-token");
@@ -101,6 +128,9 @@
       var parts = formParts(data.body);
       parts.forEach(function (part) {
         if (!wanted[part.name.toLowerCase()]) return;
+        tokenFields+=1;
+        combinedRemoval=mergePatch(combinedRemoval,{body_params:[{name:part.name,value:null}]});
+        combinedInvalid=mergePatch(combinedInvalid,{body_params:[{name:part.name,value:invalid}]});
         add("body-remove:" + part.name, { body_params: [{ name: part.name, value: null }] });
         add("body-invalid:" + part.name, { body_params: [{ name: part.name, value: invalid }] });
         var without = parts.filter(function (candidate) { return candidate.name.toLowerCase() !== part.name.toLowerCase(); }).map(function (candidate) { return candidate.raw; });
@@ -111,6 +141,7 @@
       try {
         var object = JSON.parse(data.body);
         var paths=[]; jsonTokenPaths(object,wanted,[],paths,0);
+        if(paths.length){tokenFields+=paths.length; combinedRemoval=mergePatch(combinedRemoval,{body_base64:jsonChangedAll(object,paths,invalid,true)}); combinedInvalid=mergePatch(combinedInvalid,{body_base64:jsonChangedAll(object,paths,invalid,false)});}
         paths.forEach(function (path) {
           var pointer=jsonPointer(path);
           add("json-remove:" + pointer, { body_base64: jsonChanged(object,path,invalid,true) });
@@ -119,24 +150,31 @@
       } catch (_) {}
     }
 
-    add("origin-remove", { header_tombstones: ["Origin"] }, "origin");
-    add("origin-null", { header_tombstones: ["Origin"], headers: [{ name: "Origin", value: "null" }] }, "origin");
-    add("origin-cross-site", { header_tombstones: ["Origin"], headers: [{ name: "Origin", value: String(input.cross_site_origin || "https://csrf.invalid") }] }, "origin");
-    add("referer-remove", { header_tombstones: ["Referer"] }, "referer");
-    add("referer-cross-site", { header_tombstones: ["Referer"], headers: [{ name: "Referer", value: String(input.cross_site_origin || "https://csrf.invalid") + "/huntproxy" }] }, "referer");
-    add("origin-and-referer-remove", { header_tombstones: ["Origin", "Referer"] }, "origin-referer");
-    add("origin-and-referer-cross-site", { header_tombstones: ["Origin", "Referer"], headers: [{ name: "Origin", value: String(input.cross_site_origin || "https://csrf.invalid") }, { name: "Referer", value: String(input.cross_site_origin || "https://csrf.invalid") + "/huntproxy" }] }, "origin-referer");
+    if(tokenFields) add("control-invalid-all-tokens",combinedInvalid,"token-negative-control");
+    function addDefense(name,patch,kind){
+      if(!tokenFields) return add(name,patch,kind);
+      add(name,patch,kind+"-diagnostic");
+      add(name+"+token-remove",mergePatch(combinedRemoval,patch),kind+"-token","control-invalid-all-tokens");
+    }
 
-    add("content-type-remove", { header_tombstones: ["Content-Type"] }, "content-type");
+    addDefense("origin-remove", { header_tombstones: ["Origin"] }, "origin");
+    addDefense("origin-null", { header_tombstones: ["Origin"], headers: [{ name: "Origin", value: "null" }] }, "origin");
+    addDefense("origin-cross-site", { header_tombstones: ["Origin"], headers: [{ name: "Origin", value: String(input.cross_site_origin || "https://csrf.invalid") }] }, "origin");
+    addDefense("referer-remove", { header_tombstones: ["Referer"] }, "referer");
+    addDefense("referer-cross-site", { header_tombstones: ["Referer"], headers: [{ name: "Referer", value: String(input.cross_site_origin || "https://csrf.invalid") + "/huntproxy" }] }, "referer");
+    addDefense("origin-and-referer-remove", { header_tombstones: ["Origin", "Referer"] }, "origin-referer");
+    addDefense("origin-and-referer-cross-site", { header_tombstones: ["Origin", "Referer"], headers: [{ name: "Origin", value: String(input.cross_site_origin || "https://csrf.invalid") }, { name: "Referer", value: String(input.cross_site_origin || "https://csrf.invalid") + "/huntproxy" }] }, "origin-referer");
+
+    addDefense("content-type-remove", { header_tombstones: ["Content-Type"] }, "content-type");
     if (contentType.indexOf("application/json") !== -1 || contentType.indexOf("application/x-www-form-urlencoded") !== -1) {
-      add("content-type-text-plain", { header_tombstones: ["Content-Type"], headers: [{ name: "Content-Type", value: "text/plain" }] }, "content-type");
+      addDefense("content-type-text-plain", { header_tombstones: ["Content-Type"], headers: [{ name: "Content-Type", value: "text/plain" }] }, "content-type");
     }
     if(contentType.indexOf("application/x-www-form-urlencoded") !== -1) {
       var methodQuery=formParts(data.body).filter(function(part){return !wanted[part.name.toLowerCase()];}).map(function(part){return {name:part.name,value:part.value};});
       queryParts(exchange.url).forEach(function(part){if(wanted[part.name.toLowerCase()]) methodQuery.push({name:part.name,value:null});});
-      add("method-get-form-query", { method: "GET", query_params: methodQuery, body_base64: encode64(""), header_tombstones: ["Content-Type", "Content-Length"] }, "method");
-    } else add("method-get-empty-body", { method: "GET", body_base64: encode64(""), header_tombstones: ["Content-Type", "Content-Length"] }, "method");
-    add("method-override-get", { headers: [{ name: "X-HTTP-Method-Override", value: "GET" }] }, "method");
+      add("method-get-form-query", mergePatch(combinedRemoval,{ method: "GET", query_params: methodQuery, body_base64: encode64(""), header_tombstones: ["Content-Type", "Content-Length"] }), "method-token",tokenFields?"control-invalid-all-tokens":null);
+    } else add("method-get-empty-body", mergePatch(combinedRemoval,{ method: "GET", body_base64: encode64(""), header_tombstones: ["Content-Type", "Content-Length"] }), tokenFields?"method-token":"method",tokenFields?"control-invalid-all-tokens":null);
+    addDefense("method-override-get", { headers: [{ name: "X-HTTP-Method-Override", value: "GET" }] }, "method");
 
     if (input.secondary_identity) {
       add("cross-session-original-token", {
@@ -166,7 +204,7 @@
     mutations.forEach(function (mutation, index) {
       for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("mutation-" + index + "-" + repeat, exchange, mutation.patch));
     });
-    return { operations: operations, result: { mutations: mutations.map(function (item) { return { name: item.name, kind: item.kind }; }), repeated_state_changes: operations.length, semantic_comparison: true } };
+    return { operations: operations, result: { mutations: mutations.map(function (item) { return { name: item.name, kind: item.kind, negative_control: item.negative_control }; }), repeated_state_changes: operations.length, semantic_comparison: true } };
   }
   function byId(items) { var map = {}; items.forEach(function (item) { map[item.id] = item; }); return map; }
   function preview(item) { return String(item && item.response_preview && item.response_preview.text || "").toLowerCase(); }
@@ -213,8 +251,11 @@
       var result = stablePair(map, "mutation-" + index + "-"), accepted = baselineSuccess && successful(result, input);
       var score = baseline && result ? similarity(baseline, result) : 0;
       var comparable = score >= 0.82 || (result && baseline && Math.floor(result.status_code / 100) === Math.floor(baseline.status_code / 100) && (result.status_code === 302 || includesMarker(result, input.success_markers)));
-      outcomes.push({ mutation: mutation.name, kind: mutation.kind, reproducible: !!result, accepted: !!accepted, baseline_similarity: Math.round(score * 1000) / 1000, error: result ? null : "unstable_or_failed" });
-      if (accepted && comparable) findings.push({
+      var negativeIndex=mutation.negative_control?mutations.map(function(item){return item.name;}).indexOf(mutation.negative_control):-1;
+      var negative=negativeIndex>=0?stablePair(map,"mutation-"+negativeIndex+"-"):null, negativeRejected=!mutation.negative_control || (!!negative && rejected(negative,input));
+      var diagnostic=/-diagnostic$/.test(mutation.kind);
+      outcomes.push({ mutation: mutation.name, kind: mutation.kind, reproducible: !!result, accepted: !!accepted, baseline_similarity: Math.round(score * 1000) / 1000, negative_control: mutation.negative_control, negative_control_rejected: !!negativeRejected, diagnostic_only: diagnostic, error: result ? null : "unstable_or_failed" });
+      if (!diagnostic && accepted && comparable && negativeRejected) findings.push({
         title: "CSRF defense bypass using " + mutation.name,
         severity: mutation.kind === "content-type" || mutation.kind === "method" ? "medium" : "high",
         confidence: score >= 0.9 ? "firm" : "tentative",

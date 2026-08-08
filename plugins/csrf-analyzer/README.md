@@ -2,13 +2,16 @@
 
 CSRFAnalyzer requires `allow_state_change=true` because it repeats the captured
 request. It independently tests token removal/mutation/duplication across form,
-query, and header locations; Origin and Referer absence/cross-site behavior;
+query, header, and nested JSON locations; Origin and Referer absence/cross-site behavior;
 method and content-type controls; and optional cross-session token binding with
 a second identity.
+
+When a token is present, isolated Origin, Referer, content-type, and override
+responses are diagnostic only. Findings require a combined token-removal probe
+plus a stable rejected invalid-token control, avoiding claims based on requests
+that still carry a valid token.
 
 Provide `success_markers` and `failure_markers` when HTTP status alone cannot
 prove the state change. The analyzer normalizes common volatile response fields
 and requires repeated agreement. It does not emulate browser SameSite behavior
-or automatically mutate nested JSON/multipart tokens; use a real browser flow
-for those cases.
-
+or automatically mutate multipart tokens; use a real browser flow for those cases.
