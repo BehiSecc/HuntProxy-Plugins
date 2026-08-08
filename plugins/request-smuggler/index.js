@@ -46,8 +46,9 @@
     return output.slice(0, 64);
   }
   function message(method, path, authority, inherited, extra, body, close) {
-    var lines = [method + " " + path + " HTTP/1.1", "Host: " + authority, "User-Agent: HuntProxy-Request-Smuggler/1.1"];
+    var lines = [method + " " + path + " HTTP/1.1", "Host: " + authority];
     inherited.forEach(function (line) { lines.push(line); });
+    if (!inherited.some(function (line) { return /^user-agent\s*:/i.test(line); })) lines.push("User-Agent: HuntProxy-Request-Smuggler/1.1");
     extra.forEach(function (line) { lines.push(line); });
     lines.push("Connection: " + (close ? "close" : "keep-alive"));
     return lines.join("\r\n") + "\r\n\r\n" + (body || "");
@@ -135,22 +136,28 @@
   function sameSegment(left, right) { return !!(left && right && left.status === right.status && similarity(left.text, right.text) >= 0.9); }
   function stable(left, right) {
     var a = segments(left), b = segments(right); if (!rawResult(left) || !rawResult(right) || outcome(left) !== outcome(right) || a.length !== b.length) return false;
-    for (var index = 0; index < a.length; index += 1) if (!sameSegment(a[index], b[index])) return false; return true;
+    for (var index = 0; index < a.length; index += 1) {
+      if (a[index].status !== b[index].status) return false;
+      var longest = Math.max(a[index].text.length, b[index].text.length, 1), shortest = Math.min(a[index].text.length, b[index].text.length);
+      if (!sameSegment(a[index], b[index]) && shortest / longest < 0.9) return false;
+    }
+    return true;
   }
+  function matchesCanary(segment, canary, base) { return !!(segment && canary && base && (canary.status !== base.status ? segment.status === canary.status : sameSegment(segment, canary))); }
   function evidence(items) { return items.map(function (item) { var value = rawResult(item); return value && value.exchange_id; }).filter(Boolean); }
   function analyze(input, observations, context) {
     var map = byId(observations), set = techniques(input, context), repeats = Math.max(3, Math.min(Number(input.repeats || 5), 5)), findings = [], diagnostics = [];
     var baseDirect = [map["direct-base-0"], map["direct-base-1"]], canaryDirect = [map["direct-canary-0"], map["direct-canary-1"]];
     var directStable = stable(baseDirect[0], baseDirect[1]) && stable(canaryDirect[0], canaryDirect[1]);
     var baseSignature = segments(baseDirect[0])[0], canarySignature = segments(canaryDirect[0])[0];
-    var canaryDistinct = directStable && baseSignature && canarySignature && !sameSegment(baseSignature, canarySignature);
+    var canaryDistinct = directStable && baseSignature && canarySignature && (baseSignature.status !== canarySignature.status || !sameSegment(baseSignature, canarySignature));
     var threshold = Math.max(3, Math.ceil(repeats * 0.6));
     set.items.forEach(function (technique, index) {
       var controls = [], probes = [], clean = 0, contaminated = 0, timeouts = 0;
       for (var repeat = 0; repeat < repeats; repeat += 1) {
         var control = map["control-" + index + "-" + repeat], probe = map["probe-" + index + "-" + repeat]; controls.push(control); probes.push(probe);
-        var controlSegments = segments(control); if (rawResult(control) && outcome(control) !== "timeout" && controlSegments.length >= 2 && controlSegments.every(function (segment) { return !canaryDistinct || !sameSegment(segment, canarySignature); })) clean += 1;
-        if (technique.confirmable && canaryDistinct && segments(probe).some(function (segment) { return sameSegment(segment, canarySignature) && !sameSegment(segment, baseSignature); })) contaminated += 1;
+        var controlSegments = segments(control); if (rawResult(control) && outcome(control) !== "timeout" && controlSegments.length >= 2 && controlSegments.every(function (segment) { return !canaryDistinct || !matchesCanary(segment, canarySignature, baseSignature); })) clean += 1;
+        if (technique.confirmable && canaryDistinct && segments(probe).some(function (segment) { return matchesCanary(segment, canarySignature, baseSignature) && !sameSegment(segment, baseSignature); })) contaminated += 1;
         if (outcome(probe) === "timeout" && outcome(control) !== "timeout") timeouts += 1;
       }
       var confirmed = directStable && canaryDistinct && clean === repeats && contaminated >= threshold;

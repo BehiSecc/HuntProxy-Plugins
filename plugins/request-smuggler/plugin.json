@@ -6,7 +6,7 @@
   "description": "Detect HTTP/1 request desynchronization with interleaved controls, parser permutations, and same-connection marker confirmation.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "903f589f293c3bf8efef872d67c0333bc3eee4fe550c4056dd57b46fd5b3cece",
+  "entrypoint_sha256": "4dec8e400dbb330e46694f525cea80a032a3bd6c9d2d964ce685e04c32a083a8",
   "capabilities": ["http.raw"],
   "limits": { "timeout_ms": 1200000, "max_operations": 250, "max_concurrency": 1, "memory_mb": 32 },
   "actions": [{
