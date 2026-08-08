@@ -197,6 +197,15 @@
     return op;
   }
 
+  function poisonAttemptObservations(map, index, attempts) {
+    var output = [];
+    for (var attempt = 0; attempt < attempts; attempt += 1) {
+      var id = attempt === 0 ? "poison-" + index : "poison-" + index + "-retry-" + attempt;
+      if (map[id]) output.push({ attempt: attempt, observation: map[id] });
+    }
+    return output;
+  }
+
   function plan(input, context) {
     if (input.allow_cache_side_effects !== true) throw new Error("cache testing requires allow_cache_side_effects=true");
     var exchange = base(context), token = marker(input), targetUrl = scanUrl(input, exchange), operations = [], controlUrl = targetUrl;
@@ -211,13 +220,20 @@
     operations.push(request("baseline-anon", exchange.exchange_id, exchange.method, addQuery(controlUrl, "hp_cache_bust", cacheBuster(token + ":control")), [], true));
     var modes = input.modes && input.modes.length ? input.modes : ["poisoning", "deception"];
     if (modes.indexOf("poisoning") !== -1) {
+      var poisonAttempts = Math.max(1, Math.min(Number(input.poison_attempts || 1), 20));
+      var poisonInterval = Math.max(0, Math.min(Number(input.poison_interval_ms || 0), 30000));
       poisonVariants(targetUrl, token, input, context).slice(0, Math.max(1, Math.min(Number(input.max_poison_variants || 304), 504))).forEach(function (variant, index) {
-        var poison = request("poison-" + index, exchange.exchange_id, exchange.method, variant.poison_url, variant.headers, false, variant.poison_cookies);
         var clean = request("poison-clean-" + index, exchange.exchange_id, exchange.method, variant.clean_url, variant.clean_headers || [], false, variant.clean_cookies);
         var confirm = request("poison-confirm-" + index, exchange.exchange_id, exchange.method, variant.clean_url, variant.clean_headers || [], false, variant.clean_cookies);
-        if (variant.poison_body_base64 != null) poison.body_base64 = variant.poison_body_base64;
+        for (var attempt = 0; attempt < poisonAttempts; attempt += 1) {
+          var poisonId = attempt === 0 ? "poison-" + index : "poison-" + index + "-retry-" + attempt;
+          var poison = request(poisonId, exchange.exchange_id, exchange.method, variant.poison_url, variant.headers, false, variant.poison_cookies);
+          if (variant.poison_body_base64 != null) poison.body_base64 = variant.poison_body_base64;
+          if (attempt > 0 && poisonInterval > 0) poison.delay_before_ms = poisonInterval;
+          operations.push(poison);
+        }
         if (variant.clean_body_base64 != null) { clean.body_base64 = variant.clean_body_base64; confirm.body_base64 = variant.clean_body_base64; }
-        operations.push(poison); operations.push(clean); operations.push(confirm);
+        operations.push(clean); operations.push(confirm);
       });
       if (familyEnabled(input, "url-normalization") && input.url_normalization_oracle === true) {
         if (input.allow_shared_cache_key_tests !== true) throw new Error("URL-normalization testing requires allow_shared_cache_key_tests=true");
@@ -236,7 +252,7 @@
         operations.push(request("deception-confirm-" + index, exchange.exchange_id, exchange.method, variant.url, [], true));
       });
     }
-    return { operations: operations, result: { marker: token, operation_count: operations.length, sequential_execution_required: true } };
+    return { operations: operations, result: { marker: token, operation_count: operations.length, poison_attempts: Math.max(1, Math.min(Number(input.poison_attempts || 1), 20)), sequential_execution_required: true } };
   }
 
   function byId(observations) {
@@ -317,21 +333,25 @@
     var baseLooksPrivate = authBase && anonBase && !same(authBase, anonBase);
     var modes = input.modes && input.modes.length ? input.modes : ["poisoning", "deception"];
     if (modes.indexOf("poisoning") !== -1) {
+      var poisonAttempts = Math.max(1, Math.min(Number(input.poison_attempts || 1), 20));
       poisonVariants(targetUrl, token, input, context).slice(0, Math.max(1, Math.min(Number(input.max_poison_variants || 304), 504))).forEach(function (variant, index) {
-        var poison = map["poison-" + index], clean = map["poison-clean-" + index], confirm = map["poison-confirm-" + index];
+        var attempts = poisonAttemptObservations(map, index, poisonAttempts), clean = map["poison-clean-" + index], confirm = map["poison-confirm-" + index];
         var expectedMarker = String(variant.marker || token).toLowerCase();
         var persistedMarker = evidenceText(clean).indexOf(expectedMarker) !== -1 && evidenceText(confirm).indexOf(expectedMarker) !== -1;
         var mutationComparable = /^(?:header:|headers:|query:)/.test(variant.name);
-        var persistedMutation = mutationComparable && poison && clean && confirm && same(poison, clean) && same(clean, confirm) && authBase && !same(authBase, clean);
-        if (poison && clean && confirm && same(clean, confirm) && (persistedMarker || persistedMutation)) {
+        var markerAttempt = attempts.find(function (item) { return evidenceText(item.observation).indexOf(expectedMarker) !== -1; });
+        var mutationAttempt = attempts.find(function (item) { return mutationComparable && clean && same(item.observation, clean); });
+        var proofAttempt = persistedMarker ? (markerAttempt || attempts[attempts.length - 1]) : mutationAttempt;
+        var persistedMutation = mutationComparable && proofAttempt && clean && confirm && same(clean, confirm) && authBase && !same(authBase, clean);
+        if (proofAttempt && clean && confirm && same(clean, confirm) && (persistedMarker || persistedMutation)) {
           findings.push({
             title: "Web cache poisoning via " + variant.name,
             severity: "high",
             confidence: cacheEvidence(clean) || cacheEvidence(confirm) ? "firm" : "tentative",
             explanation: "A unique marker supplied only by the poisoning request persisted in two clean responses for the cache-busted URL.",
             remediation: "Include the input in the cache key or reject it, and prevent untrusted values from influencing cached responses.",
-            evidence_exchange_ids: [poison.exchange_id, clean.exchange_id, confirm.exchange_id].filter(Boolean),
-            metadata: { variant: variant.name, subtype: variant.name === "full-query" ? "full-query" : variant.name, marker: token }
+            evidence_exchange_ids: [proofAttempt.observation.exchange_id, clean.exchange_id, confirm.exchange_id].filter(Boolean),
+            metadata: { variant: variant.name, subtype: variant.name === "full-query" ? "full-query" : variant.name, marker: token, poison_attempt: proofAttempt.attempt }
           });
         }
       });

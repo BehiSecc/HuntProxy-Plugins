@@ -161,6 +161,15 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const overridePlan = plugin.plan({ ...combinationInput, target_url: "https://example.test/js/geolocate.js?callback=clean", oracle_families: ["parameter-cloaking"], parameter_cloaking: [{ carrier: "utm_content", target: "callback", delimiter: ";" }], max_poison_variants: 1 }, context("https://example.test/harmless-baseline"));
   assert.ok(overridePlan.operations.find((op) => op.id === "poison-0").url.startsWith("https://example.test/js/geolocate.js?callback=clean&"), "same-origin target override leaves the target key untouched until plugin execution");
   assert.throws(() => plugin.plan({ ...combinationInput, target_url: "https://other.test/" }, context()), /base exchange origin/);
+  const pacedInput = { ...combinationInput, oracle_families: ["parameter-cloaking"], parameter_cloaking: [{ carrier: "utm_content", target: "callback", delimiter: ";" }], max_poison_variants: 1, poison_attempts: 3, poison_interval_ms: 500 };
+  const pacedPlan = plugin.plan(pacedInput, context());
+  assert.equal(pacedPlan.operations.length, 7, "three poison attempts precede clean and confirm after two isolated controls");
+  assert.equal(pacedPlan.operations.find((op) => op.id === "poison-0-retry-1").delay_before_ms, 500);
+  assert.equal(pacedPlan.operations.find((op) => op.id === "poison-0-retry-2").delay_before_ms, 500);
+  const pacedObservations = pacedPlan.operations.map((op) => observation(op, 200, "ordinary", "ordinary"));
+  for (const item of pacedObservations.filter((item) => ["poison-0-retry-1", "poison-clean-0", "poison-confirm-0"].includes(item.id))) item.response_preview.text = "hp multi hpmulti12345p0";
+  const pacedFinding = plugin.analyze(pacedInput, pacedObservations, context()).findings.find((finding) => finding.metadata.variant.startsWith("cloaking:"));
+  assert.equal(pacedFinding.metadata.poison_attempt, 1, "analysis attributes evidence to the marker-bearing poison retry");
   const shapePoisons = shapePlan.operations.filter((op) => /^poison-\d+$/.test(op.id));
   assert.ok(shapePoisons.some((op) => op.url === "https://example.test/admin?hpmulti12345q0"), "full-query oracle uses the query-free clean key");
   assert.ok(shapePoisons.some((op) => /utm_content=hpmulti12345k0;callback=/.test(op.url)), "literal delimiter is preserved on the wire with a shared unique carrier prefix");

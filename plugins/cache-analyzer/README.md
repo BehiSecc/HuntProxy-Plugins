@@ -37,6 +37,10 @@ fallbacks are limited to header/query probes with comparable control URLs.
 When merely saving the target request would fill a shared cache key, save any
 harmless request on the same origin and pass the untouched endpoint through
 `target_url`; cross-origin overrides are rejected.
+For targets that stay warm, opt into bounded `poison_attempts` and
+`poison_interval_ms`. Retries run sequentially before clean confirmation, and
+the finding cites the retry whose response carries the unique marker. Defaults
+remain one attempt and no extra delay.
 
 Deception mode covers appended static suffixes plus both sides of encoded path
 normalization: static-prefix traversal toward the private path, and private

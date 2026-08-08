@@ -2,11 +2,11 @@
   "schema_version": 1,
   "id": "cache-analyzer",
   "name": "CacheAnalyzer",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Test cache-key discrepancies, cache poisoning, and web cache deception with cache-busted controls and confirmation.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "5d51be9d9c4f0ada0234368707d9809f8b59690d8dce18e3e7026bf3b00f68bf",
+  "entrypoint_sha256": "d6d35b8700d9da678a044f2c85eb2c40b08c42c744b5ac8b8f42b6abf01eed6e",
   "resources": {
     "headers": { "path": "resources/headers", "sha256": "175619d3e49c28431b4ced6363ba63544771db298834195fd3ccb3fc422e9af7" },
     "cookies": { "path": "resources/cookies", "sha256": "dc1d66e40324e017c7020405f25376ccda9cdc6091c00d5e07720312e9ae585b" }
@@ -38,6 +38,8 @@
       "max_cookie_candidates": { "type": "integer", "minimum": 1, "maximum": 100, "default": 40 },
       "max_header_candidates": { "type": "integer", "minimum": 1, "maximum": 500, "default": 300 },
       "max_poison_variants": { "type": "integer", "minimum": 1, "maximum": 504, "default": 304 },
+      "poison_attempts": { "type": "integer", "minimum": 1, "maximum": 20, "default": 1, "description": "Bounded repeated poison requests sent before clean confirmation to catch short cache-expiry windows." },
+      "poison_interval_ms": { "type": "integer", "minimum": 0, "maximum": 30000, "default": 0, "description": "Cancel-aware delay before each poison retry; requires host delay support." },
       "static_extensions": { "type": "array", "maxItems": 10, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9]{1,12}$" }, "default": ["js", "css", "ico"] },
       "path_delimiters": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 12 }, "description": "Literal or percent-encoded delimiters to test before a static-looking suffix." },
       "static_directories": { "type": "array", "maxItems": 10, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,80}$" }, "description": "Static-directory cache prefixes for encoded traversal normalization probes." },
