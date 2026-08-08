@@ -41,6 +41,10 @@ For targets that stay warm, opt into bounded `poison_attempts` and
 `poison_interval_ms`. Retries run sequentially before clean confirmation, and
 the finding cites the retry whose response carries the unique marker. Defaults
 remain one attempt and no extra delay.
+Strict caches may reject any added query buster. In that case,
+`shared_header_cache_key_oracle=true` preserves the exact target URL, isolates
+the controls on another path, requires `allow_shared_cache_key_tests=true`, and
+accepts only persisted-marker evidence.
 
 Deception mode covers appended static suffixes plus both sides of encoded path
 normalization: static-prefix traversal toward the private path, and private

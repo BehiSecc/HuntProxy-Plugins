@@ -142,6 +142,13 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.deepEqual(Array.from(customCombination.headers, (header) => header.name), ["X-Host", "X-Forwarded-Proto"]);
 
   assert.throws(() => plugin.plan({ ...combinationInput, full_query_oracle: true }, context()), /allow_shared_cache_key_tests/);
+  assert.throws(() => plugin.plan({ ...combinationInput, shared_header_cache_key_oracle: true }, context()), /allow_shared_cache_key_tests/);
+  const strictHeaderInput = { ...combinationInput, oracle_families: ["headers"], shared_header_cache_key_oracle: true, allow_shared_cache_key_tests: true, max_poison_variants: 1 };
+  const strictHeaderPlan = plugin.plan(strictHeaderInput, context("https://example.test/js/geolocate.js?callback=clean"));
+  assert.equal(strictHeaderPlan.operations.find((op) => op.id === "poison-0").url, "https://example.test/js/geolocate.js?callback=clean", "strict header oracle preserves the target query exactly");
+  assert.ok(strictHeaderPlan.operations.find((op) => op.id === "baseline-auth").url.includes("/.huntproxy-control-"), "strict header controls cannot pre-fill the shared target key");
+  const strictNegative = strictHeaderPlan.operations.map((op) => observation(op, 200, op.id.startsWith("poison-") ? "shared-target" : "isolated-control", op.id.startsWith("poison-") ? "ordinary cached target" : "different control path"));
+  assert.equal(plugin.analyze(strictHeaderInput, strictNegative, context("https://example.test/js/geolocate.js?callback=clean")).findings.length, 0, "shared header-key proof cannot use incomparable mutation fallback");
   const fullQueryOnlyInput = { ...combinationInput, oracle_families: ["full-query"], full_query_oracle: true, allow_shared_cache_key_tests: true, max_poison_variants: 1 };
   const fullQueryOnlyPlan = plugin.plan(fullQueryOnlyInput, context());
   assert.equal(fullQueryOnlyPlan.operations.length, 5, "full-query-only scan has two controls and one poison/clean/confirm triple");

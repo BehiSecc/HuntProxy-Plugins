@@ -83,7 +83,7 @@
       var index = variants.length, markerValue = token + "h" + index;
       var headerValue = special[key] || pieces.slice(1).join("~") || markerValue + ".invalid";
       headerValue = headerValue.replace(/%s/g, markerValue).replace(/%h/g, "invalid");
-      var clean = addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":" + key));
+      var clean = input.shared_header_cache_key_oracle === true ? baseUrl : addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":" + key));
       variants.push({ name: "header:" + key, poison_url: clean, clean_url: clean, headers: [{ name: name, value: headerValue }], marker: markerValue });
     }
     function combinationHeader(value, markerValue) {
@@ -110,7 +110,7 @@
         names[key] = true; headers.push(header);
       });
       if (!valid || headers.length < 2) return;
-      var clean = addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":combination:" + index));
+      var clean = input.shared_header_cache_key_oracle === true ? baseUrl : addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":combination:" + index));
       combinationVariants.push({ name: "headers:" + headers.map(function (header) { return header.name.toLowerCase(); }).join("+"), poison_url: clean, clean_url: clean, headers: headers, marker: markerValue });
     });
     var cookieNames = [], cookieSeen = {}, cookieVariants = [];
@@ -208,10 +208,12 @@
 
   function plan(input, context) {
     if (input.allow_cache_side_effects !== true) throw new Error("cache testing requires allow_cache_side_effects=true");
+    if (input.shared_header_cache_key_oracle === true && input.allow_shared_cache_key_tests !== true) throw new Error("shared header cache-key testing requires allow_shared_cache_key_tests=true");
     var exchange = base(context), token = marker(input), targetUrl = scanUrl(input, exchange), operations = [], controlUrl = targetUrl;
     var isolatedShapeControls = (familyEnabled(input, "full-query") && input.full_query_oracle === true) ||
       (familyEnabled(input, "parameter-cloaking") && input.parameter_cloaking && input.parameter_cloaking.length) ||
-      (familyEnabled(input, "fat-get") && input.fat_get_parameters && input.fat_get_parameters.length);
+      (familyEnabled(input, "fat-get") && input.fat_get_parameters && input.fat_get_parameters.length) ||
+      (input.shared_header_cache_key_oracle === true && (familyEnabled(input, "headers") || familyEnabled(input, "header-combinations")));
     if (isolatedShapeControls) {
       var controlParsed = splitUrl(targetUrl), controlPath = controlParsed.path.replace(/\/$/, "");
       controlUrl = controlParsed.origin + controlPath + "/.huntproxy-control-" + cacheBuster(token);
@@ -338,7 +340,7 @@
         var attempts = poisonAttemptObservations(map, index, poisonAttempts), clean = map["poison-clean-" + index], confirm = map["poison-confirm-" + index];
         var expectedMarker = String(variant.marker || token).toLowerCase();
         var persistedMarker = evidenceText(clean).indexOf(expectedMarker) !== -1 && evidenceText(confirm).indexOf(expectedMarker) !== -1;
-        var mutationComparable = /^(?:header:|headers:|query:)/.test(variant.name);
+        var mutationComparable = /^query:/.test(variant.name) || (/^headers?:/.test(variant.name) && input.shared_header_cache_key_oracle !== true);
         var markerAttempt = attempts.find(function (item) { return evidenceText(item.observation).indexOf(expectedMarker) !== -1; });
         var mutationAttempt = attempts.find(function (item) { return mutationComparable && clean && same(item.observation, clean); });
         var proofAttempt = persistedMarker ? (markerAttempt || attempts[attempts.length - 1]) : mutationAttempt;
