@@ -29,3 +29,8 @@ normalization: static-prefix traversal toward the private path, and private
 path plus a delimiter/traversal toward a static directory or exact cached
 filename. Candidate directories, filenames, and delimiters stay bounded and
 caller-configurable.
+
+`url_normalization_oracle` uses raw HTTP/1 to poison two unique paths containing
+harmless angle-bracket markers, then requests each browser-encoded equivalent
+twice. It requires `allow_shared_cache_key_tests=true` and reports only when
+both independent raw/encoded cache-key collisions reproduce exactly.

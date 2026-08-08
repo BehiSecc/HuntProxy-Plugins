@@ -27,6 +27,16 @@
     return output;
   }
 
+  function rawRequest(id, baseUrl, path) {
+    var parsed = splitUrl(baseUrl), authority = parsed.origin.replace(/^https?:\/\//, "");
+    return {
+      id: id, type: "raw_http1", target_url: parsed.origin + "/",
+      request_base64: encodeBase64("GET " + path + " HTTP/1.1\r\nHost: " + authority + "\r\nConnection: close\r\n\r\n"),
+      use_project_cookies: false,
+      options: { response_mode: "until_idle", read_timeout_ms: 8000, idle_timeout_ms: 1000, half_close_write: false }
+    };
+  }
+
   function cacheBuster(token) {
     var value = 2166136261;
     for (var index = 0; index < token.length; index += 1) {
@@ -187,6 +197,15 @@
         if (variant.clean_body_base64 != null) { clean.body_base64 = variant.clean_body_base64; confirm.body_base64 = variant.clean_body_base64; }
         operations.push(poison); operations.push(clean); operations.push(confirm);
       });
+      if (input.url_normalization_oracle === true) {
+        if (input.allow_shared_cache_key_tests !== true) throw new Error("URL-normalization testing requires allow_shared_cache_key_tests=true");
+        for (var normalizationRepeat = 0; normalizationRepeat < 2; normalizationRepeat += 1) {
+          var suffix = token + "n" + normalizationRepeat;
+          operations.push(rawRequest("normalization-poison-" + normalizationRepeat, exchange.url, "/hp<" + suffix + ">"));
+          operations.push(rawRequest("normalization-clean-" + normalizationRepeat, exchange.url, "/hp%3C" + suffix + "%3E"));
+          operations.push(rawRequest("normalization-confirm-" + normalizationRepeat, exchange.url, "/hp%3C" + suffix + "%3E"));
+        }
+      }
     }
     if (modes.indexOf("deception") !== -1) {
       deceptionVariants(exchange.url, token, input).forEach(function (variant, index) {
@@ -259,6 +278,17 @@
     return names.age || names["x-cache"] || names["cf-cache-status"] || names["x-cache-hits"] || names["cache-status"];
   }
 
+  function rawBody(observation) {
+    var raw = observation && observation.raw, encoded = raw && (raw.response_transcript_base64 || raw.response_base64);
+    if (!encoded) return "";
+    var transcript = decodeBase64(encoded), response = raw.responses && raw.responses[0];
+    if (response && response.length) transcript = transcript.slice(response.offset || 0, (response.offset || 0) + response.length);
+    var boundary = transcript.indexOf("\r\n\r\n");
+    return normalizeText(boundary === -1 ? transcript : transcript.slice(boundary + 4));
+  }
+
+  function rawEvidenceId(observation) { return observation && observation.raw && observation.raw.exchange_id; }
+
   function analyze(input, observations, context) {
     var exchange = base(context), token = marker(input), map = byId(observations), findings = [];
     var authBase = map["baseline-auth"], anonBase = map["baseline-anon"];
@@ -282,6 +312,22 @@
           });
         }
       });
+      if (input.url_normalization_oracle === true) {
+        var normalizationEvidence = [], normalizationConfirmed = true;
+        for (var normalizationRepeat = 0; normalizationRepeat < 2; normalizationRepeat += 1) {
+          var rawPoison = map["normalization-poison-" + normalizationRepeat], rawClean = map["normalization-clean-" + normalizationRepeat], rawConfirm = map["normalization-confirm-" + normalizationRepeat];
+          var poisonBody = rawBody(rawPoison), cleanBody = rawBody(rawClean), confirmBody = rawBody(rawConfirm);
+          if (!poisonBody || poisonBody !== cleanBody || cleanBody !== confirmBody || poisonBody.indexOf("<" + token + "n" + normalizationRepeat + ">") === -1) normalizationConfirmed = false;
+          [rawPoison, rawClean, rawConfirm].forEach(function (item) { var id = rawEvidenceId(item); if (id) normalizationEvidence.push(id); });
+        }
+        if (normalizationConfirmed) findings.push({
+          title: "Web cache poisoning via URL normalization", severity: "high", confidence: "firm",
+          explanation: "Two unique raw paths containing harmless angle-bracket markers collided with their browser-encoded equivalents, and each encoded clean request reproduced the raw response twice.",
+          remediation: "Canonicalize the request target once before cache-key construction and origin routing, and reject ambiguous raw paths.",
+          evidence_exchange_ids: normalizationEvidence,
+          metadata: { variant: "url-normalization", marker: token }
+        });
+      }
     }
     if (modes.indexOf("deception") !== -1 && baseLooksPrivate) {
       deceptionVariants(exchange.url, token, input).forEach(function (variant, index) {

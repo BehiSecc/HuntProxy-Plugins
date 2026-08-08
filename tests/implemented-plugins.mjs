@@ -150,6 +150,17 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.ok(normalizationUrls.includes("https://example.test/my-account%23%2f%2e%2e%2fresources"));
   assert.ok(normalizationUrls.includes("https://example.test/my-account%23%2f%2e%2e%2frobots.txt"));
 
+  const rawNormalizationInput = { marker: "rawnorm123", allow_cache_side_effects: true, allow_shared_cache_key_tests: true, url_normalization_oracle: true, modes: ["poisoning"], use_header_wordlist: false, max_header_candidates: 1, max_header_combinations: 0, max_poison_variants: 1 };
+  const rawNormalizationPlan = plugin.plan(rawNormalizationInput, context());
+  const rawNormalizationOps = rawNormalizationPlan.operations.filter((op) => op.type === "raw_http1");
+  assert.equal(rawNormalizationOps.length, 6);
+  assert.match(Buffer.from(rawNormalizationOps[0].request_base64, "base64").toString(), /^GET \/hp<hprawnorm123n0> HTTP\/1\.1\r\n/);
+  assert.match(Buffer.from(rawNormalizationOps[1].request_base64, "base64").toString(), /^GET \/hp%3Chprawnorm123n0%3E HTTP\/1\.1\r\n/);
+  assert.throws(() => plugin.plan({ ...rawNormalizationInput, allow_shared_cache_key_tests: undefined }, context()), /allow_shared_cache_key_tests/);
+  const rawResponse = (op, path) => ({ id: op.id, raw: { exchange_id: Math.floor(Math.random() * 100000) + 1, response_transcript_base64: Buffer.from(`HTTP/1.1 404 Not Found\r\nX-Cache: hit\r\n\r\nPath ${path}`).toString("base64"), responses: [{ offset: 0, length: 200 }] } });
+  const rawNormalizationObservations = rawNormalizationPlan.operations.map((op) => op.type === "raw_http1" ? rawResponse(op, `<hprawnorm123n${op.id.endsWith("-0") ? 0 : 1}>`) : observation(op, 200, "ordinary", "ordinary"));
+  assert.ok(plugin.analyze(rawNormalizationInput, rawNormalizationObservations, context()).findings.some((finding) => finding.metadata.variant === "url-normalization"));
+
   const cookieContext = context("https://example.test/");
   cookieContext.resources.cookies = "fehost\nsession\n";
   const cookieInput = { marker: "cookie1234", allow_cache_side_effects: true, modes: ["poisoning"], cookie_names: ["fehost"], use_header_wordlist: false, max_header_candidates: 1 };
