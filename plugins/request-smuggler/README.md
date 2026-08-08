@@ -18,8 +18,12 @@ folded-name/value, hop-by-hop, duplicate, underscore, and bare LF/CR
 header-hiding variants. The second connection pauses after its first byte for
 the bounded `zero_cl_delay_ms` interval, giving the early-response request a
 deterministic lead without serializing the pair. Each retains repeated quorum
-and a clean recovery. Repeated non-canary divergence is reported separately as
-tentative; only reproducible canary revelation is firm.
+and bounded post-pair observers. All standalone controls run before any pair,
+so a delayed queued response cannot corrupt the baseline. `zero_cl_observers`
+controls how many later requests sample each pair. Repeated non-canary
+divergence is reported separately as tentative; only reproducible canary
+revelation is firm. Targeted pool-dependent confirmation can use up to nine
+repeats; broad scans remain bounded by the package request limit.
 
 `connection_state` compares a Host-bearing request directly and as the second
 request on one established connection. Set `connection_state_host` and

@@ -189,7 +189,7 @@
   function plan(input, context) {
     if (input.confirm_intrusive !== true) throw new Error("desynchronization testing requires confirm_intrusive=true");
     if (!/^[a-z0-9]{8,32}$/i.test(String(input.marker || ""))) throw new Error("marker must be a unique 8-32 character alphanumeric value");
-    var set = techniques(input, context), repeats = Math.max(3, Math.min(Number(input.repeats || 5), 5)), operations = [];
+    var set = techniques(input, context), repeats = Math.max(3, Math.min(Number(input.repeats || 5), 9)), operations = [];
     for (var direct = 0; direct < 2; direct += 1) {
       operations.push(raw("direct-base-" + direct, set.parsed, normalGet(set.path, set.parsed, set.inherited, true), input));
       operations.push(raw("direct-canary-" + direct, set.parsed, normalGet(set.canary_path, set.parsed, set.inherited, true), input));
@@ -201,12 +201,21 @@
       }
     }
     set.items.forEach(function (technique, index) {
+      if (technique.mode === "zero_cl_pair") {
+        var zeroControl = technique.request.victim, zeroClean = normalGet(set.path, set.parsed, set.inherited, true), observerCount = Math.max(1, Math.min(Number(input.zero_cl_observers || 2), 5));
+        for (var controlRepeat = 0; controlRepeat < repeats; controlRepeat += 1) operations.push(raw("control-" + index + "-" + controlRepeat, set.parsed, zeroControl, input));
+        for (var zeroRepeat = 0; zeroRepeat < repeats; zeroRepeat += 1) {
+          operations.push(rawGroup("pair-" + index + "-" + zeroRepeat, set.parsed, [
+            { id: "probe-" + index + "-" + zeroRepeat, request: technique.request.early },
+            { id: "victim-" + index + "-" + zeroRepeat, request: zeroControl, options: delayedZeroClOptions(input) }
+          ], input));
+          for (var observer = 0; observer < observerCount; observer += 1) operations.push(raw("observer-" + index + "-" + zeroRepeat + "-" + observer, set.parsed, zeroClean, input));
+        }
+        return;
+      }
       for (var repeat = 0; repeat < repeats; repeat += 1) {
         var clean = normalGet(set.path, set.parsed, set.inherited, true), control = clean, victim = clean, probe = technique.request;
-        if (technique.mode === "zero_cl_pair") {
-          control = technique.request.victim;
-          victim = technique.request.victim;
-        } else if (technique.mode === "connection_state") {
+        if (technique.mode === "connection_state") {
           control = technique.request;
           probe = normalGet(set.path, set.parsed, set.inherited, false) + withHost(set.connection_path, set.parsed, set.inherited, set.connection_host, true);
         }
@@ -215,13 +224,6 @@
           operations.push(rawPause("probe-"+index+"-"+repeat,set.parsed,probe,input));
           operations.push(raw("victim-"+index+"-"+repeat,set.parsed,victim,input));
           operations.push(raw("recovery-"+index+"-"+repeat,set.parsed,clean,input));
-        } else if (technique.mode === "zero_cl_pair") {
-          operations.push(raw("control-" + index + "-" + repeat, set.parsed, control, input));
-          operations.push(rawGroup("pair-" + index + "-" + repeat, set.parsed, [
-            { id: "probe-" + index + "-" + repeat, request: probe.early },
-            { id: "victim-" + index + "-" + repeat, request: victim, options: delayedZeroClOptions(input) }
-          ], input));
-          operations.push(raw("recovery-" + index + "-" + repeat, set.parsed, clean, input));
         } else if (isH2Mode(technique.mode)) {
           operations.push(rawH2("control-" + index + "-" + repeat, set.parsed, { headers: h2Headers(set.parsed, "GET", set.path, set.inherited), body: "" }, input));
           operations.push(rawH2("probe-" + index + "-" + repeat, set.parsed, probe, input));
@@ -276,7 +278,7 @@
   function evidence(items) { var output=[]; items.forEach(function(item){var value=rawResult(item);if(value&&value.exchange_id)output.push(value.exchange_id);if(item&&Array.isArray(item.streams))item.streams.forEach(function(stream){if(stream.exchange_id)output.push(stream.exchange_id);});});return output; }
   function analyze(input, observations, context) {
     segmentMemo={};transcriptMemo={};
-    var map = byId(observations), set = techniques(input, context), repeats = Math.max(3, Math.min(Number(input.repeats || 5), 5)), findings = [], diagnostics = [];
+    var map = byId(observations), set = techniques(input, context), repeats = Math.max(3, Math.min(Number(input.repeats || 5), 9)), findings = [], diagnostics = [];
     var hasH2=set.items.some(function(item){return isH2Mode(item.mode);});
     var h1BaseDirect=[map["direct-base-0"],map["direct-base-1"]],h1CanaryDirect=[map["direct-canary-0"],map["direct-canary-1"]];
     var h2BaseDirect=[map["h2-direct-base-0"],map["h2-direct-base-1"]],h2CanaryDirect=[map["h2-direct-canary-0"],map["h2-direct-canary-1"]];
@@ -287,39 +289,40 @@
       var h2Mode=isH2Mode(technique.mode),baseDirect=h2Mode?h2BaseDirect:h1BaseDirect,canaryDirect=h2Mode?h2CanaryDirect:h1CanaryDirect;
       var directStable=h2Mode?h2Stable:h1Stable,baseSignature=segments(baseDirect[0])[0],canarySignature=segments(canaryDirect[0])[0];
       var canaryDistinct=directStable&&baseSignature&&canarySignature&&(baseSignature.status!==canarySignature.status||!sameSegment(baseSignature,canarySignature));
-      var controls = [], probes = [], victims = [], recoveries = [], clean = 0, contaminated = 0, divergentVictims = 0, timeouts = 0;
+      var controls = [], probes = [], victims = [], recoveries = [], observers = [], clean = 0, contaminated = 0, divergentVictims = 0, timeouts = 0, observerCount = technique.mode === "zero_cl_pair" ? Math.max(1, Math.min(Number(input.zero_cl_observers || 2), 5)) : 0;
       for (var repeat = 0; repeat < repeats; repeat += 1) {
         var control = map["control-" + index + "-" + repeat], probe = map["probe-" + index + "-" + repeat], victim=map["victim-"+index+"-"+repeat], recovery=map["recovery-"+index+"-"+repeat]; controls.push(control); probes.push(probe); victims.push(victim); recoveries.push(recovery);
-        var controlSegments = segments(control); if (hasResult(control) && outcome(control) !== "timeout" && controlSegments.length >= 1 && controlSegments.every(function (segment) { return !canaryDistinct || !matchesCanary(segment, canarySignature, baseSignature); })) clean += 1;
-        var probeSegments=segments(probe), victimSegments=segments(victim), recoverySegments=segments(recovery), downstream=probeSegments.concat(victimSegments,recoverySegments);
+        var repeatObservers=[];for(var observer=0;observer<observerCount;observer+=1){var observed=map["observer-"+index+"-"+repeat+"-"+observer];repeatObservers.push(observed);observers.push(observed);}
+        var controlSegments = segments(control), controlClean = hasResult(control) && outcome(control) !== "timeout" && controlSegments.length >= 1 && controlSegments.every(function (segment) { return !canaryDistinct || !matchesCanary(segment, canarySignature, baseSignature); }); if (controlClean) clean += 1;
+        var probeSegments=segments(probe), victimSegments=segments(victim), recoverySegments=segments(recovery),observerSegments=[];repeatObservers.forEach(function(item){observerSegments=observerSegments.concat(segments(item));});var downstream=probeSegments.concat(victimSegments,recoverySegments,observerSegments);
         if (technique.mode === "zero_cl_pair") {
           var mutantControl=segments(control)[0], mutantVictim=victimSegments[0];
-          if (mutantControl && mutantVictim && matchesBase(mutantControl,baseSignature) && matchesCanary(mutantVictim,canarySignature,baseSignature)) contaminated += 1;
+          if (mutantControl && matchesBase(mutantControl,baseSignature) && downstream.some(function(segment){return matchesCanary(segment,canarySignature,baseSignature);})) contaminated += 1;
         } else if (technique.mode === "connection_state") {
           var directHost=segments(control)[0], indirectHost=probeSegments.length > 1 ? probeSegments[probeSegments.length-1] : null;
           if (directHost && indirectHost && directHost.status !== indirectHost.status && matchesBase(probeSegments[0],baseSignature)) contaminated += 1;
         } else if (technique.confirmable && canaryDistinct && downstream.some(function (segment) { return matchesCanary(segment, canarySignature, baseSignature) && !sameSegment(segment, baseSignature); })) contaminated += 1;
         if (technique.mode === "h2_tunnel" && probeSegments.some(function(segment){return /HTTP\/1\.[01]\s+[1-5][0-9][0-9]/i.test(segment.text)||matchesCanary(segment,canarySignature,baseSignature);})) contaminated += 1;
         if(technique.mode==="h2_header_injection"&&probeSegments[0]&&!matchesBase(probeSegments[0],baseSignature))contaminated+=1;
-        var victimFirst=segments(victim)[0],recoveryFirst=segments(recovery)[0]; if((victimFirst&&!matchesBase(victimFirst,baseSignature))||(recoveryFirst&&!matchesBase(recoveryFirst,baseSignature))) divergentVictims+=1;
+        var victimFirst=segments(victim)[0],recoveryFirst=segments(recovery)[0],observerDiverged=observerSegments.some(function(segment){return !matchesBase(segment,baseSignature);}); if((victimFirst&&!matchesBase(victimFirst,baseSignature))||(recoveryFirst&&!matchesBase(recoveryFirst,baseSignature))||observerDiverged) divergentVictims+=1;
         if (outcome(probe) === "timeout" && outcome(control) !== "timeout") timeouts += 1;
       }
       var confirmed = directStable && canaryDistinct && clean === repeats && contaminated >= threshold;
       var candidate = directStable && clean === repeats && timeouts >= threshold;
       var unstableZero=technique.mode==="zero_cl_pair"&&divergentVictims>=Math.max(2,Math.ceil(repeats*0.4));
-      var responseCandidate=directStable&&clean===repeats&&(divergentVictims>=threshold||unstableZero);
-      diagnostics.push({ family: technique.family, technique: technique.name, polarity: technique.polarity, clean_controls: clean, canary_confirmations: contaminated, divergent_victims: divergentVictims, probe_only_timeouts: timeouts, repeats: repeats, signal: confirmed ? "marker_contamination" : responseCandidate ? "victim_divergence" : candidate ? "timing_candidate" : "none" });
+      var responseCandidate=directStable&&clean===repeats&&(divergentVictims>=threshold||unstableZero),unstableMarker=directStable&&canaryDistinct&&clean===repeats&&contaminated>0;
+      diagnostics.push({ family: technique.family, technique: technique.name, polarity: technique.polarity, clean_controls: clean, canary_confirmations: contaminated, divergent_victims: divergentVictims, probe_only_timeouts: timeouts, repeats: repeats, signal: confirmed ? "marker_contamination" : unstableMarker ? "marker_contamination_unstable" : responseCandidate ? "victim_divergence" : candidate ? "timing_candidate" : "none" });
       if (confirmed) findings.push({
         title: "Confirmed " + (h2Mode ? "HTTP/2 downgrade/tunnelling" : "HTTP/1 request desynchronization") + ": " + technique.name, severity: technique.mode==="h2_header_injection"?"medium":"high", confidence: "firm",
         explanation: (technique.mode === "h2_tunnel" ? "A nested or directly routed canary response was reproducibly exposed by the HTTP/2 tunnelling probe" : technique.mode==="h2_header_injection"?"The malformed HTTP/2 header name reproducibly changed the downstream response":"A harmless marker request was reproducibly parsed out of the ambiguous pipeline") + " in " + contaminated + " of " + repeats + " attempts, while every interleaved clean pipeline remained uncontaminated.",
         remediation: "Reject ambiguous framing at the first hop, normalize Transfer-Encoding and Content-Length consistently across every hop, and close connections after parser errors.",
-        evidence_exchange_ids: evidence(baseDirect.concat(canaryDirect, controls, probes, victims, recoveries)), metadata: { family: technique.family, polarity: technique.polarity, signal: "marker_contamination", confirmations: contaminated, attempts: repeats }
+        evidence_exchange_ids: evidence(baseDirect.concat(canaryDirect, controls, probes, victims, recoveries, observers)), metadata: { family: technique.family, polarity: technique.polarity, signal: "marker_contamination", confirmations: contaminated, attempts: repeats }
       });
-      else if (responseCandidate||candidate) findings.push({
+      else if (unstableMarker||responseCandidate||candidate) findings.push({
         title: (h2Mode ? "HTTP/2 downgrade" : "HTTP/1 framing") + " discrepancy candidate: " + technique.name, severity: "medium", confidence: "tentative",
-        explanation: responseCandidate ? "Requests immediately following the ambiguous probe diverged from the stable baseline in " + divergentVictims + " of " + repeats + " attempts while every interleaved pre-probe control remained clean. Marker confirmation is still required before treating this as exploitable." : "The ambiguous request timed out in " + timeouts + " of " + repeats + " attempts while all interleaved controls completed. Timing alone is not proof of desynchronization, so marker confirmation or manual validation is required.",
+        explanation: unstableMarker ? "The exact canary response appeared downstream after an ambiguous probe in " + contaminated + " of " + repeats + " attempts. This pool-dependent marker signal did not reach the configured firm quorum and is retained as unstable evidence." : responseCandidate ? "Requests following the ambiguous probe diverged from the stable baseline in " + divergentVictims + " of " + repeats + " attempts. Marker confirmation is still required before treating this as exploitable." : "The ambiguous request timed out in " + timeouts + " of " + repeats + " attempts while the pre-probe control completed. Timing alone is not proof of desynchronization, so marker confirmation or manual validation is required.",
         remediation: "Review every HTTP hop for inconsistent framing rules and validate on an isolated connection before treating this as exploitable.",
-        evidence_exchange_ids: evidence(controls.concat(probes,victims,recoveries)), metadata: { family: technique.family, polarity: technique.polarity, signal: responseCandidate?"victim_divergence":"timing_candidate", attempts: repeats }
+        evidence_exchange_ids: evidence(controls.concat(probes,victims,recoveries,observers)), metadata: { family: technique.family, polarity: technique.polarity, signal: unstableMarker?"marker_contamination_unstable":responseCandidate?"victim_divergence":"timing_candidate", confirmations: contaminated, attempts: repeats }
       });
     });
     var result={ findings: findings, result: { direct_controls_stable: h1Stable && h2Stable, diagnostics: diagnostics, limitations: ["Firm framing findings require repeated downstream marker contamination; timeout-only signals remain tentative.", "HTTP/2 probes require HTTPS with ALPN h2 and never fall back to HTTP/1.", "Pause-based findings require the explicit pause family; browser client-side desync remains out of scope."] } };segmentMemo=null;transcriptMemo=null;return result;
