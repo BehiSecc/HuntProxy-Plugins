@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "id": "request-smuggler",
+  "name": "Request Smuggler",
+  "version": "0.1.0",
+  "description": "Detect bounded HTTP/1 framing discrepancies, pause behavior, client-side readiness, and connection-state anomalies.",
+  "enabled": true,
+  "entrypoint": "index.js",
+  "entrypoint_sha256": "3e4d77a132574ef6f708b16a000d17c94a23bc1d18606b9e8bf8889630fed309",
+  "capabilities": ["http.raw"],
+  "limits": { "timeout_ms": 600000, "max_operations": 50, "max_concurrency": 1, "memory_mb": 32 },
+  "actions": [{
+    "name": "scan",
+    "description": "Run repeated HTTP/1 desynchronization probes and matching controls against one saved request.",
+    "required_capabilities": ["http.raw"],
+    "input_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["marker", "confirm_intrusive"],
+      "properties": {
+        "marker": { "type": "string", "pattern": "^[A-Za-z0-9]{8,32}$", "description": "Unique per-run marker." },
+        "confirm_intrusive": { "const": true, "description": "Acknowledge that desynchronization probes may affect a reused upstream connection." },
+        "families": { "type": "array", "uniqueItems": true, "items": { "enum": ["cl_te", "te_cl", "te_te", "cl_0", "0_cl", "parser_discrepancy", "client_side", "connection_state", "pause_based"] } },
+        "max_techniques": { "type": "integer", "minimum": 1, "maximum": 20, "default": 20 },
+        "read_timeout_ms": { "type": "integer", "minimum": 500, "maximum": 15000, "default": 3000 },
+        "pause_ms": { "type": "integer", "minimum": 100, "maximum": 10000, "default": 1000 }
+      }
+    }
+  }]
+}
