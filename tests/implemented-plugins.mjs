@@ -141,17 +141,19 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
   assert.ok(differentialResult.findings.some((finding) => /outcome changes/i.test(finding.title)));
 
   const anonymousContext = privilegedContext(); anonymousContext.action = "anonymous_audit";
-  const anonymousInput = { domains: ["example.test"], confirm_expected_protected: true, max_requests: 1 };
+  const anonymousInput = { domains: ["example.test"], confirm_expected_protected: true, anonymous_context: { cookie: "affinity=guest" }, max_requests: 1 };
   assert.throws(() => plugin.plan({ domains: ["example.test"] }, anonymousContext), /confirm_expected_protected/);
   const anonymousPlan = plugin.plan(anonymousInput, anonymousContext);
   assert.equal(anonymousPlan.operations.length, 2);
   assert.ok(anonymousPlan.operations.every((op) => op.id.includes("anonymous") && op.header_tombstones.includes("Cookie")));
+  assert.ok(anonymousPlan.operations.every((op) => op.headers.some((header) => header.name === "Cookie" && header.value === "affinity=guest")));
   assert.deepEqual(Array.from(anonymousPlan.result.identities), ["anonymous"]);
   const anonymousObservations = anonymousPlan.operations.map((op) => observation(op, 200, "public-admin", "admin users"));
   const anonymousResult = plugin.analyze(anonymousInput, anonymousObservations, anonymousContext);
   assert.equal(anonymousResult.findings.length, 1);
   assert.equal(anonymousResult.result.classifications[0].mode, "anonymous_audit");
   assert.equal(Object.hasOwn(anonymousResult.result.classifications[0], "primary_allowed"), false);
+  assert.throws(() => plugin.plan({ domains: ["example.test"], confirm_expected_protected: true, anonymous_context: {} }, anonymousContext), /anonymous_context/);
 }
 
 {

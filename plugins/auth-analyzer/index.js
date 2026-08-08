@@ -63,10 +63,11 @@
     var operations = [], selected = shapes(input, context);
     if (context.action === "anonymous_audit") {
       if (input.confirm_expected_protected !== true) throw new Error("anonymous audit requires confirm_expected_protected=true");
+      if (input.anonymous_context && !identityKey(input.anonymous_context)) throw new Error("anonymous_context must contain a non-empty cookie or header");
       selected.forEach(function (shape, index) {
-        for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("shape-" + index + "-anonymous-" + repeat, shape, null, true));
+        for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("shape-" + index + "-anonymous-" + repeat, shape, input.anonymous_context || null, !input.anonymous_context));
       });
-      return { operations: operations, result: { request_shapes: selected.length, identities: ["anonymous"], mode: "anonymous_audit" } };
+      return { operations: operations, result: { request_shapes: selected.length, identities: ["anonymous"], mode: "anonymous_audit", anonymous_context_supplied: !!input.anonymous_context } };
     }
     validateComparisonIdentities(input);
     var includeAnonymous = input.include_anonymous !== false;
@@ -122,7 +123,7 @@
         classifications.push({ exchange_id: shape.exchange_id, anonymous_stable: !!anonymous, anonymous_allowed: !!anonymousAllowed, mode: "anonymous_audit" });
         if (anonymousAllowed) findings.push({
           title: "Possible unauthenticated authorization exposure", severity: "high", confidence: "firm",
-          explanation: "The caller identified this request shape as expected to be protected, but two anonymous requests reproducibly received an allowed response.",
+          explanation: "The caller identified this request shape as expected to be protected, but two anonymous requests reproducibly received an allowed response. Any caller-supplied anonymous session context was preserved without inheriting base credentials.",
           remediation: "Require authentication and authorize the requested object or action before returning protected content.",
           evidence_exchange_ids: [anonymous.exchange_id].filter(Boolean),
           metadata: { source_exchange_id: shape.exchange_id, method: shape.method, url: shape.url, mode: "anonymous_audit" }
