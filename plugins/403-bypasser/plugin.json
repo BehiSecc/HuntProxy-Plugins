@@ -2,17 +2,17 @@
   "schema_version": 1,
   "id": "403-bypasser",
   "name": "403Bypasser",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Test denied endpoints with safe path, method, forwarding-header, host, and encoding variants.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "f4596faf474b46ba4e6f1dd4eb201e3efd6f24f4255615f7ebecbf144c8c49da",
+  "entrypoint_sha256": "17b81e57a0097d9ca0a6fc324db1379768f854d31585aa9f63aa721ec2980dd8",
   "capabilities": ["http.semantic", "identity.use"],
   "limits": { "timeout_ms": 300000, "max_operations": 500, "max_concurrency": 6, "memory_mb": 32 },
   "actions": [{
     "name": "scan",
     "description": "Generate and compare authorization-bypass variants for one denied request.",
     "required_capabilities": ["http.semantic", "identity.use"],
-    "input_schema": { "type": "object", "additionalProperties": false, "required": [], "properties": { "allow_state_changes": { "type": "boolean", "default": false }, "include_not_found": { "type": "boolean", "default": false, "description": "Also investigate a 404 control, with lower-severity results." }, "success_markers": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 200 }, "description": "Optional protected-resource strings required in an allowed response." }, "failure_markers": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 200 }, "description": "Optional denial/login strings that disqualify an allowed-looking response." }, "max_variants": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 } } }
+    "input_schema": { "type": "object", "additionalProperties": false, "required": [], "properties": { "allow_state_changes": { "type": "boolean", "default": false }, "include_not_found": { "type": "boolean", "default": false, "description": "Also investigate a 404 control, with lower-severity results." }, "referer_values": { "type": "array", "maxItems": 20, "uniqueItems": true, "items": { "type": "string", "pattern": "^https?://", "maxLength": 2048 }, "description": "Caller-declared trusted page URLs to test when access control may rely on Referer." }, "success_markers": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 200 }, "description": "Optional protected-resource strings required in an allowed response." }, "failure_markers": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 200 }, "description": "Optional denial/login strings that disqualify an allowed-looking response." }, "max_variants": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 } } }
   }]
 }

@@ -92,6 +92,14 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.ok(getOps.every((op) => op.query_params.some((part) => part.name === "username" && part.value === "missing")));
   const methodObservations = methodPlan.operations.map((op) => observation(op, op.id.startsWith(`variant-${getIndex}-`) ? 400 : 401, op.id.startsWith(`variant-${getIndex}-`) ? "protected-outcome" : "denied", op.id.startsWith(`variant-${getIndex}-`) ? "Could not change user role" : "Unauthorized"));
   assert.ok(plugin.analyze(methodInput, methodObservations, methodContext).findings.some((finding) => finding.metadata.variant === "method:get"));
+
+  const refererInput = { referer_values: ["https://example.test/admin"], success_markers: ["could not change user role"] };
+  const refererPlan = plugin.plan(refererInput, context());
+  const refererIndex = Array.from(refererPlan.result.variants).indexOf("header:referer:0");
+  assert.ok(refererIndex >= 0);
+  assert.ok(refererPlan.operations.filter((op) => op.id.startsWith(`variant-${refererIndex}-`)).every((op) => op.headers.some((header) => header.name === "Referer" && header.value === "https://example.test/admin")));
+  const refererObservations = refererPlan.operations.map((op) => observation(op, op.id.startsWith(`variant-${refererIndex}-`) ? 400 : 403, op.id.startsWith(`variant-${refererIndex}-`) ? "handler" : "denied", op.id.startsWith(`variant-${refererIndex}-`) ? "Could not change user role" : "Unauthorized"));
+  assert.ok(plugin.analyze(refererInput, refererObservations, context()).findings.some((finding) => finding.metadata.variant === "header:referer:0"));
 }
 
 {

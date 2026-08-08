@@ -13,3 +13,7 @@ carrier controls, preventing an ordinary public home page from being mistaken
 for the protected resource. Path-only 2xx results remain tentative unless a
 caller-supplied `success_markers` value proves protected content was reached;
 `failure_markers` can exclude login and denial templates.
+
+If an application may trust navigation context, pass the expected trusted page
+URLs in `referer_values`. Referer candidates use the same repeated response and
+optional semantic-marker proof as every other variant.

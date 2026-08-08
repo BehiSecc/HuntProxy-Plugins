@@ -71,6 +71,9 @@
     ].forEach(function (item) {
       values.push({ name: "header:" + item[0], method: baseExchange.method, headers: [{ name: item[1], value: item[2] }] });
     });
+    (input.referer_values || []).forEach(function (value, index) {
+      values.push({ name: "header:referer:" + index, method: baseExchange.method, headers: [{ name: "Referer", value: String(value) }] });
+    });
     ["GET", "HEAD", "OPTIONS"].forEach(function (method) {
       if (method !== String(baseExchange.method).toUpperCase()) {
         var variant = { name: "method:" + method.toLowerCase(), method: method };
