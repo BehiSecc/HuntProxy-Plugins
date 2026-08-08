@@ -82,6 +82,21 @@ function context(url = "https://example.test/account") {
   });
   const connectionResult = plugin.analyze({ ...input, families: ["connection_state"], connection_state_host: "192.0.2.10", connection_state_path: "/admin" }, connectionObservations, ctx);
   assert.equal(connectionResult.findings[0].metadata.family, "connection_state");
+  const pauseInput = { ...input, families: ["pause"], probe_path: "/resources", pause_ms: 61000 };
+  const pausePlan = plugin.plan(pauseInput, ctx);
+  const pauseOperation = pausePlan.operations.find((operation) => operation.id === "probe-0-0");
+  const pauseBytes = Buffer.from(pauseOperation.request_base64, "base64").toString();
+  assert.equal(pauseOperation.options.pause_ms, 61000);
+  assert.equal(pauseOperation.options.pause_at_byte, pauseBytes.indexOf("\r\n\r\n") + 4);
+  assert.equal(pauseOperation.options.await_response_before_continue, false);
+  assert.equal((pauseBytes.match(/POST \/resources HTTP\/1\.1/g) || []).length, 2);
+  const pauseObservations = pausePlan.operations.map((operation, index) => {
+    const responses = operation.id.startsWith("direct-canary") ? [{ status: 404, body: "canary" }]
+      : operation.id.startsWith("probe-") ? [{ status: 301, body: "redirect" }, { status: 404, body: "canary" }]
+      : [{ status: 200, body: "normal" }];
+    return { id: operation.id, raw: { exchange_id: 450 + index, ...wire(responses) } };
+  });
+  assert.equal(plugin.analyze(pauseInput, pauseObservations, ctx).findings[0].metadata.family, "pause");
   const all = plugin.plan({ marker: "abc12345", confirm_intrusive: true }, ctx);
   assert.ok(all.result.techniques.some((value) => value.family === "te_te"));
   assert.ok(all.result.techniques.some((value) => value.family === "cl_0"));

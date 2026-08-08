@@ -40,4 +40,9 @@ The default scan is intentionally thorough: five cycles across every framing
 variant can schedule up to 508 requests. Use `families`, `max_techniques`, and
 `repeats` to reduce volume on fragile targets. Browser-proven client-side
 desync remains out of scope. Pause-based coverage requires the separate
-read-before-continuation workflow and is not claimed by these probes.
+opt-in `pause` family because its default three-or-more 61-second cycles are
+slow. It sends the same CL.0 carrier twice on one connection and splits the
+wire write immediately after the first header block. `pause_await_response`
+uses response-gated continuation for servers where that is the relevant
+primitive; the default fixed pause matches vectors that require the entire
+delay even if an early response is already available.

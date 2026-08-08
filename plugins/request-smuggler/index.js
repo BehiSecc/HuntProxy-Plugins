@@ -105,6 +105,11 @@
       { name: ":path", value: "/login HTTP/1.1\r\nHost: " + parsed.authority + "\r\n\r\nGET " + canaryPath + " HTTP/1.1\r\nX-HuntProxy-Desync: " + marker }
     ], body: "" };
   }
+  function pauseProbe(parsed, path, canaryPath, inherited, marker) {
+    var smuggled="GET "+canaryPath+" HTTP/1.1\r\nHost: "+parsed.authority+"\r\nX-HuntProxy-Desync: "+marker+"\r\n\r\n";
+    var first=message("POST",path,parsed.authority,inherited,["Content-Length: "+smuggled.length,"Content-Type: application/x-www-form-urlencoded"],smuggled,false);
+    return { bytes:first+first, split:first.indexOf("\r\n\r\n")+4 };
+  }
   function techniques(input, context) {
     var exchange = base(context), parsed = target(exchange.url), inherited = inheritedHeaders(exchange, input.include_auth === true), marker = String(input.marker).toLowerCase();
     var path = safePath(input.probe_path || parsed.path, "probe_path");
@@ -138,6 +143,7 @@
     add("h2_split", "H2 CRLF request splitting", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_split"), true, "h2_split", "h2");
     add("h2_tunnel", "H2 header-name request tunnelling", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_tunnel_name"), false, "h2_tunnel", "h2_tunnel");
     add("h2_tunnel", "H2 pseudo-path request tunnelling", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_tunnel_path"), false, "h2_tunnel", "h2_tunnel");
+    add("pause", "server-side pause-based CL.0", pauseProbe(parsed,path,canaryPath,inherited,marker), true, "pause", "pause");
     add("parser_discrepancy", "conflicting duplicate Content-Length", message("POST", path, parsed.authority, inherited, ["Content-Length: 4", "Content-Length: 5", "Content-Type: text/plain"], "12345", false) + normalGet(path, parsed, inherited, true), false);
     add("parser_discrepancy", "signed Content-Length", message("POST", path, parsed.authority, inherited, ["Content-Length: +5", "Content-Type: text/plain"], "12345", false) + normalGet(path, parsed, inherited, true), false);
     var selected = input.families && input.families.length ? input.families : ["cl_te", "te_cl", "te_te", "cl_0", "0_cl", "connection_state", "h2_cl", "h2_te", "h2_crlf", "h2_split", "h2_tunnel", "parser_discrepancy"];
@@ -148,6 +154,7 @@
   }
   function raw(id, parsed, request, input) { return { id: id, type: "raw_http1", target_url: parsed.url, request_base64: toBase64(request), use_project_cookies: false, options: options(input) }; }
   function rawH2(id, parsed, request, input) { return { id: id, type: "raw_http2", target_url: parsed.url, streams: [{ id: id + "-stream", headers: request.headers, body_text: request.body }], options: { timeout_ms: Math.max(1000, Math.min(Number(input.read_timeout_ms || 8000), 30000)), final_data_together: false } }; }
+  function rawPause(id,parsed,request,input){return {id:id,type:"raw_http1",target_url:parsed.url,request_base64:toBase64(request.bytes),use_project_cookies:false,options:{pause_at_byte:request.split,pause_ms:Math.max(1,Math.min(Number(input.pause_ms||61000),120000)),await_response_before_continue:input.pause_await_response===true,half_close_write:false,response_mode:"until_idle",read_timeout_ms:Math.max(1000,Math.min(Number(input.read_timeout_ms||30000),120000)),idle_timeout_ms:Math.max(500,Math.min(Number(input.idle_timeout_ms||1500),5000))}};}
   function plan(input, context) {
     if (input.confirm_intrusive !== true) throw new Error("desynchronization testing requires confirm_intrusive=true");
     if (!/^[a-z0-9]{8,32}$/i.test(String(input.marker || ""))) throw new Error("marker must be a unique 8-32 character alphanumeric value");
@@ -172,7 +179,12 @@
           control = technique.request;
           probe = normalGet(set.path, set.parsed, set.inherited, false) + withHost(set.connection_path, set.parsed, set.inherited, set.connection_host, true);
         }
-        if (technique.mode === "h2" || technique.mode === "h2_tunnel") {
+        if(technique.mode==="pause"){
+          operations.push(raw("control-"+index+"-"+repeat,set.parsed,control,input));
+          operations.push(rawPause("probe-"+index+"-"+repeat,set.parsed,probe,input));
+          operations.push(raw("victim-"+index+"-"+repeat,set.parsed,victim,input));
+          operations.push(raw("recovery-"+index+"-"+repeat,set.parsed,clean,input));
+        } else if (technique.mode === "h2" || technique.mode === "h2_tunnel") {
           operations.push(rawH2("control-" + index + "-" + repeat, set.parsed, { headers: h2Headers(set.parsed, "GET", set.path, set.inherited), body: "" }, input));
           operations.push(rawH2("probe-" + index + "-" + repeat, set.parsed, probe, input));
           operations.push(rawH2("victim-" + index + "-" + repeat, set.parsed, { headers: h2Headers(set.parsed, "GET", set.path, set.inherited), body: "" }, input));
@@ -185,7 +197,7 @@
         }
       }
     });
-    return { operations: operations, result: { repeats: repeats, auth_included: input.include_auth === true, canary_path: set.canary_path, request_count: operations.length, techniques: set.items.map(function (item) { return { family: item.family, name: item.name, polarity: item.polarity, canary_confirmation: item.confirmable }; }), limitations: ["HTTP/2 families require HTTPS with ALPN h2 and never fall back to HTTP/1", "Pause-based and browser client-side desync probes require separate workflows", "Authentication is excluded unless include_auth=true"] } };
+    return { operations: operations, result: { repeats: repeats, auth_included: input.include_auth === true, canary_path: set.canary_path, request_count: operations.length, techniques: set.items.map(function (item) { return { family: item.family, name: item.name, polarity: item.polarity, canary_confirmation: item.confirmable }; }), limitations: ["HTTP/2 families require HTTPS with ALPN h2 and never fall back to HTTP/1", "Pause-based probing is opt-in because each cycle may hold a connection for up to pause_ms", "Browser client-side desync requires a real browser workflow", "Authentication is excluded unless include_auth=true"] } };
   }
   function byId(observations) { var output = {}; observations.forEach(function (item) { output[item.id] = item; }); return output; }
   function rawResult(item) { return item && !item.error && item.raw ? item.raw : null; }
@@ -263,7 +275,7 @@
         evidence_exchange_ids: evidence(controls.concat(probes,victims,recoveries)), metadata: { family: technique.family, polarity: technique.polarity, signal: responseCandidate?"victim_divergence":"timing_candidate", attempts: repeats }
       });
     });
-    return { findings: findings, result: { direct_controls_stable: h1Stable && h2Stable, diagnostics: diagnostics, limitations: ["Firm framing findings require repeated downstream marker contamination; timeout-only signals remain tentative.", "HTTP/2 probes require HTTPS with ALPN h2 and never fall back to HTTP/1.", "Pause-based and browser client-side desync tests are intentionally not claimed."] } };
+    return { findings: findings, result: { direct_controls_stable: h1Stable && h2Stable, diagnostics: diagnostics, limitations: ["Firm framing findings require repeated downstream marker contamination; timeout-only signals remain tentative.", "HTTP/2 probes require HTTPS with ALPN h2 and never fall back to HTTP/1.", "Pause-based findings require the explicit pause family; browser client-side desync remains out of scope."] } };
   }
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };
 }());
