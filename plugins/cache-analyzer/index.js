@@ -34,7 +34,7 @@
   }
 
   function poisonVariants(baseUrl, token, input, context) {
-    var variants = [], seen = {}, headerLimit = Math.max(1, Math.min(Number(input.max_header_candidates || 300), 500));
+    var variants = [], combinationVariants = [], seen = {}, headerLimit = Math.max(1, Math.min(Number(input.max_header_candidates || 300), 500));
     var unsafe = { "content-length": 1, "transfer-encoding": 1, "connection": 1, "proxy-connection": 1, "cookie": 1, "set-cookie": 1 };
     var special = {
       "x-forwarded-scheme": "http", "x-forwarded-proto": "http", "x-forwarded-protocol": "http",
@@ -52,6 +52,12 @@
       var clean = addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":" + key));
       variants.push({ name: "header:" + key, poison_url: clean, clean_url: clean, headers: [{ name: name, value: headerValue }], marker: markerValue });
     }
+    function combinationHeader(value, markerValue) {
+      var pieces = String(value || "").trim().split("~"), name = pieces[0], key = name.toLowerCase();
+      if (!name || unsafe[key] || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) return null;
+      var headerValue = special[key] || pieces.slice(1).join("~") || markerValue + ".invalid";
+      return { name: name, value: headerValue.replace(/%s/g, markerValue).replace(/%h/g, "invalid") };
+    }
     [
       "X-Forwarded-Host", "X-Host", "X-Original-URL", "X-Rewrite-URL", "X-Forwarded-Scheme",
       "X-Forwarded-Proto", "X-Forwarded-Port", "Forwarded", "X-HTTP-Method-Override", "X-Method-Override",
@@ -61,6 +67,18 @@
     ].forEach(addHeader);
     (input.headers || []).forEach(addHeader);
     if (input.use_header_wordlist !== false && context.resources && typeof context.resources.headers === "string") context.resources.headers.split(/\r?\n/).forEach(addHeader);
+    var combinations = input.header_combinations || [["X-Forwarded-Host~%s.invalid", "X-Forwarded-Scheme~http"]];
+    combinations.slice(0, Math.max(0, Math.min(Number(input.max_header_combinations == null ? 12 : input.max_header_combinations), 20))).forEach(function (combination, index) {
+      var markerValue = token + "m" + index, headers = [], names = {}, valid = true;
+      (combination || []).slice(0, 4).forEach(function (value) {
+        var header = combinationHeader(value, markerValue), key = header && header.name.toLowerCase();
+        if (!header || names[key]) { valid = false; return; }
+        names[key] = true; headers.push(header);
+      });
+      if (!valid || headers.length < 2) return;
+      var clean = addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":combination:" + index));
+      combinationVariants.push({ name: "headers:" + headers.map(function (header) { return header.name.toLowerCase(); }).join("+"), poison_url: clean, clean_url: clean, headers: headers, marker: markerValue });
+    });
     var cookieNames = [], cookieSeen = {}, cookieVariants = [];
     function addCookieName(value) {
       var name = String(value || "").trim(), key = name.toLowerCase();
@@ -88,7 +106,7 @@
       var clean = addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":query:" + name));
       variants.push({ name: "query:" + name, poison_url: addQuery(clean, name, token), clean_url: clean, headers: [], marker: token });
     });
-    return cookieVariants.concat(variants);
+    return cookieVariants.concat(combinationVariants, variants);
   }
 
   function deceptionVariants(baseUrl, token, input) {

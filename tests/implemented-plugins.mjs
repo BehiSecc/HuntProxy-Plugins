@@ -120,6 +120,14 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.ok(result.findings.some((finding) => /cache poisoning/i.test(finding.title)));
   assert.ok(result.findings.some((finding) => /cache deception/i.test(finding.title)));
 
+  const combinationInput = { marker: "multi12345", allow_cache_side_effects: true, modes: ["poisoning"], use_header_wordlist: false, max_header_candidates: 1, max_poison_variants: 1 };
+  const combinationPlan = plugin.plan(combinationInput, context());
+  const combinationPoison = combinationPlan.operations.find((op) => op.id === "poison-0");
+  assert.deepEqual(Array.from(combinationPoison.headers, (header) => header.name), ["X-Forwarded-Host", "X-Forwarded-Scheme"]);
+  assert.ok(combinationPoison.headers[0].value.includes("hpmulti12345m0"));
+  const customCombination = plugin.plan({ ...combinationInput, header_combinations: [["X-Host~%s.invalid", "X-Forwarded-Proto~http"]] }, context()).operations.find((op) => op.id === "poison-0");
+  assert.deepEqual(Array.from(customCombination.headers, (header) => header.name), ["X-Host", "X-Forwarded-Proto"]);
+
   const cookieContext = context("https://example.test/");
   cookieContext.resources.cookies = "fehost\nsession\n";
   const cookieInput = { marker: "cookie1234", allow_cache_side_effects: true, modes: ["poisoning"], cookie_names: ["fehost"], use_header_wordlist: false, max_header_candidates: 1 };

@@ -13,3 +13,7 @@ names additionally require `allow_sensitive_cookie_mutation=true`.
 The action requires `allow_cache_side_effects=true`: even isolated tests can
 create cache entries. Findings without recognizable cache headers are marked
 tentative.
+
+The poisoning matrix also tests a bounded `X-Forwarded-Host` plus
+`X-Forwarded-Scheme` pair. Supply additional two-to-four-header sets through
+`header_combinations`; every set receives its own isolated cache key.

@@ -2,11 +2,11 @@
   "schema_version": 1,
   "id": "cache-analyzer",
   "name": "CacheAnalyzer",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Test cache-key discrepancies, cache poisoning, and web cache deception with cache-busted controls and confirmation.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "4a8851adfb5e7e3d2c550f60fb803b71119a0da5abcdb236c395eff2b86cddde",
+  "entrypoint_sha256": "eba6c0b528c6f86431ca56b1aff641eb702eac1c8844f5cd1b3ebdf93e5b291b",
   "resources": {
     "headers": { "path": "resources/headers", "sha256": "175619d3e49c28431b4ced6363ba63544771db298834195fd3ccb3fc422e9af7" },
     "cookies": { "path": "resources/cookies", "sha256": "dc1d66e40324e017c7020405f25376ccda9cdc6091c00d5e07720312e9ae585b" }
@@ -23,6 +23,8 @@
       "modes": { "type": "array", "uniqueItems": true, "items": { "enum": ["poisoning", "deception"] } },
       "headers": { "type": "array", "maxItems": 500, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 256 }, "description": "Additional candidate header names or Param Miner-style name~value templates." },
       "use_header_wordlist": { "type": "boolean", "default": true },
+      "header_combinations": { "type": "array", "maxItems": 20, "items": { "type": "array", "minItems": 2, "maxItems": 4, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 256 } }, "description": "Explicit bounded sets of headers to send together as name or name~value templates." },
+      "max_header_combinations": { "type": "integer", "minimum": 0, "maximum": 20, "default": 12 },
       "cookie_names": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$" }, "description": "Explicit cookie names to test for unkeyed cookie poisoning. No cookies are tested by default." },
       "use_cookie_wordlist": { "type": "boolean", "default": false, "description": "Opt in to the bundled non-authentication cookie candidate list." },
       "allow_sensitive_cookie_mutation": { "const": true, "description": "Required in addition to an explicit name before session, authentication, token, or CSRF cookies may be mutated." },
