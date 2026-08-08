@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHmac } from "node:crypto";
+import { createHmac, createPublicKey, verify as verifySignature } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 
@@ -299,6 +299,22 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
     response_headers: [{ name: "Location", value: op.id.startsWith("variant-") ? "/administrator" : "/login" }],
   }));
   assert.equal(plugin.analyze(redirectInput, redirectObservations, ctx).findings.length, 1);
+
+  const rsaKey = await readFile(new URL("jwt-analyzer/resources/rsa-test-key.json", root), "utf8");
+  const rsaJwks = await readFile(new URL("jwt-analyzer/resources/rsa-test-jwks.json", root), "utf8");
+  const nativeContext = privilegedContext({ headers: [["Authorization", `Bearer ${token}`]] });
+  nativeContext.resources = { "rsa-test-key": rsaKey, "rsa-test-jwks": rsaJwks, "hmac-secrets": "" };
+  const nativeInput = { active: true, tests: ["embedded_jwk", "jku"], target_subject: "administrator", jku_url: "https://exploit.example.test/jwks.json" };
+  const nativePlan = plugin.plan(nativeInput, nativeContext);
+  assert.deepEqual(Array.from(nativePlan.result.active_variants), ["embedded_jwk", "jku"]);
+  assert.equal(nativePlan.operations.length, 6);
+  const publicJwk = JSON.parse(rsaJwks).keys[0];
+  for (const operation of nativePlan.operations.filter((item) => item.id.endsWith("-0") && item.id.startsWith("variant-"))) {
+    const signed = operation.headers[0].value.slice(7), pieces = signed.split("."), header = JSON.parse(Buffer.from(pieces[0], "base64url")), payload = JSON.parse(Buffer.from(pieces[1], "base64url"));
+    assert.equal(payload.sub, "administrator");
+    assert.ok(header.jwk || header.jku === nativeInput.jku_url);
+    assert.equal(verifySignature("RSA-SHA256", Buffer.from(`${pieces[0]}.${pieces[1]}`), createPublicKey({ key: header.jwk || publicJwk, format: "jwk" }), Buffer.from(pieces[2], "base64url")), true);
+  }
 }
 
 {

