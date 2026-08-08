@@ -33,6 +33,25 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.ok(result.findings.some((finding) => finding.metadata.parameter === "debug"));
   assert.ok(plugin.plan({ phase: "screen", locations: ["cookie"], words: ["debug"], max_words: 10 }, context()).operations.some((op) => Array.isArray(op.cookie_params)));
   assert.ok(plugin.plan({ phase: "screen", locations: ["body"], words: ["debug"], max_words: 10 }, context()).operations.some((op) => Array.isArray(op.body_params)));
+
+  const cacheInput = { phase: "screen", locations: ["query"], words: ["utm_content"], use_only_supplied_words: true, marker: "cache-oracle", max_words: 10 };
+  const cachePlan = plugin.plan(cacheInput, context());
+  const cacheObservations = cachePlan.operations.map((op) => {
+    const poison = op.id === "cache-screen-poison-query-0";
+    const clean = op.id === "cache-screen-clean-query-0";
+    return observation(op, 200, op.id, poison || clean ? "canonical cache-oracle-cache-probe-screen-query-0" : "ordinary page");
+  });
+  const cacheScreen = plugin.analyze(cacheInput, cacheObservations, context());
+  assert.deepEqual(Array.from(cacheScreen.result.candidate_buckets.query), ["utm_content"]);
+  assert.equal(cacheScreen.result.follow_up.cache_key_tests, true);
+  const cacheConfirmInput = cacheScreen.result.follow_up;
+  const cacheConfirmPlan = plugin.plan(cacheConfirmInput, context());
+  const cacheConfirmObservations = cacheConfirmPlan.operations.map((op) => {
+    const match = op.id.match(/^cache-(?:poison|clean)-query-0-(\d)$/);
+    return observation(op, 200, op.id, match ? `canonical cache-oracle-cache-probe-query-0-${match[1]}` : "ordinary page");
+  });
+  const cacheConfirmed = plugin.analyze(cacheConfirmInput, cacheConfirmObservations, context());
+  assert.ok(cacheConfirmed.findings.some((finding) => /Unkeyed cache query parameter: utm_content/.test(finding.title)));
 }
 
 {

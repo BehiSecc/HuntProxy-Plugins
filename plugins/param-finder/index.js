@@ -55,11 +55,11 @@
     return String(input.marker || "hp-param-7f31") + "-" + suffix;
   }
 
-  function operation(base, input, location, words, id) {
-    var value = marker(input, id);
+  function operation(base, input, location, words, id, cacheKey, probeValue) {
+    var value = probeValue || marker(input, id);
     var op = { id: id, type: "http_request", base_exchange_id: base.exchange_id, method: base.method, protocol: "auto" };
     var query = [];
-    if (input.cache_bust !== false) query.push({ name: String(input.cache_buster_name || "hp_pf_cb"), value: marker(input, "cache-" + id) });
+    if (input.cache_bust !== false) query.push({ name: String(input.cache_buster_name || "hp_pf_cb"), value: cacheKey || marker(input, "cache-" + id) });
     if (location === "query") query = query.concat(words.map(function (word) { return { name: word, value: value }; }));
     if (query.length) op.query_params = query;
     if (location === "header") op.headers = words.map(function (word) { return { name: word, value: value }; });
@@ -101,6 +101,14 @@
             var op = operation(base, input, location, [word], id);
             if (op) operations.push(op); else skipped.push(location);
           }
+          if (input.cache_key_tests !== false && (location === "query" || location === "header")) {
+            for (var cacheRepeat = 0; cacheRepeat < 2; cacheRepeat += 1) {
+              var cacheKey = marker(input, "cache-key-" + location + "-" + index + "-" + cacheRepeat);
+              var probeValue = marker(input, "cache-probe-" + location + "-" + index + "-" + cacheRepeat);
+              operations.push(operation(base, input, location, [word], "cache-poison-" + location + "-" + index + "-" + cacheRepeat, cacheKey, probeValue));
+              operations.push(operation(base, input, null, [], "cache-clean-" + location + "-" + index + "-" + cacheRepeat, cacheKey));
+            }
+          }
         });
       } else {
         var bucketSize = Math.max(2, Math.min(Number(input.bucket_size || 16), 64));
@@ -108,6 +116,12 @@
           var id = "screen-" + location + "-" + bucket;
           var op = operation(base, input, location, words.slice(start, start + bucketSize), id);
           if (op) operations.push(op); else skipped.push(location);
+          if (input.cache_key_tests !== false && (location === "query" || location === "header")) {
+            var cacheKey = marker(input, "cache-key-screen-" + location + "-" + bucket);
+            var probeValue = marker(input, "cache-probe-screen-" + location + "-" + bucket);
+            operations.push(operation(base, input, location, words.slice(start, start + bucketSize), "cache-screen-poison-" + location + "-" + bucket, cacheKey, probeValue));
+            operations.push(operation(base, input, null, [], "cache-screen-clean-" + location + "-" + bucket, cacheKey));
+          }
         }
       }
     });
@@ -163,6 +177,8 @@
     return !equivalent(a, b, input);
   }
 
+  function contains(item, value) { return !!(item && !item.error && responseText(item).indexOf(value) !== -1); }
+
   function analyze(input, observations, context) {
     var map = byId(observations), baseline = map["baseline-0"], second = map["baseline-1"];
     if (!baseline || !second) return { findings: [], result: { error: "baseline observations missing" } };
@@ -185,6 +201,25 @@
               metadata: { location: location, parameter: word }
             });
           }
+          if (input.cache_key_tests !== false && (location === "query" || location === "header")) {
+            var cacheEvidence = [], cacheConfirmed = true;
+            for (var cacheRepeat = 0; cacheRepeat < 2; cacheRepeat += 1) {
+              var poison = map["cache-poison-" + location + "-" + index + "-" + cacheRepeat];
+              var clean = map["cache-clean-" + location + "-" + index + "-" + cacheRepeat];
+              var probeValue = marker(input, "cache-probe-" + location + "-" + index + "-" + cacheRepeat);
+              if (!contains(poison, probeValue) || !contains(clean, probeValue)) cacheConfirmed = false;
+              if (poison && poison.exchange_id) cacheEvidence.push(poison.exchange_id);
+              if (clean && clean.exchange_id) cacheEvidence.push(clean.exchange_id);
+            }
+            if (cacheConfirmed) findings.push({
+              title: "Unkeyed cache " + location + " parameter: " + word,
+              severity: "medium", confidence: "firm",
+              explanation: "A unique value supplied through this parameter persisted into a clean request with the same isolated cache key in two independent trials.",
+              remediation: "Include security-relevant inputs in the cache key, strip unsupported inputs before caching, and avoid reflecting unkeyed values in cacheable responses.",
+              evidence_exchange_ids: cacheEvidence,
+              metadata: { location: location, parameter: word, signal: "poison_clean_persistence" }
+            });
+          }
         });
       });
       return { findings: findings, result: { phase: "confirm", baseline_unstable: baselineUnstable, confirmed: findings.length } };
@@ -196,7 +231,12 @@
         if (changed(baseline, map["screen-" + location + "-" + bucket], baselineUnstable, input)) {
           narrowed[location] = narrowed[location].concat(all[location].slice(start, start + bucketSize));
         }
+        if (input.cache_key_tests !== false && (location === "query" || location === "header")) {
+          var probeValue = marker(input, "cache-probe-screen-" + location + "-" + bucket);
+          if (contains(map["cache-screen-clean-" + location + "-" + bucket], probeValue)) narrowed[location] = narrowed[location].concat(all[location].slice(start, start + bucketSize));
+        }
       }
+      narrowed[location] = narrowed[location].filter(function (word, index, words) { return words.indexOf(word) === index; });
     });
     return {
       findings: [],
@@ -204,8 +244,8 @@
         phase: "screen",
         baseline_unstable: baselineUnstable,
         candidate_buckets: narrowed,
-        follow_up: Object.keys(narrowed).some(function (location) { return narrowed[location].length > 0; }) ? { phase: "confirm", locations: Object.keys(narrowed).filter(function (location) { return narrowed[location].length > 0; }), words_by_location: narrowed, use_only_supplied_words: true, max_words: Number(input.max_words || 500), max_requests: Number(input.max_requests || 5000), marker: input.marker, cache_bust: input.cache_bust !== false, cache_buster_name: input.cache_buster_name, similarity_threshold: input.similarity_threshold, ignore_patterns: input.ignore_patterns } : null,
-        note: "Candidate buckets are cache-busted and must be confirmed individually; null follow_up means no response differential was observed."
+        follow_up: Object.keys(narrowed).some(function (location) { return narrowed[location].length > 0; }) ? { phase: "confirm", locations: Object.keys(narrowed).filter(function (location) { return narrowed[location].length > 0; }), words_by_location: narrowed, use_only_supplied_words: true, max_words: Number(input.max_words || 500), max_requests: Number(input.max_requests || 5000), marker: input.marker, cache_bust: input.cache_bust !== false, cache_key_tests: input.cache_key_tests !== false, cache_buster_name: input.cache_buster_name, similarity_threshold: input.similarity_threshold, ignore_patterns: input.ignore_patterns } : null,
+        note: "Candidate buckets are cache-busted and include isolated poison-clean cache-key checks; run the returned follow-up for individual confirmation."
       }
     };
   }
