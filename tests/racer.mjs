@@ -65,6 +65,8 @@ assert.equal(sequential.operations[0].technique, "sequential_control");
 assert.equal(racer.analyze({ ...input, technique: "sequential", attempts: 1 }, [group("race-0", [response("a", 1, true), response("b", 2, true)])], context).findings.length, 0);
 
 const h2 = racer.plan({ ...input, technique: "h2_single_packet", attempts: 1 }, context);
+const h2Controlled = racer.plan({ ...input, technique: "h2_single_packet", attempts: 1, control_mode: "single_each" }, context);
+assert.equal(h2Controlled.operations.find((operation) => operation.id === "control-0").attempt, 0);
 assert.equal(h2.operations[1].technique, "h2_single_packet");
 assert.match(h2.result.no_fallback, /real HTTP\/2 packet/);
 const h2Result = racer.analyze(
@@ -74,6 +76,12 @@ const h2Result = racer.analyze(
 );
 assert.match(h2Result.result.synchronization, /ALPN h2/);
 assert.equal("host_blocker" in h2Result.result, false);
+const operationError = racer.analyze(
+  { ...input, technique: "h2_single_packet", attempts: 1, control_mode: "none" },
+  [{ id: "race-0", error: { code: "protocol_incompatible", message: "h2 unavailable" } }],
+  context,
+);
+assert.equal(operationError.result.diagnostics[0].errors[0].code, "protocol_incompatible");
 
 assert.throws(() => racer.plan({ ...input, requests: [{ url: "https://example.test", body_text: "a", body_base64: "Yg==" }] }, context), /cannot combine/);
 

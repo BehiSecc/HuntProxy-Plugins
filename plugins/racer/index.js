@@ -91,9 +91,9 @@
     function setup(id, attempt) { if (setupRequests.length) operations.push(group(id, "sequential_control", attempt, clone(setupRequests), options)); }
     function validate(id, attempt) { if (validationRequests.length) operations.push(group(id, "sequential_control", attempt, clone(validationRequests), options)); }
     if (controlMode !== "none") {
-      setup("setup-control", -1);
-      operations.push(group("control-0", "sequential_control", -1, controlMode === "full_group" ? clone(raceRequests) : singleEach(raceDefinitions, "control"), options));
-      validate("validate-control", -1);
+      setup("setup-control", 0);
+      operations.push(group("control-0", "sequential_control", 0, controlMode === "full_group" ? clone(raceRequests) : singleEach(raceDefinitions, "control"), options));
+      validate("validate-control", 0);
     }
     for (var attempt = 0; attempt < attempts; attempt += 1) {
       setup("setup-" + attempt, attempt);
@@ -156,7 +156,8 @@
       var qualifies = setupPassed && validationPassed && input.technique !== "sequential" && (synchronized || input.technique === "parallel");
       if (qualifies && successes > maximum) { anomalous.push(race); supporting.push(setup, validation); }
       if (qualifies && control && newSignatures.length) novel.push(race);
-      diagnostics.push({ attempt: attempt, synchronized: !!synchronized, release_skew_ms: race && race.release_skew_ms, successes: successes, semantic_success_used: semantic, setup_passed: setupPassed, validation_passed: validationPassed, novel_signatures: newSignatures, errors: groupResponses.filter(function (response) { return !!response.error; }).map(function (response) { return response.error; }) });
+      var operationErrors = race && race.error ? [race.error] : [];
+      diagnostics.push({ attempt: attempt, synchronized: !!synchronized, release_skew_ms: race && race.release_skew_ms, successes: successes, semantic_success_used: semantic, setup_passed: setupPassed, validation_passed: validationPassed, novel_signatures: newSignatures, errors: operationErrors.concat(groupResponses.filter(function (response) { return !!response.error; }).map(function (response) { return response.error; })) });
     }
     var findings = [], requiredRepeats = Math.min(2, attempts);
     if (anomalous.length >= requiredRepeats) {
