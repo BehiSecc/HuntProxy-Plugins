@@ -1,15 +1,22 @@
 # Request Smuggler
 
-The `scan` action sends two clean single-request controls, two valid pipeline
-controls, and two copies of each selected probe. It covers bounded HTTP/1
-CL.TE, TE.CL, TE.TE obfuscation, CL.0, 0.CL, duplicate/signed length parser
-discrepancies, keep-alive connection state, client-side readiness, and
-pause-before-body/terminal-chunk behavior.
+`scan` is a bounded HTTP/1 desynchronization scanner. It measures the normal
+target and a harmless marker path, then alternates a clean two-request pipeline
+with each ambiguous pipeline. CL.TE, TE.CL, TE.TE permutations, and CL.0 use a
+same-connection marker oracle. 0.CL and malformed length probes are diagnostic.
 
-The action requires a unique marker and `confirm_intrusive=true`. Concurrency is
-fixed at one to reduce cross-probe interference. Findings require stable
-controls plus a repeated probe-only timeout or response-boundary difference.
+The default five-cycle gate requires at least three marker confirmations and
+zero contaminated controls before producing a firm finding. Repeated timeouts
+without marker contamination are reported only as tentative parser-discrepancy
+candidates. Requests run sequentially and every exchange is tagged with its
+operation ID.
 
-HuntProxy's current raw transport is HTTP/1 only. This extension does **not**
-claim malformed HTTP/2, H2 downgrade, H2 tunneling, or browser-proven
-client-side desync support.
+Use a unique marker, an idempotent `probe_path`, and `confirm_intrusive=true`.
+Authentication is excluded by default; set `include_auth=true` only when the
+authorized target requires it. A custom `canary_path` should be harmless and
+have a response distinguishable from the probe path.
+
+The current host preserves exact HTTP/1 bytes, duplicate headers, and response
+transcripts. It does not yet expose malformed HTTP/2 frames or a read-before-
+write same-socket primitive. Accordingly this plugin does not claim H2
+downgrade/tunneling, pause-based, or browser-proven client-side desync coverage.

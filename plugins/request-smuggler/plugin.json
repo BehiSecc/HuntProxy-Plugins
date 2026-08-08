@@ -2,16 +2,16 @@
   "schema_version": 1,
   "id": "request-smuggler",
   "name": "Request Smuggler",
-  "version": "0.1.0",
-  "description": "Detect bounded HTTP/1 framing discrepancies, pause behavior, client-side readiness, and connection-state anomalies.",
+  "version": "1.0.0",
+  "description": "Detect HTTP/1 request desynchronization with interleaved controls, parser permutations, and same-connection marker confirmation.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "3e4d77a132574ef6f708b16a000d17c94a23bc1d18606b9e8bf8889630fed309",
+  "entrypoint_sha256": "903f589f293c3bf8efef872d67c0333bc3eee4fe550c4056dd57b46fd5b3cece",
   "capabilities": ["http.raw"],
-  "limits": { "timeout_ms": 600000, "max_operations": 50, "max_concurrency": 1, "memory_mb": 32 },
+  "limits": { "timeout_ms": 1200000, "max_operations": 250, "max_concurrency": 1, "memory_mb": 32 },
   "actions": [{
     "name": "scan",
-    "description": "Run repeated HTTP/1 desynchronization probes and matching controls against one saved request.",
+    "description": "Run bounded HTTP/1 marker pipelines and interleaved controls against one saved request.",
     "required_capabilities": ["http.raw"],
     "input_schema": {
       "type": "object",
@@ -20,10 +20,14 @@
       "properties": {
         "marker": { "type": "string", "pattern": "^[A-Za-z0-9]{8,32}$", "description": "Unique per-run marker." },
         "confirm_intrusive": { "const": true, "description": "Acknowledge that desynchronization probes may affect a reused upstream connection." },
-        "families": { "type": "array", "uniqueItems": true, "items": { "enum": ["cl_te", "te_cl", "te_te", "cl_0", "0_cl", "parser_discrepancy", "client_side", "connection_state", "pause_based"] } },
+        "families": { "type": "array", "uniqueItems": true, "items": { "enum": ["cl_te", "te_cl", "te_te", "cl_0", "0_cl", "parser_discrepancy"] } },
         "max_techniques": { "type": "integer", "minimum": 1, "maximum": 20, "default": 20 },
-        "read_timeout_ms": { "type": "integer", "minimum": 500, "maximum": 15000, "default": 3000 },
-        "pause_ms": { "type": "integer", "minimum": 100, "maximum": 10000, "default": 1000 }
+        "repeats": { "type": "integer", "minimum": 3, "maximum": 5, "default": 5, "description": "Interleaved control/probe cycles per technique." },
+        "probe_path": { "type": "string", "maxLength": 2048, "description": "Optional idempotent origin-form path used by outer and victim requests." },
+        "canary_path": { "type": "string", "maxLength": 2048, "description": "Optional harmless path whose direct response is used as the contamination oracle." },
+        "include_auth": { "type": "boolean", "default": false, "description": "Explicitly copy Cookie and Authorization from the saved request into intrusive raw probes." },
+        "read_timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 30000, "default": 8000 },
+        "idle_timeout_ms": { "type": "integer", "minimum": 500, "maximum": 5000, "default": 1500 }
       }
     }
   }]

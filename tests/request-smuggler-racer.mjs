@@ -17,27 +17,41 @@ function context(url = "https://example.test/account") {
   const plugin = await load("request-smuggler");
   const ctx = context();
   ctx.base_exchange.raw_request_base64 = Buffer.from("GET /account HTTP/1.1\r\nHost: example.test\r\nCookie: sid=secret\r\n\r\n").toString("base64");
-  const input = { marker: "abc12345", confirm_intrusive: true, families: ["cl_te"] };
+  const input = { marker: "abc12345", confirm_intrusive: true, families: ["cl_te"], repeats: 3 };
   const plan = plugin.plan(input, ctx);
-  assert.equal(plan.operations.length, 6);
+  assert.equal(plan.operations.length, 10);
   assert.ok(plan.operations.every((operation) => operation.type === "raw_http1"));
-  assert.match(Buffer.from(plan.operations[4].request_base64, "base64").toString(), /Cookie: sid=secret/);
-  const observations = plan.operations.map((operation, index) => ({
-    id: operation.id,
-    raw: {
-      exchange_id: index + 200,
-      read_outcome: operation.id.startsWith("probe-") ? "timeout" : "idle",
-      responses: operation.id.startsWith("control-pipeline") ? [{ status_code: 200 }, { status_code: 200 }] : [{ status_code: 200 }],
-    },
-  }));
+  const attack = Buffer.from(plan.operations.find((operation) => operation.id === "probe-0-0").request_base64, "base64").toString();
+  assert.doesNotMatch(attack, /Cookie: sid=secret/);
+  assert.match(attack, /Content-Length: [0-9]+\r\nTransfer-Encoding: chunked/);
+  assert.match(attack, /GET \/hp-abc12345-not-found HTTP\/1\.1/);
+  const authenticated = plugin.plan({ ...input, include_auth: true }, ctx);
+  assert.match(Buffer.from(authenticated.operations.find((operation) => operation.id === "probe-0-0").request_base64, "base64").toString(), /Cookie: sid=secret/);
+
+  function wire(responses) {
+    let transcript = ""; const summaries = [];
+    for (const response of responses) {
+      const bytes = `HTTP/1.1 ${response.status} Test\r\nContent-Length: ${response.body.length}\r\n\r\n${response.body}`;
+      summaries.push({ status_code: response.status, offset: transcript.length, length: bytes.length }); transcript += bytes;
+    }
+    return { read_outcome: "idle", responses: summaries, response_transcript_base64: Buffer.from(transcript).toString("base64") };
+  }
+  const observations = plan.operations.map((operation, index) => {
+    const responses = operation.id.startsWith("direct-canary") ? [{ status: 404, body: "unique canary page" }]
+      : operation.id.startsWith("control-") ? [{ status: 200, body: "normal account" }, { status: 200, body: "normal account" }]
+      : operation.id.startsWith("probe-") ? [{ status: 200, body: "normal account" }, { status: 404, body: "unique canary page" }]
+      : [{ status: 200, body: "normal account" }];
+    return { id: operation.id, raw: { exchange_id: index + 200, ...wire(responses) } };
+  });
   const result = plugin.analyze(input, observations, ctx);
   assert.equal(result.findings.length, 1);
   assert.equal(result.findings[0].metadata.family, "cl_te");
+  assert.equal(result.findings[0].metadata.signal, "marker_contamination");
   assert.ok(result.result.limitations.some((value) => /HTTP\/2/.test(value)));
   const all = plugin.plan({ marker: "abc12345", confirm_intrusive: true }, ctx);
   assert.ok(all.result.techniques.some((value) => value.family === "te_te"));
-  assert.ok(all.result.techniques.some((value) => value.family === "pause_based"));
-  assert.ok(all.operations.some((operation) => operation.options.pause_at_byte > 0));
+  assert.ok(all.result.techniques.some((value) => value.family === "cl_0"));
+  assert.ok(all.result.limitations.some((value) => /Pause-based/.test(value)));
 }
 
 {
