@@ -19,7 +19,7 @@ function context(url = "https://example.test/account") {
   ctx.base_exchange.raw_request_base64 = Buffer.from("GET /account HTTP/1.1\r\nHost: example.test\r\nCookie: sid=secret\r\n\r\n").toString("base64");
   const input = { marker: "abc12345", confirm_intrusive: true, families: ["cl_te"], repeats: 3 };
   const plan = plugin.plan(input, ctx);
-  assert.equal(plan.operations.length, 10);
+  assert.equal(plan.operations.length, 16);
   assert.ok(plan.operations.every((operation) => operation.type === "raw_http1"));
   const attack = Buffer.from(plan.operations.find((operation) => operation.id === "probe-0-0").request_base64, "base64").toString();
   assert.doesNotMatch(attack, /Cookie: sid=secret/);
@@ -38,8 +38,9 @@ function context(url = "https://example.test/account") {
   }
   const observations = plan.operations.map((operation, index) => {
     const responses = operation.id.startsWith("direct-canary") ? [{ status: 404, body: "unique canary page" }]
-      : operation.id.startsWith("control-") ? [{ status: 200, body: "normal account" }, { status: 200, body: "normal account" }]
-      : operation.id.startsWith("probe-") ? [{ status: 200, body: "normal account" }, { status: 404, body: "unique canary page" }]
+      : operation.id.startsWith("control-") || operation.id.startsWith("recovery-") ? [{ status: 200, body: "normal account" }]
+      : operation.id.startsWith("victim-") ? [{ status: 404, body: "unique canary page" }]
+      : operation.id.startsWith("probe-") ? [{ status: 200, body: "normal account" }]
       : [{ status: 200, body: "normal account" }];
     return { id: operation.id, raw: { exchange_id: index + 200, ...wire(responses) } };
   });

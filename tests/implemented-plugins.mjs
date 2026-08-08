@@ -211,7 +211,7 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
   smuggleContext.base_exchange.raw_request_base64 = Buffer.from("GET /account HTTP/1.1\r\nHost: example.test\r\nCookie: sid=secret\r\n\r\n").toString("base64");
   const input = { marker: "abc12345", confirm_intrusive: true, families: ["cl_te"], repeats: 3 };
   const plan = plugin.plan(input, smuggleContext);
-  assert.equal(plan.operations.length, 10);
+  assert.equal(plan.operations.length, 16);
   assert.ok(plan.operations.every((operation) => operation.type === "raw_http1"));
   assert.doesNotMatch(Buffer.from(plan.operations.find((operation) => operation.id === "probe-0-0").request_base64, "base64").toString(), /Cookie: sid=secret/);
   const observations = plan.operations.map((operation, index) => ({

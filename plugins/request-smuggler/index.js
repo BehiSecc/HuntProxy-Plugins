@@ -110,9 +110,11 @@
     }
     set.items.forEach(function (technique, index) {
       for (var repeat = 0; repeat < repeats; repeat += 1) {
-        var clean = normalGet(set.path, set.parsed, set.inherited, false) + normalGet(set.path, set.parsed, set.inherited, true);
+        var clean = normalGet(set.path, set.parsed, set.inherited, true);
         operations.push(raw("control-" + index + "-" + repeat, set.parsed, clean, input));
         operations.push(raw("probe-" + index + "-" + repeat, set.parsed, technique.request, input));
+        operations.push(raw("victim-" + index + "-" + repeat, set.parsed, clean, input));
+        operations.push(raw("recovery-" + index + "-" + repeat, set.parsed, clean, input));
       }
     });
     return { operations: operations, result: { repeats: repeats, auth_included: input.include_auth === true, canary_path: set.canary_path, techniques: set.items.map(function (item) { return { family: item.family, name: item.name, polarity: item.polarity, canary_confirmation: item.confirmable }; }), limitations: ["Exact HTTP/1 only; malformed HTTP/2, downgrade, and tunneling require a future H2 transport", "Pause-based and browser client-side desync probes are disabled until the host can read before completing a same-socket write", "Authentication is excluded unless include_auth=true"] } };
@@ -144,6 +146,7 @@
     return true;
   }
   function matchesCanary(segment, canary, base) { return !!(segment && canary && base && (canary.status !== base.status ? segment.status === canary.status : sameSegment(segment, canary))); }
+  function matchesBase(segment, base) { if (!segment || !base || segment.status !== base.status) return false; var longest=Math.max(segment.text.length,base.text.length,1),shortest=Math.min(segment.text.length,base.text.length);return sameSegment(segment,base)||shortest/longest>=0.9; }
   function evidence(items) { return items.map(function (item) { var value = rawResult(item); return value && value.exchange_id; }).filter(Boolean); }
   function analyze(input, observations, context) {
     var map = byId(observations), set = techniques(input, context), repeats = Math.max(3, Math.min(Number(input.repeats || 5), 5)), findings = [], diagnostics = [];
@@ -153,27 +156,30 @@
     var canaryDistinct = directStable && baseSignature && canarySignature && (baseSignature.status !== canarySignature.status || !sameSegment(baseSignature, canarySignature));
     var threshold = Math.max(3, Math.ceil(repeats * 0.6));
     set.items.forEach(function (technique, index) {
-      var controls = [], probes = [], clean = 0, contaminated = 0, timeouts = 0;
+      var controls = [], probes = [], victims = [], recoveries = [], clean = 0, contaminated = 0, divergentVictims = 0, timeouts = 0;
       for (var repeat = 0; repeat < repeats; repeat += 1) {
-        var control = map["control-" + index + "-" + repeat], probe = map["probe-" + index + "-" + repeat]; controls.push(control); probes.push(probe);
-        var controlSegments = segments(control); if (rawResult(control) && outcome(control) !== "timeout" && controlSegments.length >= 2 && controlSegments.every(function (segment) { return !canaryDistinct || !matchesCanary(segment, canarySignature, baseSignature); })) clean += 1;
-        if (technique.confirmable && canaryDistinct && segments(probe).some(function (segment) { return matchesCanary(segment, canarySignature, baseSignature) && !sameSegment(segment, baseSignature); })) contaminated += 1;
+        var control = map["control-" + index + "-" + repeat], probe = map["probe-" + index + "-" + repeat], victim=map["victim-"+index+"-"+repeat], recovery=map["recovery-"+index+"-"+repeat]; controls.push(control); probes.push(probe); victims.push(victim); recoveries.push(recovery);
+        var controlSegments = segments(control); if (rawResult(control) && outcome(control) !== "timeout" && controlSegments.length >= 1 && matchesBase(controlSegments[0],baseSignature) && controlSegments.every(function (segment) { return !canaryDistinct || !matchesCanary(segment, canarySignature, baseSignature); })) clean += 1;
+        var downstream=segments(probe).concat(segments(victim),segments(recovery));
+        if (technique.confirmable && canaryDistinct && downstream.some(function (segment) { return matchesCanary(segment, canarySignature, baseSignature) && !sameSegment(segment, baseSignature); })) contaminated += 1;
+        var victimFirst=segments(victim)[0],recoveryFirst=segments(recovery)[0]; if((victimFirst&&!matchesBase(victimFirst,baseSignature))||(recoveryFirst&&!matchesBase(recoveryFirst,baseSignature))) divergentVictims+=1;
         if (outcome(probe) === "timeout" && outcome(control) !== "timeout") timeouts += 1;
       }
       var confirmed = directStable && canaryDistinct && clean === repeats && contaminated >= threshold;
       var candidate = directStable && clean === repeats && timeouts >= threshold;
-      diagnostics.push({ family: technique.family, technique: technique.name, polarity: technique.polarity, clean_controls: clean, canary_confirmations: contaminated, probe_only_timeouts: timeouts, repeats: repeats, signal: confirmed ? "marker_contamination" : candidate ? "timing_candidate" : "none" });
+      var responseCandidate=directStable&&clean===repeats&&divergentVictims>=threshold;
+      diagnostics.push({ family: technique.family, technique: technique.name, polarity: technique.polarity, clean_controls: clean, canary_confirmations: contaminated, divergent_victims: divergentVictims, probe_only_timeouts: timeouts, repeats: repeats, signal: confirmed ? "marker_contamination" : responseCandidate ? "victim_divergence" : candidate ? "timing_candidate" : "none" });
       if (confirmed) findings.push({
         title: "Confirmed HTTP/1 request desynchronization: " + technique.name, severity: "high", confidence: "firm",
         explanation: "A harmless marker request was reproducibly parsed out of the ambiguous pipeline in " + contaminated + " of " + repeats + " attempts, while every interleaved clean pipeline remained uncontaminated.",
         remediation: "Reject ambiguous framing at the first hop, normalize Transfer-Encoding and Content-Length consistently across every hop, and close connections after parser errors.",
-        evidence_exchange_ids: evidence(baseDirect.concat(canaryDirect, controls, probes)), metadata: { family: technique.family, polarity: technique.polarity, signal: "marker_contamination", confirmations: contaminated, attempts: repeats }
+        evidence_exchange_ids: evidence(baseDirect.concat(canaryDirect, controls, probes, victims, recoveries)), metadata: { family: technique.family, polarity: technique.polarity, signal: "marker_contamination", confirmations: contaminated, attempts: repeats }
       });
-      else if (candidate) findings.push({
+      else if (responseCandidate||candidate) findings.push({
         title: "HTTP/1 framing discrepancy candidate: " + technique.name, severity: "medium", confidence: "tentative",
-        explanation: "The ambiguous request timed out in " + timeouts + " of " + repeats + " attempts while all interleaved controls completed. Timing alone is not proof of desynchronization, so marker confirmation or manual validation is required.",
+        explanation: responseCandidate ? "Requests immediately following the ambiguous probe diverged from the stable baseline in " + divergentVictims + " of " + repeats + " attempts while every interleaved pre-probe control remained clean. Marker confirmation is still required before treating this as exploitable." : "The ambiguous request timed out in " + timeouts + " of " + repeats + " attempts while all interleaved controls completed. Timing alone is not proof of desynchronization, so marker confirmation or manual validation is required.",
         remediation: "Review every HTTP hop for inconsistent framing rules and validate on an isolated connection before treating this as exploitable.",
-        evidence_exchange_ids: evidence(controls.concat(probes)), metadata: { family: technique.family, polarity: technique.polarity, signal: "timing_candidate", attempts: repeats }
+        evidence_exchange_ids: evidence(controls.concat(probes,victims,recoveries)), metadata: { family: technique.family, polarity: technique.polarity, signal: responseCandidate?"victim_divergence":"timing_candidate", attempts: repeats }
       });
     });
     return { findings: findings, result: { direct_controls_stable: directStable, canary_distinct: !!canaryDistinct, diagnostics: diagnostics, limitations: ["Firm findings require same-connection marker contamination; timeout-only signals remain tentative.", "HTTP/2 parser discrepancies and tunneling are not supported by the current host.", "Pause-based and browser client-side desync tests are intentionally not claimed."] } };
