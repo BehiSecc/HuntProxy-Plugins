@@ -73,6 +73,7 @@
     else patch.body_params=[token];
     return patch;
   }
+  function freshValue(input,location,name,value){var config=freshToken(input);return config&&config.location===location&&config.name.toLowerCase()===String(name).toLowerCase()?"{{extract:csrf_fresh}}":value;}
   function jsonPointer(parts) { return "/" + parts.map(function(part){return String(part).replace(/~/g,"~0").replace(/\//g,"~1");}).join("/"); }
   function jsonTokenPaths(value, wanted, parts, output, depth) {
     if(!value || typeof value!=="object" || depth>8 || output.length>=40) return;
@@ -122,8 +123,8 @@
       combinedInvalid=mergePatch(combinedInvalid,{query_params:[{name:part.name,value:invalid}]});
       add("query-remove:" + part.name, { query_params: [{ name: part.name, value: null }] });
       add("query-invalid:" + part.name, { query_params: [{ name: part.name, value: invalid }] });
-      add("query-duplicate-invalid-first:" + part.name, { query_params: [{ name: part.name, value: invalid }, { name: part.name, value: part.value }] }, "duplicate-token");
-      add("query-duplicate-invalid-last:" + part.name, { query_params: [{ name: part.name, value: part.value }, { name: part.name, value: invalid }] }, "duplicate-token");
+      add("query-duplicate-invalid-first:" + part.name, { query_params: [{ name: part.name, value: invalid }, { name: part.name, value: freshValue(input,"query",part.name,part.value) }] }, "duplicate-token");
+      add("query-duplicate-invalid-last:" + part.name, { query_params: [{ name: part.name, value: freshValue(input,"query",part.name,part.value) }, { name: part.name, value: invalid }] }, "duplicate-token");
     });
     data.ordered_headers.forEach(function (header) {
       if (!wanted[header.name.toLowerCase()]) return;
@@ -132,8 +133,8 @@
       combinedInvalid=mergePatch(combinedInvalid,{header_tombstones:[header.name],headers:[{name:header.name,value:invalid}]});
       add("header-remove:" + header.name, { header_tombstones: [header.name] });
       add("header-invalid:" + header.name, { headers: [{ name: header.name, value: invalid }] });
-      add("header-duplicate-invalid-first:" + header.name, { header_tombstones: [header.name], headers: [{ name: header.name, value: invalid }, { name: header.name, value: header.value }] }, "duplicate-token");
-      add("header-duplicate-invalid-last:" + header.name, { header_tombstones: [header.name], headers: [{ name: header.name, value: header.value }, { name: header.name, value: invalid }] }, "duplicate-token");
+      add("header-duplicate-invalid-first:" + header.name, { header_tombstones: [header.name], headers: [{ name: header.name, value: invalid }, { name: header.name, value: freshValue(input,"header",header.name,header.value) }] }, "duplicate-token");
+      add("header-duplicate-invalid-last:" + header.name, { header_tombstones: [header.name], headers: [{ name: header.name, value: freshValue(input,"header",header.name,header.value) }, { name: header.name, value: invalid }] }, "duplicate-token");
     });
     if (contentType.indexOf("application/x-www-form-urlencoded") !== -1) {
       var parts = formParts(data.body);
@@ -144,9 +145,15 @@
         combinedInvalid=mergePatch(combinedInvalid,{body_params:[{name:part.name,value:invalid}]});
         add("body-remove:" + part.name, { body_params: [{ name: part.name, value: null }] });
         add("body-invalid:" + part.name, { body_params: [{ name: part.name, value: invalid }] });
-        var without = parts.filter(function (candidate) { return candidate.name.toLowerCase() !== part.name.toLowerCase(); }).map(function (candidate) { return candidate.raw; });
-        add("body-duplicate-invalid-first:" + part.name, { body_base64: encode64(without.concat([encodeURIComponent(part.name) + "=" + encodeURIComponent(invalid), encodeURIComponent(part.name) + "=" + encodeURIComponent(part.value)]).join("&")) }, "duplicate-token");
-        add("body-duplicate-invalid-last:" + part.name, { body_base64: encode64(without.concat([encodeURIComponent(part.name) + "=" + encodeURIComponent(part.value), encodeURIComponent(part.name) + "=" + encodeURIComponent(invalid)]).join("&")) }, "duplicate-token");
+        var fresh=freshToken(input), refreshBody=fresh&&fresh.location==="body"&&fresh.name.toLowerCase()===part.name.toLowerCase();
+        if(refreshBody){
+          add("body-duplicate-invalid-first:"+part.name,{body_params:[{name:part.name,value:invalid},{name:part.name,value:"{{extract:csrf_fresh}}"}]},"duplicate-token");
+          add("body-duplicate-invalid-last:"+part.name,{body_params:[{name:part.name,value:"{{extract:csrf_fresh}}"},{name:part.name,value:invalid}]},"duplicate-token");
+        } else {
+          var without = parts.filter(function (candidate) { return candidate.name.toLowerCase() !== part.name.toLowerCase(); }).map(function (candidate) { return candidate.raw; });
+          add("body-duplicate-invalid-first:" + part.name, { body_base64: encode64(without.concat([encodeURIComponent(part.name) + "=" + encodeURIComponent(invalid), encodeURIComponent(part.name) + "=" + encodeURIComponent(part.value)]).join("&")) }, "duplicate-token");
+          add("body-duplicate-invalid-last:" + part.name, { body_base64: encode64(without.concat([encodeURIComponent(part.name) + "=" + encodeURIComponent(part.value), encodeURIComponent(part.name) + "=" + encodeURIComponent(invalid)]).join("&")) }, "duplicate-token");
+        }
       });
     } else if (contentType.indexOf("application/json") !== -1) {
       try {
@@ -223,13 +230,14 @@
       {id:"submit",request:workflowRequest("ignored",exchange,submitPatch)}
     ]};
   }
+  function patchTouchesToken(patch,config){var key=config.location==="query"?"query_params":config.location==="header"?"headers":"body_params";return (patch&&patch[key]||[]).some(function(item){return String(item.name).toLowerCase()===config.name.toLowerCase();});}
   function plan(input, context) {
     if (input.allow_state_change !== true) throw new Error("CSRF testing repeats the state-changing request and requires allow_state_change=true");
     var exchange = base(context), operations = [], mutations = mutationList(input, context), fresh=freshToken(input);
     for (var repeat = 0; repeat < 2; repeat += 1) operations.push(fresh?workflow("baseline-"+repeat,exchange,fresh,{},true):operation("baseline-" + repeat, exchange, {}));
     mutations.forEach(function (mutation, index) {
       for (var repeat = 0; repeat < 2; repeat += 1) {
-        var id="mutation-"+index+"-"+repeat, refresh=!/^method-get-/.test(mutation.name);
+        var id="mutation-"+index+"-"+repeat, refresh=!/^method-get-/.test(mutation.name)&&(!fresh||!patchTouchesToken(mutation.patch,fresh));
         operations.push(fresh?workflow(id,exchange,fresh,mutation.patch,refresh):operation(id,exchange,mutation.patch));
       }
     });
