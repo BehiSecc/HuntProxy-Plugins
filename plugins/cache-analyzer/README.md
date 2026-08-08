@@ -27,6 +27,8 @@ with the query-free URL and therefore additionally requires
 Use `oracle_families` to run only named poisoning families, such as
 `["full-query"]`; omit it to preserve the broad default scan. Confirmed
 full-query collisions are persisted with the `full-query` subtype.
+Its controls use a distinct path so they cannot pre-fill the shared query-free
+cache key before the poison request.
 
 Deception mode covers appended static suffixes plus both sides of encoded path
 normalization: static-prefix traversal toward the private path, and private

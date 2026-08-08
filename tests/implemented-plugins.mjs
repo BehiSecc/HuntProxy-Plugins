@@ -145,6 +145,7 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const fullQueryOnlyInput = { ...combinationInput, oracle_families: ["full-query"], full_query_oracle: true, allow_shared_cache_key_tests: true, max_poison_variants: 1 };
   const fullQueryOnlyPlan = plugin.plan(fullQueryOnlyInput, context());
   assert.equal(fullQueryOnlyPlan.operations.length, 5, "full-query-only scan has two controls and one poison/clean/confirm triple");
+  assert.ok(fullQueryOnlyPlan.operations.find((op) => op.id === "baseline-auth").url.includes("/.huntproxy-control-"), "full-query controls cannot pre-fill the tested query-free cache key");
   assert.equal(fullQueryOnlyPlan.operations.find((op) => op.id === "poison-0").url, "https://example.test/admin?hpmulti12345q0");
   assert.ok(fullQueryOnlyPlan.operations.every((op) => !op.headers || !op.headers.some((header) => /^x-/i.test(header.name))), "family selection excludes default header probes");
   const fullQueryOnlyObservations = fullQueryOnlyPlan.operations.map((op) => observation(op, 200, op.id.startsWith("poison-") ? "full-query-collision" : "ordinary-control", op.id.startsWith("poison-") ? "canonical hpmulti12345q0" : "ordinary page"));

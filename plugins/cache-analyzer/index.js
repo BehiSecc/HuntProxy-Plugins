@@ -188,9 +188,13 @@
 
   function plan(input, context) {
     if (input.allow_cache_side_effects !== true) throw new Error("cache testing requires allow_cache_side_effects=true");
-    var exchange = base(context), token = marker(input), operations = [];
-    operations.push(request("baseline-auth", exchange.exchange_id, exchange.method, addQuery(exchange.url, "hp_control", token), [], false));
-    operations.push(request("baseline-anon", exchange.exchange_id, exchange.method, addQuery(exchange.url, "hp_control", token), [], true));
+    var exchange = base(context), token = marker(input), operations = [], controlUrl = exchange.url;
+    if (familyEnabled(input, "full-query") && input.full_query_oracle === true) {
+      var controlParsed = splitUrl(exchange.url), controlPath = controlParsed.path.replace(/\/$/, "");
+      controlUrl = controlParsed.origin + controlPath + "/.huntproxy-control-" + cacheBuster(token);
+    }
+    operations.push(request("baseline-auth", exchange.exchange_id, exchange.method, addQuery(controlUrl, "hp_control", token), [], false));
+    operations.push(request("baseline-anon", exchange.exchange_id, exchange.method, addQuery(controlUrl, "hp_control", token), [], true));
     var modes = input.modes && input.modes.length ? input.modes : ["poisoning", "deception"];
     if (modes.indexOf("poisoning") !== -1) {
       poisonVariants(exchange.url, token, input, context).slice(0, Math.max(1, Math.min(Number(input.max_poison_variants || 304), 504))).forEach(function (variant, index) {
