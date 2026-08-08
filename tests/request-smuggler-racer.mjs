@@ -42,6 +42,7 @@ function context(url = "https://example.test/account") {
   }
   const observations = plan.operations.map((operation, index) => {
     const responses = operation.id.startsWith("direct-canary") ? [{ status: 404, body: "unique canary page" }]
+      : operation.id === "control-0-1" ? [{ status: 200, body: "globally changed account state" }]
       : operation.id.startsWith("control-") || operation.id.startsWith("recovery-") ? [{ status: 200, body: "normal account" }]
       : operation.id.startsWith("victim-") ? [{ status: 404, body: "unique canary page" }]
       : operation.id.startsWith("probe-") ? [{ status: 200, body: "normal account" }]

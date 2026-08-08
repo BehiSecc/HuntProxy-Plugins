@@ -159,7 +159,7 @@
       var controls = [], probes = [], victims = [], recoveries = [], clean = 0, contaminated = 0, divergentVictims = 0, timeouts = 0;
       for (var repeat = 0; repeat < repeats; repeat += 1) {
         var control = map["control-" + index + "-" + repeat], probe = map["probe-" + index + "-" + repeat], victim=map["victim-"+index+"-"+repeat], recovery=map["recovery-"+index+"-"+repeat]; controls.push(control); probes.push(probe); victims.push(victim); recoveries.push(recovery);
-        var controlSegments = segments(control); if (rawResult(control) && outcome(control) !== "timeout" && controlSegments.length >= 1 && matchesBase(controlSegments[0],baseSignature) && controlSegments.every(function (segment) { return !canaryDistinct || !matchesCanary(segment, canarySignature, baseSignature); })) clean += 1;
+        var controlSegments = segments(control); if (rawResult(control) && outcome(control) !== "timeout" && controlSegments.length >= 1 && controlSegments.every(function (segment) { return !canaryDistinct || !matchesCanary(segment, canarySignature, baseSignature); })) clean += 1;
         var downstream=segments(probe).concat(segments(victim),segments(recovery));
         if (technique.confirmable && canaryDistinct && downstream.some(function (segment) { return matchesCanary(segment, canarySignature, baseSignature) && !sameSegment(segment, baseSignature); })) contaminated += 1;
         var victimFirst=segments(victim)[0],recoveryFirst=segments(recovery)[0]; if((victimFirst&&!matchesBase(victimFirst,baseSignature))||(recoveryFirst&&!matchesBase(recoveryFirst,baseSignature))) divergentVictims+=1;
