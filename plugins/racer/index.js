@@ -11,6 +11,21 @@
 
   function clone(value) { return JSON.parse(JSON.stringify(value)); }
 
+  function bindAttemptValue(value, attempt) {
+    return typeof value === "string" ? value.split("{attempt}").join(String(attempt)) : value;
+  }
+
+  function bindAttemptRequests(requests, attempt) {
+    return requests.map(function (source) {
+      var request = clone(source);
+      if (request.body_base64 && request.body_base64.indexOf("{attempt}") !== -1) throw new Error("{attempt} is not supported in body_base64; use body_text or typed header/URL values");
+      request.url = bindAttemptValue(request.url, attempt);
+      request.body_text = bindAttemptValue(request.body_text, attempt);
+      if (Array.isArray(request.headers)) request.headers.forEach(function (header) { header.value = bindAttemptValue(header.value, attempt); });
+      return request;
+    });
+  }
+
   function normalizeTemplate(item, index, prefix, inheritedSuccess) {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(prefix + " request must be an object");
     var request = { id: String(item.id || (prefix + "-shape-" + index)) };
@@ -88,16 +103,16 @@
     var controlMode = input.control_mode || "single_each";
     if (["none", "single_each", "full_group"].indexOf(controlMode) === -1) throw new Error("unsupported control_mode");
     var operations = [];
-    function setup(id, attempt) { if (setupRequests.length) operations.push(group(id, "sequential_control", attempt, clone(setupRequests), options)); }
-    function validate(id, attempt) { if (validationRequests.length) operations.push(group(id, "sequential_control", attempt, clone(validationRequests), options)); }
+    function setup(id, attempt) { if (setupRequests.length) operations.push(group(id, "sequential_control", attempt, bindAttemptRequests(setupRequests, attempt), options)); }
+    function validate(id, attempt) { if (validationRequests.length) operations.push(group(id, "sequential_control", attempt, bindAttemptRequests(validationRequests, attempt), options)); }
     if (controlMode !== "none") {
       setup("setup-control", 0);
-      operations.push(group("control-0", "sequential_control", 0, controlMode === "full_group" ? clone(raceRequests) : singleEach(raceDefinitions, "control"), options));
+      operations.push(group("control-0", "sequential_control", 0, bindAttemptRequests(controlMode === "full_group" ? raceRequests : singleEach(raceDefinitions, "control"), 0), options));
       validate("validate-control", 0);
     }
     for (var attempt = 0; attempt < attempts; attempt += 1) {
       setup("setup-" + attempt, attempt);
-      operations.push(group("race-" + attempt, hostTechnique, attempt, clone(raceRequests), options));
+      operations.push(group("race-" + attempt, hostTechnique, attempt, bindAttemptRequests(raceRequests, attempt), options));
       validate("validate-" + attempt, attempt);
     }
     return {
@@ -168,6 +183,16 @@
         explanation: "More responses matched the declared semantic success condition than the allowed maximum in multiple synchronized attempts" + (input.validation_requests ? ", and post-race validation confirmed the resulting state." : "."),
         remediation: "Make the state transition atomic and enforce the invariant in one transaction or serialized critical section.",
         evidence_exchange_ids: evidence((control ? [control] : []).concat(anomalous, supporting.filter(Boolean))),
+        metadata: { pattern: input.pattern || "limit_overrun", technique: input.technique || "last_byte_sync", anomalous_attempts: anomalous.length, expected_max_successes: maximum, control_mode: controlMode }
+      });
+    } else if (anomalous.length > 0) {
+      findings.push({
+        title: "Race-condition success observed",
+        severity: "medium",
+        confidence: "tentative",
+        explanation: "A synchronized attempt exceeded the declared semantic success maximum, but the result did not repeat enough times for firm confirmation.",
+        remediation: "Make the state transition atomic and rerun bounded confirmation with fresh per-attempt state.",
+        evidence_exchange_ids: evidence(anomalous.concat(supporting.filter(Boolean))),
         metadata: { pattern: input.pattern || "limit_overrun", technique: input.technique || "last_byte_sync", anomalous_attempts: anomalous.length, expected_max_successes: maximum, control_mode: controlMode }
       });
     } else if (novel.length >= requiredRepeats) {

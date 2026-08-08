@@ -34,6 +34,30 @@ assert.equal(plan.operations[1].requests[2].base_exchange_id, 42);
 assert.equal(plan.result.distinct_request_shapes, 2);
 assert.equal(plan.result.control_mode, "none");
 
+const templated = racer.plan({
+  ...input,
+  attempts: 2,
+  setup_requests: undefined,
+  validation_requests: undefined,
+  requests: [{
+    id: "register",
+    method: "POST",
+    url: "https://example.test/register?attempt={attempt}",
+    headers: [{ name: "X-Attempt", value: "run-{attempt}" }],
+    body_text: "username=user{attempt}&email=user{attempt}%40example.test",
+  }],
+}, context);
+assert.equal(templated.operations[0].requests[0].url, "https://example.test/register?attempt=0");
+assert.equal(templated.operations[1].requests[0].headers[0].value, "run-1");
+assert.match(templated.operations[1].requests[0].body_text, /username=user1/);
+assert.throws(() => racer.plan({
+  ...input,
+  attempts: 1,
+  setup_requests: undefined,
+  validation_requests: undefined,
+  requests: [{ url: "https://example.test/", body_base64: "{attempt}" }],
+}, context), /not supported in body_base64/);
+
 function response(id, exchangeId, matched, hash = "same") {
   return { id, exchange_id: exchangeId, status_code: 200, response_length: 10, response_body_hash: hash, success: { matched, checks: [] }, error: null };
 }
@@ -54,6 +78,17 @@ assert.equal(result.findings[0].metadata.control_mode, "none");
 assert.equal(result.result.diagnostics[0].semantic_success_used, true);
 assert.equal(result.result.diagnostics[0].validation_passed, true);
 assert.ok(result.findings[0].evidence_exchange_ids.includes(104));
+
+const oneHit = racer.analyze(input, [
+  observations[0],
+  observations[1],
+  observations[2],
+  observations[3],
+  group("race-1", [response("a", 111, true), response("b", 112, false), response("c", 113, false)], true),
+  observations[5],
+], context);
+assert.equal(oneHit.findings.length, 1);
+assert.equal(oneHit.findings[0].confidence, "tentative");
 
 const rejected = observations.map((observation) => observation.id.startsWith("race-")
   ? { ...observation, responses: observation.responses.map((item) => ({ ...item, success: { matched: false } })) }
