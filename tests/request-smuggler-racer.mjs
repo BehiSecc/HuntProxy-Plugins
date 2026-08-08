@@ -19,6 +19,7 @@ function context(url = "https://example.test/account") {
   ctx.base_exchange.raw_request_base64 = Buffer.from("GET /account HTTP/1.1\r\nHost: example.test\r\nCookie: sid=secret\r\n\r\n").toString("base64");
   const input = { marker: "abc12345", confirm_intrusive: true, families: ["cl_te"], repeats: 3 };
   const plan = plugin.plan(input, ctx);
+  assert.equal(plan.execution, "sequential");
   assert.equal(plan.operations.length, 16);
   assert.ok(plan.operations.every((operation) => operation.type === "raw_http1"));
   const attack = Buffer.from(plan.operations.find((operation) => operation.id === "probe-0-0").request_base64, "base64").toString();

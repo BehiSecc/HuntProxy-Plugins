@@ -197,7 +197,7 @@
         }
       }
     });
-    return { operations: operations, result: { repeats: repeats, auth_included: input.include_auth === true, canary_path: set.canary_path, request_count: operations.length, techniques: set.items.map(function (item) { return { family: item.family, name: item.name, polarity: item.polarity, canary_confirmation: item.confirmable }; }), limitations: ["HTTP/2 families require HTTPS with ALPN h2 and never fall back to HTTP/1", "Pause-based probing is opt-in because each cycle may hold a connection for up to pause_ms", "Browser client-side desync requires a real browser workflow", "Authentication is excluded unless include_auth=true"] } };
+    return { execution: "sequential", operations: operations, result: { repeats: repeats, auth_included: input.include_auth === true, canary_path: set.canary_path, request_count: operations.length, techniques: set.items.map(function (item) { return { family: item.family, name: item.name, polarity: item.polarity, canary_confirmation: item.confirmable }; }), limitations: ["HTTP/2 families require HTTPS with ALPN h2 and never fall back to HTTP/1", "Pause-based probing is opt-in because each cycle may hold a connection for up to pause_ms", "Browser client-side desync requires a real browser workflow", "Authentication is excluded unless include_auth=true"] } };
   }
   function byId(observations) { var output = {}; observations.forEach(function (item) { output[item.id] = item; }); return output; }
   function rawResult(item) { return item && !item.error && item.raw ? item.raw : null; }
