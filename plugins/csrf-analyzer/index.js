@@ -202,8 +202,7 @@
     }
     (input.paired_cookie_tests||[]).forEach(function(test){
       var headers=identityHeaders(test.identity), patch={header_tombstones:["Cookie","Authorization","Proxy-Authorization"],headers:headers};
-      var fresh=freshToken(input), useFresh=fresh&&fresh.location===test.token.location&&fresh.name.toLowerCase()===String(test.token.name).toLowerCase();
-      var token={name:String(test.token.name),value:useFresh?"{{extract:csrf_fresh}}":String(test.token.value)};
+      var token={name:String(test.token.name),value:String(test.token.value)};
       if(test.token.location==="query") patch.query_params=[token];
       else if(test.token.location==="header") patch.headers=headers.concat([token]);
       else patch.body_params=[token];

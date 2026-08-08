@@ -105,7 +105,7 @@ assert.ok(nestedMutations.includes("json-invalid:/profile/security/csrf_token"))
 const nestedInvalid=nestedPlan.operations.find((op)=>op.id.startsWith(`mutation-${nestedMutations.indexOf("json-invalid:/profile/security/csrf_token")}-`));
 assert.equal(JSON.parse(Buffer.from(nestedInvalid.body_base64,"base64")).profile.security.csrf_token,"huntproxy-invalid-csrf");
 
-const freshInput={allow_state_change:true,token_names:["csrf_token"],max_mutations:80,fresh_token:{acquire_url:"https://example.test/profile",body_regex:'name="csrf_token" value="([^"]+)"',location:"body",name:"csrf_token"},secondary_identity:{cookie:"sid=secondary"}};
+const freshInput={allow_state_change:true,token_names:["csrf_token"],max_mutations:80,fresh_token:{acquire_url:"https://example.test/profile",body_regex:'name="csrf_token" value="([^"]+)"',location:"body",name:"csrf_token"},secondary_identity:{cookie:"sid=secondary"},paired_cookie_tests:[{name:"explicit-pair",identity:{cookie:"sid=victim; csrf=paired"},token:{location:"body",name:"csrf_token",value:"paired-explicit"}}]};
 const freshPlan=plugin.plan(freshInput,context());
 assert.equal(freshPlan.result.fresh_token_workflows,true);
 assert.equal(freshPlan.result.planned_requests,freshPlan.operations.length*2);
@@ -118,6 +118,7 @@ assert.deepEqual(Array.from(freshSubmit("body-remove:csrf_token").body_params,(i
 assert.deepEqual(Array.from(freshSubmit("body-invalid:csrf_token").body_params,(item)=>item.value),["huntproxy-invalid-csrf"]);
 assert.deepEqual(Array.from(freshSubmit("body-duplicate-invalid-first:csrf_token").body_params,(item)=>item.value),["huntproxy-invalid-csrf","{{extract:csrf_fresh}}"]);
 assert.deepEqual(Array.from(freshSubmit("body-duplicate-invalid-last:csrf_token").body_params,(item)=>item.value),["{{extract:csrf_fresh}}","huntproxy-invalid-csrf"]);
+assert.deepEqual(Array.from(freshSubmit("paired-cookie:explicit-pair").body_params,(item)=>item.value),["paired-explicit"],"paired-cookie probes preserve the caller-supplied token instead of replacing it with the primary fresh token");
 const freshObservations=freshPlan.operations.map((op)=>{const final=observation({id:op.id});return {id:op.id,steps:[],terminal:final,error:null};});
 const freshAnalysis=plugin.analyze(freshInput,freshObservations,context());
 assert.equal(freshAnalysis.result.baseline_successful,true);

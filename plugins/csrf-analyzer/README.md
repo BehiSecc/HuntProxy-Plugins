@@ -20,3 +20,6 @@ Provide `success_markers` and `failure_markers` when HTTP status alone cannot
 prove the state change. The analyzer normalizes common volatile response fields
 and requires repeated agreement. It does not emulate browser SameSite behavior
 or automatically mutate multipart tokens; use a real browser flow for those cases.
+
+`paired_cookie_tests` always use the explicit identity and token pair supplied by
+the caller; the primary identity's `fresh_token` workflow does not replace it.
