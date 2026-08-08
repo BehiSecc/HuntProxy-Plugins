@@ -26,6 +26,41 @@
     });
   }
 
+  function bindExtractValue(value, bindings) {
+    if (typeof value !== "string") return value;
+    return value.replace(/\{\{extract:([A-Za-z0-9_.-]+)\}\}/g, function (_, name) {
+      if (!Object.prototype.hasOwnProperty.call(bindings, name)) throw new Error("extract " + name + " is not produced by this attempt's setup_requests");
+      return "{{extract:" + bindings[name] + "}}";
+    });
+  }
+
+  function bindExtractRequests(requests, bindings) {
+    return requests.map(function (source) {
+      var request = clone(source);
+      if (request.body_base64 && request.body_base64.indexOf("{{extract:") !== -1) throw new Error("extract placeholders are not supported in body_base64; use body_text or typed header/URL values");
+      request.url = bindExtractValue(request.url, bindings);
+      request.body_text = bindExtractValue(request.body_text, bindings);
+      if (Array.isArray(request.headers)) request.headers.forEach(function (header) { header.value = bindExtractValue(header.value, bindings); });
+      return request;
+    });
+  }
+
+  function namespaceSetupExtracts(requests, namespace) {
+    var bindings = {}, output = clone(requests), count = 0;
+    output.forEach(function (request) {
+      if ((request.url && request.url.indexOf("{{extract:") !== -1) || (request.body_text && request.body_text.indexOf("{{extract:") !== -1) || (request.headers || []).some(function (header) { return header.value.indexOf("{{extract:") !== -1; })) throw new Error("setup_requests cannot consume extracts produced by the same setup group");
+      (request.extract || []).forEach(function (rule) {
+        var name = String(rule.name || "");
+        if (!/^[A-Za-z0-9_.-]{1,40}$/.test(name)) throw new Error("setup extract names must be 1-40 ASCII letters, digits, dot, dash, or underscore");
+        if (Object.prototype.hasOwnProperty.call(bindings, name)) throw new Error("duplicate setup extract name: " + name);
+        var internal = name + "." + namespace;
+        bindings[name] = internal; rule.name = internal; count += 1;
+      });
+    });
+    if (count > 16) throw new Error("each setup group supports at most 16 extracts");
+    return { requests: output, bindings: bindings, count: count };
+  }
+
   function normalizeTemplate(item, index, prefix, inheritedSuccess) {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error(prefix + " request must be an object");
     var request = { id: String(item.id || (prefix + "-shape-" + index)) };
@@ -37,6 +72,7 @@
     if (request.body_text != null && request.body_base64 != null) throw new Error(request.id + " cannot combine body_text and body_base64");
     request.success = item.success != null ? clone(item.success) : (inheritedSuccess != null ? clone(inheritedSuccess) : undefined);
     if (request.success == null) delete request.success;
+    if (item.extract != null) request.extract = clone(item.extract);
     return { request: request, copies: boundedInteger(item.copies, 1, 1, 100, request.id + ".copies") };
   }
 
@@ -94,6 +130,8 @@
     var raceDefinitions = templates(input, context, "requests", "race", input.success);
     var setupDefinitions = templates(input, context, "setup_requests", "setup", input.setup_success);
     var validationDefinitions = templates(input, context, "validation_requests", "validation", input.validation_success);
+    if (raceDefinitions.some(function (definition) { return Array.isArray(definition.request.extract) && definition.request.extract.length; }) || validationDefinitions.some(function (definition) { return Array.isArray(definition.request.extract) && definition.request.extract.length; })) throw new Error("response extraction is supported only on setup_requests");
+    if (setupDefinitions.some(function (definition) { return Array.isArray(definition.request.extract) && definition.request.extract.length && definition.copies !== 1; })) throw new Error("setup requests with extracts must use copies=1");
     var raceRequests = expand(raceDefinitions, 100, "race");
     var setupRequests = setupDefinitions.length ? expand(setupDefinitions, 20, "setup") : [];
     var validationRequests = validationDefinitions.length ? expand(validationDefinitions, 20, "validation") : [];
@@ -103,19 +141,30 @@
     var controlMode = input.control_mode || "single_each";
     if (["none", "single_each", "full_group"].indexOf(controlMode) === -1) throw new Error("unsupported control_mode");
     var operations = [];
-    function setup(id, attempt) { if (setupRequests.length) operations.push(group(id, "sequential_control", attempt, bindAttemptRequests(setupRequests, attempt), options)); }
-    function validate(id, attempt) { if (validationRequests.length) operations.push(group(id, "sequential_control", attempt, bindAttemptRequests(validationRequests, attempt), options)); }
+    var hasExtracts = setupDefinitions.some(function (definition) { return Array.isArray(definition.request.extract) && definition.request.extract.length; });
+    var extractsPerSetup = setupDefinitions.reduce(function (count, definition) { return count + (definition.request.extract || []).length; }, 0);
+    if (extractsPerSetup * (attempts + (controlMode === "none" ? 0 : 1)) > 256) throw new Error("setup extraction plan exceeds 256 bounded extracts; reduce attempts or extract rules");
+    function setup(id, attempt, namespace) {
+      if (!setupRequests.length) return {};
+      var prepared = namespaceSetupExtracts(bindAttemptRequests(setupRequests, attempt), namespace);
+      operations.push(group(id, "sequential_control", attempt, prepared.requests, options));
+      return prepared.bindings;
+    }
+    function bound(requests, attempt, bindings) { return bindExtractRequests(bindAttemptRequests(requests, attempt), bindings); }
+    function validate(id, attempt, bindings) { if (validationRequests.length) operations.push(group(id, "sequential_control", attempt, bound(validationRequests, attempt, bindings), options)); }
     if (controlMode !== "none") {
-      setup("setup-control", 0);
-      operations.push(group("control-0", "sequential_control", 0, bindAttemptRequests(controlMode === "full_group" ? raceRequests : singleEach(raceDefinitions, "control"), 0), options));
-      validate("validate-control", 0);
+      var controlBindings = setup("setup-control", 0, "control");
+      operations.push(group("control-0", "sequential_control", 0, bound(controlMode === "full_group" ? raceRequests : singleEach(raceDefinitions, "control"), 0, controlBindings), options));
+      validate("validate-control", 0, controlBindings);
     }
     for (var attempt = 0; attempt < attempts; attempt += 1) {
-      setup("setup-" + attempt, attempt);
-      operations.push(group("race-" + attempt, hostTechnique, attempt, bindAttemptRequests(raceRequests, attempt), options));
-      validate("validate-" + attempt, attempt);
+      var attemptBindings = setup("setup-" + attempt, attempt, "attempt" + attempt);
+      operations.push(group("race-" + attempt, hostTechnique, attempt, bound(raceRequests, attempt, attemptBindings), options));
+      validate("validate-" + attempt, attempt, attemptBindings);
     }
     return {
+      execution: "sequential",
+      stop_on_error: hasExtracts,
       operations: operations,
       result: {
         technique: requestedTechnique,
@@ -125,6 +174,7 @@
         distinct_request_shapes: raceDefinitions.length,
         control_mode: controlMode,
         setup_per_attempt: setupRequests.length,
+        setup_extracts_per_attempt: extractsPerSetup,
         validation_per_attempt: validationRequests.length,
         semantic_success: !!input.success || raceDefinitions.some(function (item) { return !!item.request.success; }),
         no_fallback: requestedTechnique === "h2_single_packet" ? "The host must use one real HTTP/2 packet or return protocol_incompatible." : null

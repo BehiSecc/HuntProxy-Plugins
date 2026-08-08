@@ -24,6 +24,7 @@ const input = {
 };
 
 const plan = racer.plan(input, context);
+assert.equal(plan.execution, "sequential");
 assert.deepEqual(Array.from(plan.operations, (operation) => operation.id), ["setup-0", "race-0", "validate-0", "setup-1", "race-1", "validate-1"]);
 assert.equal(plan.operations[1].technique, "last_byte_sync");
 assert.equal(plan.operations[1].requests.length, 3);
@@ -57,6 +58,54 @@ assert.throws(() => racer.plan({
   validation_requests: undefined,
   requests: [{ url: "https://example.test/", body_base64: "{attempt}" }],
 }, context), /not supported in body_base64/);
+
+const extracted = racer.plan({
+  ...input,
+  attempts: 2,
+  control_mode: "none",
+  setup_requests: [{
+    id: "csrf",
+    method: "GET",
+    url: "https://example.test/form?attempt={attempt}",
+    extract: [{ from: "body_regex", name: "csrf", pattern: "name=csrf value=([^&]+)", group: 1, encoding: "url" }],
+  }],
+  requests: [{
+    id: "submit",
+    method: "POST",
+    url: "https://example.test/submit?csrf={{extract:csrf}}",
+    headers: [{ name: "X-CSRF", value: "{{extract:csrf}}" }],
+    body_text: "csrf={{extract:csrf}}&attempt={attempt}",
+  }],
+  validation_requests: [{ method: "GET", url: "https://example.test/state?csrf={{extract:csrf}}" }],
+}, context);
+assert.equal(extracted.execution, "sequential");
+assert.equal(extracted.stop_on_error, true);
+assert.equal(extracted.result.setup_extracts_per_attempt, 1);
+assert.equal(extracted.operations[0].requests[0].extract[0].name, "csrf.attempt0");
+assert.equal(extracted.operations[1].requests[0].url, "https://example.test/submit?csrf={{extract:csrf.attempt0}}");
+assert.equal(extracted.operations[1].requests[0].headers[0].value, "{{extract:csrf.attempt0}}");
+assert.equal(extracted.operations[1].requests[0].body_text, "csrf={{extract:csrf.attempt0}}&attempt=0");
+assert.equal(extracted.operations[2].requests[0].url, "https://example.test/state?csrf={{extract:csrf.attempt0}}");
+assert.equal(extracted.operations[3].requests[0].extract[0].name, "csrf.attempt1");
+assert.equal(extracted.operations[4].requests[0].url, "https://example.test/submit?csrf={{extract:csrf.attempt1}}");
+assert.throws(() => racer.plan({
+  ...input,
+  control_mode: "none",
+  setup_requests: [{ url: "https://example.test/form", copies: 2, extract: [{ from: "header", name: "csrf", header: "X-CSRF" }] }],
+  requests: [{ url: "https://example.test/submit", body_text: "csrf={{extract:csrf}}" }],
+}, context), /copies=1/);
+assert.throws(() => racer.plan({
+  ...input,
+  control_mode: "none",
+  setup_requests: undefined,
+  requests: [{ url: "https://example.test/submit", body_text: "csrf={{extract:missing}}" }],
+}, context), /not produced/);
+assert.throws(() => racer.plan({
+  ...input,
+  control_mode: "none",
+  setup_requests: [{ url: "https://example.test/form", extract: [{ from: "header", name: "csrf", header: "X-CSRF" }] }],
+  requests: [{ url: "https://example.test/submit", extract: [{ from: "header", name: "later", header: "X-Later" }] }],
+}, context), /only on setup_requests/);
 
 function response(id, exchangeId, matched, hash = "same") {
   return { id, exchange_id: exchangeId, status_code: 200, response_length: 10, response_body_hash: hash, success: { matched, checks: [] }, error: null };

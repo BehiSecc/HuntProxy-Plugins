@@ -41,6 +41,13 @@ override the saved request through the normal Reply materialization path.
 `use_project_cookies` defaults to true so inline last-byte requests can use the
 host-managed cookie jar without placing session values in plugin input.
 
+A `sequential_control` setup request may declare up to 16 response `extract`
+rules (`body_regex`, `header`, or `json`). Sequential plans with
+`stop_on_error: true` can reference them later as `{{extract:name}}` in typed
+URL, `body_text`, and header values. Names are unique across the plan, values
+are capped at 8 KiB each/64 KiB total, and only names—not values—reach plugin
+analysis. A plan may contain at most 256 extracts.
+
 Responses include the host-evaluated semantic predicate without returning the
 matched body:
 
@@ -67,8 +74,9 @@ truncated response is marked `indeterminate` and is not counted as success.
 `last_byte_sync` materializes each request as HTTP/1, opens every connection,
 withholds the final byte, and releases it through one barrier. It rejects an
 explicit HTTP/2 request. `h2_single_packet` requires HTTPS, one shared origin,
-and a non-empty body for every request. The host negotiates ALPN `h2`, opens one
-stream per request, withholds each final DATA fragment, and releases the final
+and supports both empty and non-empty bodies. The host negotiates ALPN `h2`,
+opens one stream per request, withholds each final DATA fragment (including a
+zero-length terminal DATA frame for an empty body), and releases the final
 fragments in one TLS write. It returns `synchronized: true` only when that
 single write occurred. Protocol-incompatible targets return an explicit error
 and are never retried through ordinary parallel dispatch. Every resulting

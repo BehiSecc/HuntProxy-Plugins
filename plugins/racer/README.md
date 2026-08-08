@@ -21,11 +21,12 @@ header values for race, setup, and validation requests. This supports unique
 usernames, emails, idempotency keys, and similar per-attempt state without raw
 byte-offset scripting. It is deliberately rejected in `body_base64`.
 
-CSRF or state tokens that must be freshly extracted between attempts remain an
-explicit limitation. HuntProxy's semantic HTTP workflow can prepare such state
-before a Racer job, but its extracted values are currently private to that
-workflow and cannot be passed into a later race group. Prepare those tokens
-separately or use a target/session where one scoped token remains valid.
+Setup requests can privately extract a bounded body-regex, header, or JSON
+value and bind it into later race and validation URL, `body_text`, or header
+values with `{{extract:name}}`. Values are unique per attempt, never returned
+in plugin results, and required-extract failures stop the remaining plan.
+Extraction from a race response, chaining within one setup group, arbitrary
+scripts, and `body_base64` substitution remain unsupported.
 
 Techniques are `sequential`, ordinary `parallel`, exact HTTP/1
 `last_byte_sync`, and `h2_single_packet`. The HTTP/2 technique negotiates ALPN
