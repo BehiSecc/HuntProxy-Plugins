@@ -17,6 +17,7 @@
     ["base_exchange_id", "method", "url", "headers", "header_tombstones", "body_text", "body_base64", "protocol"].forEach(function (field) {
       if (item[field] != null) request[field] = clone(item[field]);
     });
+    request.use_project_cookies = item.use_project_cookies !== false;
     if (request.base_exchange_id == null && !request.url) throw new Error(request.id + " requires base_exchange_id or url");
     if (request.body_text != null && request.body_base64 != null) throw new Error(request.id + " cannot combine body_text and body_base64");
     request.success = item.success != null ? clone(item.success) : (inheritedSuccess != null ? clone(inheritedSuccess) : undefined);

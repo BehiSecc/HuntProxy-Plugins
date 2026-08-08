@@ -28,6 +28,7 @@ assert.deepEqual(Array.from(plan.operations, (operation) => operation.id), ["set
 assert.equal(plan.operations[1].technique, "last_byte_sync");
 assert.equal(plan.operations[1].requests.length, 3);
 assert.equal(plan.operations[1].requests[0].url, "https://example.test/apply");
+assert.equal(plan.operations[1].requests[0].use_project_cookies, true);
 assert.equal(plan.operations[1].requests[0].success.body_contains, "coupon applied");
 assert.equal(plan.operations[1].requests[2].base_exchange_id, 42);
 assert.equal(plan.result.distinct_request_shapes, 2);

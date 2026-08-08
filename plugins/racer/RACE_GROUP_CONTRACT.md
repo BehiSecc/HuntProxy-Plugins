@@ -17,6 +17,7 @@ overrides:
       "headers": [{ "name": "Content-Type", "value": "application/json" }],
       "body_text": "{\"code\":\"ONE\"}",
       "protocol": "h1",
+      "use_project_cookies": true,
       "success": {
         "status_codes": [200],
         "json": [{ "pointer": "/applied", "equals": true }]
@@ -37,6 +38,8 @@ overrides:
 Exactly one of `body_text` and `body_base64` is allowed. A request needs either
 `base_exchange_id` or an inline `url`. When both are present, the inline fields
 override the saved request through the normal Reply materialization path.
+`use_project_cookies` defaults to true so inline last-byte requests can use the
+host-managed cookie jar without placing session values in plugin input.
 
 Responses include the host-evaluated semantic predicate without returning the
 matched body:
