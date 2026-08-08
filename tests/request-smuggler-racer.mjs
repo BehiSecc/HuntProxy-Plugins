@@ -37,8 +37,14 @@ function context(url = "https://example.test/account") {
   assert.match(clZeroAttack, /GET \/hp-abc12345-not-found HTTP\/1\.1\r\nX-HuntProxy-Desync: abc12345GET \/resources\/images\/blog\.svg HTTP\/1\.1/);
   assert.doesNotMatch(clZeroAttack, /GET \/hp-abc12345-not-found HTTP\/1\.1\r\nHost:/);
   const zeroCl = plugin.plan({ ...input, families: ["0_cl"], probe_path: "/resources/images/blog.svg" }, ctx);
-  assert.match(Buffer.from(zeroCl.operations.find((operation) => operation.id === "probe-0-0").request_base64, "base64").toString(), /Content-Length : 1\r\n/);
+  const zeroClPair = zeroCl.operations.find((operation) => operation.id === "pair-0-0");
+  assert.equal(zeroClPair.type, "raw_http1_group");
+  assert.deepEqual(Array.from(zeroClPair.members, (member) => member.id), ["probe-0-0", "victim-0-0"]);
+  assert.match(Buffer.from(zeroClPair.members[0].request_base64, "base64").toString(), /Content-Length : 1\r\n/);
+  assert.match(Buffer.from(zeroClPair.members[1].request_base64, "base64").toString(), /^XGET /);
   assert.match(Buffer.from(zeroCl.operations.find((operation) => operation.id === "control-0-0").request_base64, "base64").toString(), /^XGET /);
+  assert.equal(zeroCl.result.techniques.length, 10);
+  assert.equal(zeroCl.result.request_count, 124);
   const connectionState = plugin.plan({ ...input, families: ["connection_state"], connection_state_host: "192.0.2.10", connection_state_path: "/admin" }, ctx);
   const connectionProbe = Buffer.from(connectionState.operations.find((operation) => operation.id === "probe-0-0").request_base64, "base64").toString();
   assert.match(connectionProbe, /^GET \/account HTTP\/1\.1/);
@@ -67,12 +73,18 @@ function context(url = "https://example.test/account") {
   assert.equal(result.findings[0].metadata.signal, "marker_contamination");
   assert.ok(result.result.limitations.some((value) => /HTTP\/2/.test(value)));
   const zeroClObservations = zeroCl.operations.map((operation, index) => {
+    if (operation.type === "raw_http1_group") return {
+      id: operation.id,
+      dispatch: "parallel_barrier",
+      members: operation.members.map((member, memberIndex) => ({ id: member.id, raw: { exchange_id: 350 + index * 2 + memberIndex, ...wire([{ status: 200, body: "normal account" }]) } })),
+    };
     const responses = operation.id.startsWith("direct-canary") ? [{ status: 404, body: "canary" }]
       : operation.id.startsWith("control-") ? [{ status: 400, body: "bad method" }]
       : [{ status: 200, body: "normal account" }];
     return { id: operation.id, raw: { exchange_id: 350 + index, ...wire(responses) } };
   });
   const zeroClResult = plugin.analyze({ ...input, families: ["0_cl"], probe_path: "/resources/images/blog.svg" }, zeroClObservations, ctx);
+  assert.equal(zeroClResult.findings.length, 10);
   assert.equal(zeroClResult.findings[0].metadata.family, "0_cl");
   const connectionObservations = connectionState.operations.map((operation, index) => {
     const responses = operation.id.startsWith("direct-canary") ? [{ status: 404, body: "canary" }]

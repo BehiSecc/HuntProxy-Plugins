@@ -7,10 +7,13 @@ both same-client-socket effects and contamination that emerges through a pooled
 backend connection after the front end closes the original client connection.
 CL.TE, TE.CL, TE.TE permutations, and CL.0 use a marker oracle. CL.0 leaves
 the smuggled header block incomplete so the next request completes it, matching
-real single-connection behavior. The 0.CL family pairs an early-response
-request containing `Content-Length : 1` and no body with an independent `XGET`
-victim; a normal victim response that is impossible without the hidden length
-interpretation confirms the discrepancy.
+real single-connection behavior. The 0.CL family dispatches an early-response
+request with no body and an independent `XGET` victim over two separate
+connections behind one start barrier. A normal victim response that is
+impossible without the hidden length interpretation confirms the discrepancy.
+It covers bounded whitespace/tab, folded-name/value, hop-by-hop, duplicate,
+underscore, and bare LF/CR header-hiding variants. Each retains a standalone
+`XGET` control, repeated quorum, and a clean recovery request.
 
 `connection_state` compares a Host-bearing request directly and as the second
 request on one established connection. Set `connection_state_host` and
@@ -40,8 +43,9 @@ selects a shorter outer response (default `/login`). A separate header-name
 Host-injection diagnostic confirms the parser primitive without accessing an
 internal resource.
 
-The default scan is intentionally thorough: five cycles across every framing
-variant can schedule up to 528 requests. Use `families`, `max_techniques`, and
+The default scan is intentionally thorough: five cycles across every selected
+framing variant can schedule hundreds of requests. Use `families`,
+`max_techniques`, and
 `repeats` to reduce volume on fragile targets. Browser-proven client-side
 desync remains out of scope. Pause-based coverage requires the separate
 opt-in `pause` family because its default three-or-more 61-second cycles are
