@@ -2,30 +2,109 @@
   "schema_version": 1,
   "id": "racer",
   "name": "Racer",
-  "version": "0.1.0",
-  "description": "Plan and analyze synchronized repeated or multi-endpoint race tests without mislabeling ordinary concurrency as single-packet delivery.",
+  "version": "0.2.0",
+  "description": "Run bounded same-request or multi-endpoint race groups with inline templates, semantic success predicates, setup, and post-race validation.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "493a315a1b0e1a6c178dd8cb1cdf52bc9a90c0d3a285b13a85348c366a92ec1e",
+  "entrypoint_sha256": "bc835a3b83c72c074033095f5389666cc45707dd25df7db7f150e26cfff469b4",
   "capabilities": ["http.race"],
-  "limits": { "timeout_ms": 900000, "max_operations": 21, "max_concurrency": 1, "memory_mb": 32 },
+  "limits": { "timeout_ms": 900000, "max_operations": 64, "max_concurrency": 1, "memory_mb": 32 },
   "actions": [{
     "name": "run",
-    "description": "Compare a sequential control with repeated synchronized attempts across one or more saved request shapes.",
+    "description": "Run sequential, parallel, or exact HTTP/1 final-byte request groups using saved or unsent request shapes.",
     "required_capabilities": ["http.race"],
     "input_schema": {
       "type": "object",
       "additionalProperties": false,
       "required": ["allow_state_changes"],
+      "$defs": {
+        "text_predicate": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "equals": { "type": "string" },
+            "contains": { "type": "string" },
+            "regex": { "type": "string" }
+          }
+        },
+        "success_predicate": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "status_codes": { "type": "array", "maxItems": 20, "uniqueItems": true, "items": { "type": "integer", "minimum": 100, "maximum": 599 } },
+            "headers": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["name"],
+                "properties": {
+                  "name": { "type": "string", "minLength": 1 },
+                  "equals": { "type": "string" },
+                  "contains": { "type": "string" },
+                  "regex": { "type": "string" }
+                },
+                "anyOf": [{ "required": ["equals"] }, { "required": ["contains"] }, { "required": ["regex"] }]
+              }
+            },
+            "body_contains": { "type": "string" },
+            "body_regex": { "type": "string" },
+            "json": {
+              "type": "array",
+              "maxItems": 20,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["pointer"],
+                "properties": {
+                  "pointer": { "type": "string", "pattern": "^($|/)" },
+                  "equals": {},
+                  "exists": { "type": "boolean" }
+                }
+              }
+            },
+            "redirect_location": { "$ref": "#/$defs/text_predicate" }
+          }
+        },
+        "request": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": { "type": "string", "minLength": 1, "maxLength": 80 },
+            "base_exchange_id": { "type": "integer", "minimum": 1 },
+            "method": { "type": "string", "minLength": 1 },
+            "url": { "type": "string", "pattern": "^https?://" },
+            "headers": { "type": "array", "maxItems": 100, "items": { "type": "object", "additionalProperties": false, "required": ["name", "value"], "properties": { "name": { "type": "string" }, "value": { "type": "string" } } } },
+            "header_tombstones": { "type": "array", "maxItems": 100, "items": { "type": "string" } },
+            "body_text": { "type": "string" },
+            "body_base64": { "type": "string" },
+            "protocol": { "enum": ["auto", "h1", "h2"], "default": "auto" },
+            "copies": { "type": "integer", "minimum": 1, "maximum": 100, "default": 1 },
+            "success": { "$ref": "#/$defs/success_predicate" }
+          },
+          "anyOf": [{ "required": ["base_exchange_id"] }, { "required": ["url"] }],
+          "not": { "required": ["body_text", "body_base64"] }
+        }
+      },
       "properties": {
-        "allow_state_changes": { "const": true, "description": "Acknowledge that the selected requests can execute multiple state changes." },
-        "exchange_ids": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "type": "integer", "minimum": 1 }, "uniqueItems": true, "description": "Optional multi-endpoint request shapes; omit to repeat the base exchange." },
+        "allow_state_changes": { "const": true, "description": "Acknowledge that selected, setup, and validation requests may change server state." },
+        "requests": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/$defs/request" }, "description": "Saved or unsent request shapes. Each shape can have independent copies and success criteria." },
+        "setup_requests": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/$defs/request" }, "description": "Optional sequential setup/reset group run before the control and every attempt." },
+        "validation_requests": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "$ref": "#/$defs/request" }, "description": "Optional sequential post-attempt checks; all must match for an attempt to qualify." },
+        "success": { "$ref": "#/$defs/success_predicate", "description": "Default semantic success predicate for race requests." },
+        "setup_success": { "$ref": "#/$defs/success_predicate" },
+        "validation_success": { "$ref": "#/$defs/success_predicate" },
+        "exchange_ids": { "type": "array", "minItems": 1, "maxItems": 20, "items": { "type": "integer", "minimum": 1 }, "uniqueItems": true, "description": "Legacy saved shapes used when requests is omitted." },
         "pattern": { "enum": ["limit_overrun", "multi_endpoint", "object_state", "partial_construction", "time_sensitive", "deferred"], "default": "limit_overrun" },
-        "technique": { "enum": ["parallel", "last_byte_sync", "h2_single_packet"], "default": "last_byte_sync" },
-        "copies": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Copies per request shape; defaults to 20 for one shape and 1 for multiple shapes." },
-        "attempts": { "type": "integer", "minimum": 2, "maximum": 20, "default": 3 },
+        "technique": { "enum": ["sequential", "parallel", "last_byte_sync", "h2_single_packet"], "default": "last_byte_sync" },
+        "control_mode": { "enum": ["none", "single_each", "full_group"], "default": "single_each", "description": "Use none for one-shot transitions, single_each for a low-impact benchmark, or full_group for legacy comparison." },
+        "copies": { "type": "integer", "minimum": 1, "maximum": 100, "description": "Legacy copies per exchange_id." },
+        "attempts": { "type": "integer", "minimum": 1, "maximum": 20, "default": 3 },
         "expected_max_successes": { "type": "integer", "minimum": 0, "maximum": 100, "default": 1 },
-        "success_statuses": { "type": "array", "maxItems": 20, "items": { "type": "integer", "minimum": 100, "maximum": 599 }, "uniqueItems": true },
+        "success_statuses": { "type": "array", "maxItems": 20, "items": { "type": "integer", "minimum": 100, "maximum": 599 }, "uniqueItems": true, "description": "Legacy fallback only; semantic success predicates are recommended." },
         "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 120000, "default": 30000 },
         "hold_timeout_ms": { "type": "integer", "minimum": 100, "maximum": 15000, "default": 5000 }
       }
