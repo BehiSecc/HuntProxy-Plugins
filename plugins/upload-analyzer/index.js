@@ -185,11 +185,11 @@
       }
       if (variant.role === "path-traversal" && isAccepted && reflectedParentPath(result,variant)) {
         findings.push({
-          title: "Upload path traversal sequence accepted using " + variant.name, severity: "high", confidence: "firm",
-          explanation: "The upload response reproducibly reflected the inert file beneath a parent-directory path after filename decoding. This demonstrates unsafe path normalization, but does not claim that the object is executable.",
+          title: "Potential upload path traversal using " + variant.name, severity: "high", confidence: "tentative",
+          explanation: "The upload response reproducibly reflected a decoded parent-directory filename. This is evidence of unsafe filename handling, but without read-back it does not prove that storage resolved outside the intended upload directory.",
           remediation: "Discard client path components, decode once, generate server-side filenames, enforce the resolved storage root, and keep uploads outside the web root.",
           evidence_exchange_ids: [result.exchange_id].filter(Boolean),
-          metadata: { variant: variant.name, role: variant.role, marker: marker(input), reflected_parent_path: true }
+          metadata: { variant: variant.name, role: variant.role, marker: marker(input), reflected_parent_path: true, storage_escape_unverified: true }
         });
       }
       if (variant.role === "content-validation" && input.expect_content_validation === true && allowedAccepted && isAccepted && (score >= 0.82 || includesMarker(result, input.success_markers))) {
@@ -224,7 +224,7 @@
     return { findings: findings, result: {
       allowed_control_accepted: !!allowedAccepted, prohibited_control_blocked: !!prohibitedBlocked, prohibited_control_accepted: !!prohibitedAccepted,
       outcomes: outcomes, server_config_chain:chainResult, tested_operations: observations.length,
-      limitations: ["Acceptance does not prove that an uploaded object is web-accessible or executable; this extension never uploads executable code and does not retrieve uploads by default.", "Only the first supported multipart file part is mutated.", "Storage renaming and asynchronous malware scanning require separate read-back validation."]
+      limitations: ["Acceptance does not prove that an uploaded object is web-accessible or executable; this extension never uploads executable code and does not retrieve uploads by default.", "A reflected parent-directory filename does not prove that storage escaped its intended root without a separate safe read-back.", "Only the first supported multipart file part is mutated.", "Storage renaming and asynchronous malware scanning require separate read-back validation."]
     } };
   }
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };

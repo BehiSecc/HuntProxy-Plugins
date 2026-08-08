@@ -56,6 +56,10 @@ for (const item of observations.filter((entry) => entry.id.startsWith(`variant-$
 }
 const traversalResult = plugin.analyze(input, observations, context);
 assert.ok(traversalResult.findings.some((finding) => finding.metadata.variant === "encoded-parent-directory" && finding.metadata.reflected_parent_path));
+const traversalFinding=traversalResult.findings.find((finding)=>finding.metadata.variant==="encoded-parent-directory");
+assert.equal(traversalFinding.confidence,"tentative");
+assert.equal(traversalFinding.metadata.storage_escape_unverified,true);
+assert.ok(traversalResult.result.limitations.some((value)=>/does not prove.*storage escaped/i.test(value)));
 
 const direct = plan.operations.map((operation) => observation(operation));
 const directResult = plugin.analyze(input, direct, context);
