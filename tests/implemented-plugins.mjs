@@ -111,6 +111,33 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const result = plugin.analyze(input, observations, context("https://example.test/account"));
   assert.ok(result.findings.some((finding) => /cache poisoning/i.test(finding.title)));
   assert.ok(result.findings.some((finding) => /cache deception/i.test(finding.title)));
+
+  const cookieContext = context("https://example.test/");
+  cookieContext.resources.cookies = "fehost\nsession\n";
+  const cookieInput = { marker: "cookie1234", allow_cache_side_effects: true, modes: ["poisoning"], cookie_names: ["fehost"], use_header_wordlist: false, max_header_candidates: 1 };
+  const cookiePlan = plugin.plan(cookieInput, cookieContext);
+  const cookiePoison = cookiePlan.operations.find((op) => op.cookie_params?.[0]?.name === "fehost" && op.id.startsWith("poison-"));
+  assert.ok(cookiePoison, "explicit cookie candidates generate a poison operation");
+  const cookieIndex = cookiePoison.id.slice("poison-".length);
+  const cleanCookie = cookiePlan.operations.find((op) => op.id === `poison-clean-${cookieIndex}`);
+  const confirmCookie = cookiePlan.operations.find((op) => op.id === `poison-confirm-${cookieIndex}`);
+  assert.equal(cookiePoison.url, cleanCookie.url, "cookie poison and clean control share one cache key");
+  assert.notEqual(cookiePoison.cookie_params[0].value, cleanCookie.cookie_params[0].value, "clean control uses a non-poison cookie value");
+  assert.deepEqual(cleanCookie.cookie_params, confirmCookie.cookie_params, "clean control is repeated stably");
+  const cookieObservations = cookiePlan.operations.map((op) => observation(op, 200, "ordinary", "ordinary"));
+  for (const item of cookieObservations.filter((item) => [cookiePoison.id, cleanCookie.id, confirmCookie.id].includes(item.id))) {
+    item.response_body_hash = "cookie-poisoned"; item.response_preview.text = cookiePoison.cookie_params[0].value;
+    item.response_headers = [{ name: "age", value_base64: Buffer.from(item.id === cookiePoison.id ? "0" : "3").toString("base64") }];
+  }
+  assert.ok(plugin.analyze(cookieInput, cookieObservations, cookieContext).findings.some((finding) => finding.metadata.variant === "cookie:fehost"));
+  assert.throws(() => plugin.plan({ ...cookieInput, cookie_names: ["session"] }, cookieContext), /allow_sensitive_cookie_mutation/);
+  assert.doesNotThrow(() => plugin.plan({ ...cookieInput, cookie_names: ["session"], allow_sensitive_cookie_mutation: true }, cookieContext));
+
+  const privacyPlan = plugin.plan(input, context("https://example.test/account"));
+  const privacyObservations = privacyPlan.operations.map((op) => observation(op, 200, "same", "same body"));
+  privacyObservations.find((item) => item.id === "baseline-auth").response_headers = [{ name: "x-cache", value_base64: Buffer.from("miss").toString("base64") }];
+  privacyObservations.find((item) => item.id === "baseline-anon").response_headers = [{ name: "x-cache", value_base64: Buffer.from("hit").toString("base64") }, { name: "age", value_base64: Buffer.from("3").toString("base64") }];
+  assert.equal(plugin.analyze(input, privacyObservations, context("https://example.test/account")).result.base_appears_private, false, "volatile cache headers do not imply private content");
 }
 
 function privilegedContext({ url = "https://example.test/admin", method = "GET", headers = [], body = "", related = [] } = {}) {

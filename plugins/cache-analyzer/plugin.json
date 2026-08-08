@@ -2,13 +2,14 @@
   "schema_version": 1,
   "id": "cache-analyzer",
   "name": "CacheAnalyzer",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Test cache-key discrepancies, cache poisoning, and web cache deception with cache-busted controls and confirmation.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "4807ad3206d80645863efc8fe1865da2964016e85ab3cf4dd161d37d04f0dcf7",
+  "entrypoint_sha256": "4a8851adfb5e7e3d2c550f60fb803b71119a0da5abcdb236c395eff2b86cddde",
   "resources": {
-    "headers": { "path": "resources/headers", "sha256": "175619d3e49c28431b4ced6363ba63544771db298834195fd3ccb3fc422e9af7" }
+    "headers": { "path": "resources/headers", "sha256": "175619d3e49c28431b4ced6363ba63544771db298834195fd3ccb3fc422e9af7" },
+    "cookies": { "path": "resources/cookies", "sha256": "dc1d66e40324e017c7020405f25376ccda9cdc6091c00d5e07720312e9ae585b" }
   },
   "capabilities": ["http.semantic"],
   "limits": { "timeout_ms": 900000, "max_operations": 2000, "max_concurrency": 1, "memory_mb": 64 },
@@ -22,6 +23,10 @@
       "modes": { "type": "array", "uniqueItems": true, "items": { "enum": ["poisoning", "deception"] } },
       "headers": { "type": "array", "maxItems": 500, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 256 }, "description": "Additional candidate header names or Param Miner-style name~value templates." },
       "use_header_wordlist": { "type": "boolean", "default": true },
+      "cookie_names": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "pattern": "^[!#$%&'*+.^_`|~0-9A-Za-z-]+$" }, "description": "Explicit cookie names to test for unkeyed cookie poisoning. No cookies are tested by default." },
+      "use_cookie_wordlist": { "type": "boolean", "default": false, "description": "Opt in to the bundled non-authentication cookie candidate list." },
+      "allow_sensitive_cookie_mutation": { "const": true, "description": "Required in addition to an explicit name before session, authentication, token, or CSRF cookies may be mutated." },
+      "max_cookie_candidates": { "type": "integer", "minimum": 1, "maximum": 100, "default": 40 },
       "max_header_candidates": { "type": "integer", "minimum": 1, "maximum": 500, "default": 300 },
       "max_poison_variants": { "type": "integer", "minimum": 1, "maximum": 504, "default": 304 },
       "static_extensions": { "type": "array", "maxItems": 10, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9]{1,12}$" }, "default": ["js", "css", "ico"] },

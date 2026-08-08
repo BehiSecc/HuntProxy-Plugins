@@ -61,11 +61,34 @@
     ].forEach(addHeader);
     (input.headers || []).forEach(addHeader);
     if (input.use_header_wordlist !== false && context.resources && typeof context.resources.headers === "string") context.resources.headers.split(/\r?\n/).forEach(addHeader);
+    var cookieNames = [], cookieSeen = {}, cookieVariants = [];
+    function addCookieName(value) {
+      var name = String(value || "").trim(), key = name.toLowerCase();
+      if (!name || cookieSeen[key] || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) return;
+      if (/^(?:session|sessionid|sid|auth|authorization|token|jwt|csrf|xsrf|access[-_]?token|refresh[-_]?token)$/i.test(name) && input.allow_sensitive_cookie_mutation !== true) {
+        throw new Error("sensitive cookie candidate " + name + " requires allow_sensitive_cookie_mutation=true");
+      }
+      cookieSeen[key] = true; cookieNames.push(name);
+    }
+    (input.cookie_names || []).forEach(addCookieName);
+    if (input.use_cookie_wordlist === true && context.resources && typeof context.resources.cookies === "string") {
+      context.resources.cookies.split(/\r?\n/).forEach(addCookieName);
+    }
+    cookieNames.slice(0, Math.max(1, Math.min(Number(input.max_cookie_candidates || 40), 100))).forEach(function (name) {
+      var index = cookieVariants.length, markerValue = token + "c" + index;
+      var cleanValue = "hpclean" + cacheBuster(token + ":cookie:" + name);
+      var clean = addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":cookie-key:" + name));
+      cookieVariants.push({
+        name: "cookie:" + name.toLowerCase(), poison_url: clean, clean_url: clean, headers: [],
+        poison_cookies: [{ name: name, value: markerValue }],
+        clean_cookies: [{ name: name, value: cleanValue }], marker: markerValue
+      });
+    });
     ["utm_source", "utm_content", "ref", "callback"].forEach(function (name) {
       var clean = addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":query:" + name));
       variants.push({ name: "query:" + name, poison_url: addQuery(clean, name, token), clean_url: clean, headers: [], marker: token });
     });
-    return variants;
+    return cookieVariants.concat(variants);
   }
 
   function deceptionVariants(baseUrl, token, input) {
@@ -81,9 +104,10 @@
     return variants.slice(0, Math.max(1, Math.min(Number(input.max_deception_variants || 40), 100)));
   }
 
-  function request(id, exchange, method, url, headers, anonymous) {
+  function request(id, exchange, method, url, headers, anonymous, cookieParams) {
     var op = { id: id, type: "http_request", base_exchange_id: exchange, method: method, url: url, protocol: "auto" };
     if (headers && headers.length) op.headers = headers;
+    if (cookieParams && cookieParams.length) op.cookie_params = cookieParams;
     if (anonymous) op.header_tombstones = ["Cookie", "Authorization", "Proxy-Authorization"];
     return op;
   }
@@ -96,9 +120,9 @@
     var modes = input.modes && input.modes.length ? input.modes : ["poisoning", "deception"];
     if (modes.indexOf("poisoning") !== -1) {
       poisonVariants(exchange.url, token, input, context).slice(0, Math.max(1, Math.min(Number(input.max_poison_variants || 304), 504))).forEach(function (variant, index) {
-        operations.push(request("poison-" + index, exchange.exchange_id, exchange.method, variant.poison_url, variant.headers, false));
-        operations.push(request("poison-clean-" + index, exchange.exchange_id, exchange.method, variant.clean_url, [], false));
-        operations.push(request("poison-confirm-" + index, exchange.exchange_id, exchange.method, variant.clean_url, [], false));
+        operations.push(request("poison-" + index, exchange.exchange_id, exchange.method, variant.poison_url, variant.headers, false, variant.poison_cookies));
+        operations.push(request("poison-clean-" + index, exchange.exchange_id, exchange.method, variant.clean_url, [], false, variant.clean_cookies));
+        operations.push(request("poison-confirm-" + index, exchange.exchange_id, exchange.method, variant.clean_url, [], false, variant.clean_cookies));
       });
     }
     if (modes.indexOf("deception") !== -1) {
@@ -140,6 +164,20 @@
     return text;
   }
 
+  function comparisonText(observation) {
+    var ignored = {
+      "age": 1, "x-cache": 1, "cf-cache-status": 1, "x-cache-hits": 1, "cache-status": 1,
+      "date": 1, "etag": 1, "last-modified": 1, "server-timing": 1, "via": 1,
+      "cf-ray": 1, "request-id": 1, "x-request-id": 1, "set-cookie": 1
+    };
+    var text = preview(observation);
+    (observation && observation.response_headers || []).forEach(function (header) {
+      var name = String(header.name || "").toLowerCase();
+      if (!ignored[name]) text += "\n" + name + ":" + decodeBase64(header.value_base64).toLowerCase();
+    });
+    return text;
+  }
+
   function normalizeText(value) {
     return String(value || "").toLowerCase()
       .replace(/([?&]hp_(?:cache_bust|control)=)[^&\"'<> ]+/g, "$1<cachebuster>")
@@ -149,7 +187,7 @@
 
   function same(a, b) {
     if (!a || !b || a.status_code !== b.status_code) return false;
-    return normalizeText(evidenceText(a)) === normalizeText(evidenceText(b));
+    return normalizeText(comparisonText(a)) === normalizeText(comparisonText(b));
   }
 
   function cacheEvidence(observation) {
