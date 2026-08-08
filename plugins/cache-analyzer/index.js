@@ -56,6 +56,13 @@
     return { origin: match[1], path: match[2] || "/", query: match[3] || "" };
   }
 
+  function scanUrl(input, exchange) {
+    if (!input.target_url) return exchange.url;
+    var target = splitUrl(String(input.target_url)), original = splitUrl(exchange.url);
+    if (target.origin !== original.origin) throw new Error("target_url must use the base exchange origin");
+    return target.origin + target.path + target.query;
+  }
+
   function familyEnabled(input, name) {
     return !input.oracle_families || !input.oracle_families.length || input.oracle_families.indexOf(name) !== -1;
   }
@@ -192,19 +199,19 @@
 
   function plan(input, context) {
     if (input.allow_cache_side_effects !== true) throw new Error("cache testing requires allow_cache_side_effects=true");
-    var exchange = base(context), token = marker(input), operations = [], controlUrl = exchange.url;
+    var exchange = base(context), token = marker(input), targetUrl = scanUrl(input, exchange), operations = [], controlUrl = targetUrl;
     var isolatedShapeControls = (familyEnabled(input, "full-query") && input.full_query_oracle === true) ||
       (familyEnabled(input, "parameter-cloaking") && input.parameter_cloaking && input.parameter_cloaking.length) ||
       (familyEnabled(input, "fat-get") && input.fat_get_parameters && input.fat_get_parameters.length);
     if (isolatedShapeControls) {
-      var controlParsed = splitUrl(exchange.url), controlPath = controlParsed.path.replace(/\/$/, "");
+      var controlParsed = splitUrl(targetUrl), controlPath = controlParsed.path.replace(/\/$/, "");
       controlUrl = controlParsed.origin + controlPath + "/.huntproxy-control-" + cacheBuster(token);
     }
     operations.push(request("baseline-auth", exchange.exchange_id, exchange.method, addQuery(controlUrl, "hp_cache_bust", cacheBuster(token + ":control")), [], false));
     operations.push(request("baseline-anon", exchange.exchange_id, exchange.method, addQuery(controlUrl, "hp_cache_bust", cacheBuster(token + ":control")), [], true));
     var modes = input.modes && input.modes.length ? input.modes : ["poisoning", "deception"];
     if (modes.indexOf("poisoning") !== -1) {
-      poisonVariants(exchange.url, token, input, context).slice(0, Math.max(1, Math.min(Number(input.max_poison_variants || 304), 504))).forEach(function (variant, index) {
+      poisonVariants(targetUrl, token, input, context).slice(0, Math.max(1, Math.min(Number(input.max_poison_variants || 304), 504))).forEach(function (variant, index) {
         var poison = request("poison-" + index, exchange.exchange_id, exchange.method, variant.poison_url, variant.headers, false, variant.poison_cookies);
         var clean = request("poison-clean-" + index, exchange.exchange_id, exchange.method, variant.clean_url, variant.clean_headers || [], false, variant.clean_cookies);
         var confirm = request("poison-confirm-" + index, exchange.exchange_id, exchange.method, variant.clean_url, variant.clean_headers || [], false, variant.clean_cookies);
@@ -223,7 +230,7 @@
       }
     }
     if (modes.indexOf("deception") !== -1) {
-      deceptionVariants(exchange.url, token, input).forEach(function (variant, index) {
+      deceptionVariants(targetUrl, token, input).forEach(function (variant, index) {
         operations.push(request("deception-auth-" + index, exchange.exchange_id, exchange.method, variant.url, [], false));
         operations.push(request("deception-anon-" + index, exchange.exchange_id, exchange.method, variant.url, [], true));
         operations.push(request("deception-confirm-" + index, exchange.exchange_id, exchange.method, variant.url, [], true));
@@ -305,12 +312,12 @@
   function rawEvidenceId(observation) { return observation && observation.raw && observation.raw.exchange_id; }
 
   function analyze(input, observations, context) {
-    var exchange = base(context), token = marker(input), map = byId(observations), findings = [];
+    var exchange = base(context), token = marker(input), targetUrl = scanUrl(input, exchange), map = byId(observations), findings = [];
     var authBase = map["baseline-auth"], anonBase = map["baseline-anon"];
     var baseLooksPrivate = authBase && anonBase && !same(authBase, anonBase);
     var modes = input.modes && input.modes.length ? input.modes : ["poisoning", "deception"];
     if (modes.indexOf("poisoning") !== -1) {
-      poisonVariants(exchange.url, token, input, context).slice(0, Math.max(1, Math.min(Number(input.max_poison_variants || 304), 504))).forEach(function (variant, index) {
+      poisonVariants(targetUrl, token, input, context).slice(0, Math.max(1, Math.min(Number(input.max_poison_variants || 304), 504))).forEach(function (variant, index) {
         var poison = map["poison-" + index], clean = map["poison-clean-" + index], confirm = map["poison-confirm-" + index];
         var expectedMarker = String(variant.marker || token).toLowerCase();
         var persistedMarker = evidenceText(clean).indexOf(expectedMarker) !== -1 && evidenceText(confirm).indexOf(expectedMarker) !== -1;
@@ -346,7 +353,7 @@
       }
     }
     if (modes.indexOf("deception") !== -1 && baseLooksPrivate) {
-      deceptionVariants(exchange.url, token, input).forEach(function (variant, index) {
+      deceptionVariants(targetUrl, token, input).forEach(function (variant, index) {
         var authenticated = map["deception-auth-" + index], anonymous = map["deception-anon-" + index], confirm = map["deception-confirm-" + index];
         if (authenticated && anonymous && confirm && authenticated.status_code >= 200 && authenticated.status_code < 300 && same(authenticated, anonymous) && same(anonymous, confirm)) {
           findings.push({

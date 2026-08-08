@@ -158,6 +158,9 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const cloakingOnlyPlan = plugin.plan({ ...combinationInput, oracle_families: ["parameter-cloaking"], parameter_cloaking: [{ carrier: "utm_content", target: "callback", delimiter: ";" }], max_poison_variants: 1 }, context());
   assert.equal(cloakingOnlyPlan.operations.length, 5, "cloaking-only planning does not require the full-query acknowledgement");
   assert.ok(cloakingOnlyPlan.operations.find((op) => op.id === "baseline-auth").url.includes("/.huntproxy-control-"));
+  const overridePlan = plugin.plan({ ...combinationInput, target_url: "https://example.test/js/geolocate.js?callback=clean", oracle_families: ["parameter-cloaking"], parameter_cloaking: [{ carrier: "utm_content", target: "callback", delimiter: ";" }], max_poison_variants: 1 }, context("https://example.test/harmless-baseline"));
+  assert.ok(overridePlan.operations.find((op) => op.id === "poison-0").url.startsWith("https://example.test/js/geolocate.js?callback=clean&"), "same-origin target override leaves the target key untouched until plugin execution");
+  assert.throws(() => plugin.plan({ ...combinationInput, target_url: "https://other.test/" }, context()), /base exchange origin/);
   const shapePoisons = shapePlan.operations.filter((op) => /^poison-\d+$/.test(op.id));
   assert.ok(shapePoisons.some((op) => op.url === "https://example.test/admin?hpmulti12345q0"), "full-query oracle uses the query-free clean key");
   assert.ok(shapePoisons.some((op) => /utm_content=hpmulti12345k0;callback=/.test(op.url)), "literal delimiter is preserved on the wire with a shared unique carrier prefix");

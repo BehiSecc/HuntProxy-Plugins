@@ -34,6 +34,9 @@ cache key before the poison request. Cloaking and fat-GET controls use the same
 isolation because cache parsers may ignore ordinary query busters. Full-query, cookie, cloaking, and fat-GET
 findings require the unique poison marker to persist; response-difference
 fallbacks are limited to header/query probes with comparable control URLs.
+When merely saving the target request would fill a shared cache key, save any
+harmless request on the same origin and pass the untouched endpoint through
+`target_url`; cross-origin overrides are rejected.
 
 Deception mode covers appended static suffixes plus both sides of encoded path
 normalization: static-prefix traversal toward the private path, and private
