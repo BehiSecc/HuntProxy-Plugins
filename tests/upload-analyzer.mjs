@@ -37,6 +37,7 @@ for (const operation of plan.operations) {
   assert.doesNotMatch(decoded, /<\?(?:php|=)|<script|onerror\s*=|javascript:/i, "payloads stay inert");
   assert.match(decoded, /HuntProxy inert upload marker|PNG|GIF89a|PDF-1\.4/);
 }
+assert.match(Buffer.from(plan.operations[12 * 2].body_base64, "base64").toString("binary"), /Content-Type: image\/png/, "non-image bases use the safe declared-image fallback");
 
 const observations = plan.operations.map((operation) => observation(operation));
 for (const item of observations.filter((entry) => entry.id.startsWith("variant-1-"))) {
@@ -57,5 +58,23 @@ assert.ok(!directResult.findings.some((finding) => finding.metadata.role === "fi
 
 const contentInput = { ...input, expect_content_validation: true };
 assert.ok(plugin.analyze(contentInput, observations, context).findings.some((finding) => finding.metadata.role === "content-validation"));
+
+const imageBody = `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="original.jpg"\r\nContent-Type: image/jpeg\r\n\r\noriginal\r\n--${boundary}--\r\n`;
+const imageContext = { ...context, base_exchange: { ...context.base_exchange, identity: {
+  ...context.base_exchange.identity,
+  request_body_base64: Buffer.from(imageBody, "binary").toString("base64"),
+} } };
+const imagePlan = plugin.plan({ ...input, allowed_extension: "jpg" }, imageContext);
+for (const index of [0, 1, 2, 9]) {
+  assert.match(Buffer.from(imagePlan.operations[index * 2].body_base64, "base64").toString("binary"), /Content-Type: image\/jpeg/);
+}
+assert.match(Buffer.from(imagePlan.operations[12 * 2].body_base64, "base64").toString("binary"), /Content-Type: image\/jpeg/);
+const imageObservations = imagePlan.operations.map((operation) => observation(operation, { status: 200, hash: "accepted", text: "upload stored" }));
+for (const item of imageObservations.filter((entry) => entry.id.startsWith("variant-1-"))) {
+  item.status_code = 403; item.response_body_hash = "blocked"; item.response_preview.text = "extension denied";
+}
+const imageResult = plugin.analyze({ ...input, allowed_extension: "jpg" }, imageObservations, imageContext);
+assert.equal(imageResult.result.allowed_control_accepted, true, "image-only endpoints retain an accepted image MIME control");
+assert.ok(imageResult.findings.some((finding) => finding.metadata.variant === "encoded-null-suffix"));
 
 console.log("UploadAnalyzer hardening tests passed.");

@@ -47,28 +47,32 @@
     var filenameIndex = disposition.index, headerStart = body.lastIndexOf("--" + boundary, filenameIndex), headerEnd = body.indexOf("\r\n\r\n", filenameIndex);
     var contentEnd = body.indexOf("\r\n--" + boundary, headerEnd + 4);
     if (headerStart < 0 || headerEnd < 0 || contentEnd < 0) throw new Error("could not safely locate the first multipart file part");
-    return { exchange: exchange, body: body, boundary: boundary, headerStart: headerStart, headerEnd: headerEnd, contentStart: headerEnd + 4, contentEnd: contentEnd };
+    var partHeaders = body.slice(headerStart, headerEnd);
+    var typeMatch = /(?:^|\r\n)Content-Type:\s*([^\r\n]+)/i.exec(partHeaders);
+    var fileType = typeMatch ? typeMatch[1].trim() : null;
+    return { exchange: exchange, body: body, boundary: boundary, headerStart: headerStart, headerEnd: headerEnd, contentStart: headerEnd + 4, contentEnd: contentEnd, fileType: fileType };
   }
   function upperMixed(value) {
     return value.split("").map(function (character, index) { return index % 2 ? character.toUpperCase() : character.toLowerCase(); }).join("");
   }
-  function variants(input) {
+  function variants(input, capturedType) {
     var value = marker(input), prohibited = extension(input, "prohibited_extension", "php"), allowed = extension(input, "allowed_extension", "txt");
     var text = "HuntProxy inert upload marker: " + value + "\n";
+    var declaredImageType = /^image\/[A-Za-z0-9!#$&^_.+-]+(?:\s*;[^\r\n]*)?$/i.test(String(capturedType || "")) ? capturedType : "image/png";
     var list = [
-      { name: "control-allowed-extension", role: "allowed-control", filename: value + "." + allowed, type: "text/plain", content: text },
-      { name: "control-prohibited-extension", role: "blocked-control", filename: value + "." + prohibited, type: "text/plain", content: text },
-      { name: "case-folded-extension", role: "filename-bypass", filename: value + "." + upperMixed(prohibited), type: "text/plain", content: text },
-      { name: "trailing-dot", role: "filename-bypass", filename: value + "." + prohibited + ".", type: "text/plain", content: text },
-      { name: "trailing-space", role: "filename-bypass", filename: value + "." + prohibited + " ", type: "text/plain", content: text },
-      { name: "double-extension", role: "filename-bypass", filename: value + "." + prohibited + "." + allowed, type: "text/plain", content: text },
-      { name: "semicolon-suffix", role: "filename-bypass", filename: value + "." + prohibited + ";." + allowed, type: "text/plain", content: text },
-      { name: "encoded-dot", role: "filename-bypass", filename: value + "%2e" + prohibited, type: "text/plain", content: text },
-      { name: "double-encoded-dot", role: "filename-bypass", filename: value + "%252e" + prohibited, type: "text/plain", content: text },
-      { name: "encoded-null-suffix", role: "filename-bypass", filename: value + "." + prohibited + "%00." + allowed, type: "text/plain", content: text },
-      { name: "encoded-slash-suffix", role: "filename-bypass", filename: value + "." + prohibited + "%2f." + allowed, type: "text/plain", content: text },
-      { name: "windows-ads-suffix", role: "filename-bypass", filename: value + "." + prohibited + "::$DATA." + allowed, type: "text/plain", content: text },
-      { name: "declared-image-plain-text", role: "content-validation", filename: value + "." + allowed, type: "image/png", content: text },
+      { name: "control-allowed-extension", role: "allowed-control", filename: value + "." + allowed, type: capturedType, content: text },
+      { name: "control-prohibited-extension", role: "blocked-control", filename: value + "." + prohibited, type: capturedType, content: text },
+      { name: "case-folded-extension", role: "filename-bypass", filename: value + "." + upperMixed(prohibited), type: capturedType, content: text },
+      { name: "trailing-dot", role: "filename-bypass", filename: value + "." + prohibited + ".", type: capturedType, content: text },
+      { name: "trailing-space", role: "filename-bypass", filename: value + "." + prohibited + " ", type: capturedType, content: text },
+      { name: "double-extension", role: "filename-bypass", filename: value + "." + prohibited + "." + allowed, type: capturedType, content: text },
+      { name: "semicolon-suffix", role: "filename-bypass", filename: value + "." + prohibited + ";." + allowed, type: capturedType, content: text },
+      { name: "encoded-dot", role: "filename-bypass", filename: value + "%2e" + prohibited, type: capturedType, content: text },
+      { name: "double-encoded-dot", role: "filename-bypass", filename: value + "%252e" + prohibited, type: capturedType, content: text },
+      { name: "encoded-null-suffix", role: "filename-bypass", filename: value + "." + prohibited + "%00." + allowed, type: capturedType, content: text },
+      { name: "encoded-slash-suffix", role: "filename-bypass", filename: value + "." + prohibited + "%2f." + allowed, type: capturedType, content: text },
+      { name: "windows-ads-suffix", role: "filename-bypass", filename: value + "." + prohibited + "::$DATA." + allowed, type: capturedType, content: text },
+      { name: "declared-image-plain-text", role: "content-validation", filename: value + "." + allowed, type: declaredImageType, content: text },
       { name: "octet-stream-plain-text", role: "content-validation", filename: value + "." + allowed, type: "application/octet-stream", content: text },
       { name: "png-signature-text", role: "content-validation", filename: value + "." + allowed, type: "text/plain", content: "\x89PNG\r\n\x1a\n" + text },
       { name: "gif-signature-text", role: "content-validation", filename: value + "." + allowed, type: "text/plain", content: "GIF89a" + text },
@@ -81,15 +85,17 @@
     var headers = value.body.slice(value.headerStart, value.headerEnd);
     if (/filename="[^"]*"/i.test(headers)) headers = headers.replace(/filename="[^"]*"/i, "filename=\"" + variant.filename.replace(/["\r\n]/g, "") + "\"");
     else headers = headers.replace(/filename\*=UTF-8''[^;\r\n]+/i, "filename*=UTF-8''" + variant.filename);
-    if (/\r\nContent-Type:[^\r\n]*/i.test(headers)) headers = headers.replace(/\r\nContent-Type:[^\r\n]*/i, "\r\nContent-Type: " + variant.type);
-    else headers += "\r\nContent-Type: " + variant.type;
+    if (variant.type !== null && variant.type !== undefined) {
+      if (/\r\nContent-Type:[^\r\n]*/i.test(headers)) headers = headers.replace(/\r\nContent-Type:[^\r\n]*/i, "\r\nContent-Type: " + variant.type);
+      else headers += "\r\nContent-Type: " + variant.type;
+    }
     return value.body.slice(0, value.headerStart) + headers + "\r\n\r\n" + variant.content + value.body.slice(value.contentEnd);
   }
   function operation(id, value, body) {
     return { id: id, type: "http_request", base_exchange_id: value.exchange.exchange_id, method: value.exchange.method, body_base64: encode64(body), protocol: "auto" };
   }
   function plan(input, context) {
-    var value = source(input, context), operations = [], list = variants(input);
+    var value = source(input, context), operations = [], list = variants(input, value.fileType);
     list.forEach(function (variant, index) {
       var body = mutated(value, variant);
       for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("variant-" + index + "-" + repeat, value, body));
