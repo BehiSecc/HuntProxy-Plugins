@@ -51,10 +51,15 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
 
 {
   const plugin = await load("cache-analyzer");
-  const input = { marker: "a1b2c3d4e5", allow_cache_side_effects: true };
+  const input = { marker: "a1b2c3d4e5", allow_cache_side_effects: true, use_header_wordlist: false, max_header_candidates: 4, max_poison_variants: 4, max_deception_variants: 4 };
   const plan = plugin.plan(input, context("https://example.test/account"));
   assert.ok(plan.operations.length <= 50);
-  const observations = plan.operations.map((op) => observation(op, 200, op.id === "baseline-anon" ? "anon" : "private", "normal"));
+  assert.notEqual(plan.operations.find((op) => op.id === "poison-0").url, plan.operations.find((op) => op.id === "poison-1").url, "each poison candidate gets an isolated cache key");
+  const observations = plan.operations.map((op) => {
+    const baseAnonymous = op.id === "baseline-anon";
+    const deceptive = op.id.startsWith("deception-");
+    return observation(op, 200, baseAnonymous ? "anon" : "private", baseAnonymous ? "anonymous" : deceptive ? "private account" : "normal");
+  });
   for (const item of observations.filter((item) => ["poison-0", "poison-clean-0", "poison-confirm-0"].includes(item.id))) {
     item.response_body_hash = "poisoned"; item.response_preview.text = "hpa1b2c3d4e5";
   }

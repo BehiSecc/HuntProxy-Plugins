@@ -33,28 +33,52 @@
     return { origin: match[1], path: match[2] || "/", query: match[3] || "" };
   }
 
-  function poisonVariants(baseUrl, token) {
-    var clean = addQuery(baseUrl, "hp_cache_bust", cacheBuster(token));
-    var variants = [
-      { name: "header:x-forwarded-host", poison_url: clean, clean_url: clean, headers: [{ name: "X-Forwarded-Host", value: token + ".invalid" }] },
-      { name: "header:x-host", poison_url: clean, clean_url: clean, headers: [{ name: "X-Host", value: token + ".invalid" }] },
-      { name: "header:x-original-url", poison_url: clean, clean_url: clean, headers: [{ name: "X-Original-URL", value: "/" + token + ".js" }] },
-      { name: "header:x-rewrite-url", poison_url: clean, clean_url: clean, headers: [{ name: "X-Rewrite-URL", value: "/" + token + ".js" }] }
-    ];
+  function poisonVariants(baseUrl, token, input, context) {
+    var variants = [], seen = {}, headerLimit = Math.max(1, Math.min(Number(input.max_header_candidates || 300), 500));
+    var unsafe = { "content-length": 1, "transfer-encoding": 1, "connection": 1, "proxy-connection": 1, "cookie": 1, "set-cookie": 1 };
+    var special = {
+      "x-forwarded-scheme": "http", "x-forwarded-proto": "http", "x-forwarded-protocol": "http",
+      "x-url-scheme": "http", "front-end-https": "off", "x-forwarded-ssl": "off",
+      "x-http-method-override": "HEAD", "x-method-override": "HEAD", "x-http-method": "HEAD",
+      "authorization": "HuntProxy " + token
+    };
+    function addHeader(value) {
+      var pieces = String(value || "").trim().split("~"), name = pieces[0], key = name.toLowerCase();
+      if (!name || unsafe[key] || seen[key] || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name) || variants.length >= headerLimit) return;
+      seen[key] = true;
+      var index = variants.length, markerValue = token + "h" + index;
+      var headerValue = special[key] || pieces.slice(1).join("~") || markerValue + ".invalid";
+      headerValue = headerValue.replace(/%s/g, markerValue).replace(/%h/g, "invalid");
+      var clean = addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":" + key));
+      variants.push({ name: "header:" + key, poison_url: clean, clean_url: clean, headers: [{ name: name, value: headerValue }], marker: markerValue });
+    }
+    [
+      "X-Forwarded-Host", "X-Host", "X-Original-URL", "X-Rewrite-URL", "X-Forwarded-Scheme",
+      "X-Forwarded-Proto", "X-Forwarded-Port", "Forwarded", "X-HTTP-Method-Override", "X-Method-Override",
+      "X-Original-Host", "X-Forwarded-Prefix", "X-Forwarded-Uri", "X-Original-Uri", "X-Forwarded-Server",
+      "X-Real-IP", "X-Forwarded-For", "True-Client-IP", "Client-IP", "Fastly-Host", "X-Cache-Key",
+      "X-ProxyUser-IP", "X-Original-User-Agent", "X-Request-URI", "X-Accel-Redirect", "Authorization"
+    ].forEach(addHeader);
+    (input.headers || []).forEach(addHeader);
+    if (input.use_header_wordlist !== false && context.resources && typeof context.resources.headers === "string") context.resources.headers.split(/\r?\n/).forEach(addHeader);
     ["utm_source", "utm_content", "ref", "callback"].forEach(function (name) {
-      variants.push({ name: "query:" + name, poison_url: addQuery(clean, name, token), clean_url: clean, headers: [] });
+      var clean = addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":query:" + name));
+      variants.push({ name: "query:" + name, poison_url: addQuery(clean, name, token), clean_url: clean, headers: [], marker: token });
     });
     return variants;
   }
 
-  function deceptionVariants(baseUrl, token) {
+  function deceptionVariants(baseUrl, token, input) {
     var parsed = splitUrl(baseUrl), path = parsed.path.replace(/\/$/, "");
-    return [
-      { name: "suffix-css", url: parsed.origin + path + "/" + token + ".css" + parsed.query },
-      { name: "path-parameter-css", url: parsed.origin + path + ";" + token + ".css" + parsed.query },
-      { name: "encoded-slash-css", url: parsed.origin + path + "%2f" + token + ".css" + parsed.query },
-      { name: "delimiter-css", url: parsed.origin + path + ".css" + parsed.query }
-    ];
+    var extensions = input.static_extensions && input.static_extensions.length ? input.static_extensions : ["js", "css", "ico"];
+    var delimiters = input.path_delimiters && input.path_delimiters.length ? input.path_delimiters : ["/", ";", "%3b", "%2f", "%3f", "%23", "%00", "%09"];
+    var variants = [];
+    extensions.slice(0, 10).forEach(function (extension) {
+      delimiters.slice(0, 32).forEach(function (delimiter) {
+        variants.push({ name: "delimiter:" + delimiter + ":" + extension, url: parsed.origin + path + delimiter + token + "." + extension + parsed.query });
+      });
+    });
+    return variants.slice(0, Math.max(1, Math.min(Number(input.max_deception_variants || 40), 100)));
   }
 
   function request(id, exchange, method, url, headers, anonymous) {
@@ -71,14 +95,14 @@
     operations.push(request("baseline-anon", exchange.exchange_id, exchange.method, addQuery(exchange.url, "hp_control", token), [], true));
     var modes = input.modes && input.modes.length ? input.modes : ["poisoning", "deception"];
     if (modes.indexOf("poisoning") !== -1) {
-      poisonVariants(exchange.url, token).slice(0, Math.max(1, Math.min(Number(input.max_poison_variants || 8), 8))).forEach(function (variant, index) {
+      poisonVariants(exchange.url, token, input, context).slice(0, Math.max(1, Math.min(Number(input.max_poison_variants || 304), 504))).forEach(function (variant, index) {
         operations.push(request("poison-" + index, exchange.exchange_id, exchange.method, variant.poison_url, variant.headers, false));
         operations.push(request("poison-clean-" + index, exchange.exchange_id, exchange.method, variant.clean_url, [], false));
         operations.push(request("poison-confirm-" + index, exchange.exchange_id, exchange.method, variant.clean_url, [], false));
       });
     }
     if (modes.indexOf("deception") !== -1) {
-      deceptionVariants(exchange.url, token).forEach(function (variant, index) {
+      deceptionVariants(exchange.url, token, input).forEach(function (variant, index) {
         operations.push(request("deception-auth-" + index, exchange.exchange_id, exchange.method, variant.url, [], false));
         operations.push(request("deception-anon-" + index, exchange.exchange_id, exchange.method, variant.url, [], true));
         operations.push(request("deception-confirm-" + index, exchange.exchange_id, exchange.method, variant.url, [], true));
@@ -116,10 +140,16 @@
     return text;
   }
 
+  function normalizeText(value) {
+    return String(value || "").toLowerCase()
+      .replace(/([?&]hp_(?:cache_bust|control)=)[^&\"'<> ]+/g, "$1<cachebuster>")
+      .replace(/(<input\b[^>]*\bname=["']?(?:csrf|csrf_token|_csrf|xsrf|_token|authenticity_token)["']?[^>]*\bvalue=)["'][^"']*["']/gi, "$1\"<volatile>\"")
+      .replace(/\s+/g, " ").trim();
+  }
+
   function same(a, b) {
     if (!a || !b || a.status_code !== b.status_code) return false;
-    if (a.response_body_hash && b.response_body_hash) return a.response_body_hash === b.response_body_hash;
-    return a.response_length === b.response_length && preview(a) === preview(b);
+    return normalizeText(evidenceText(a)) === normalizeText(evidenceText(b));
   }
 
   function cacheEvidence(observation) {
@@ -134,10 +164,12 @@
     var baseLooksPrivate = authBase && anonBase && !same(authBase, anonBase);
     var modes = input.modes && input.modes.length ? input.modes : ["poisoning", "deception"];
     if (modes.indexOf("poisoning") !== -1) {
-      poisonVariants(exchange.url, token).slice(0, Math.max(1, Math.min(Number(input.max_poison_variants || 8), 8))).forEach(function (variant, index) {
+      poisonVariants(exchange.url, token, input, context).slice(0, Math.max(1, Math.min(Number(input.max_poison_variants || 304), 504))).forEach(function (variant, index) {
         var poison = map["poison-" + index], clean = map["poison-clean-" + index], confirm = map["poison-confirm-" + index];
-        var persistedMarker = evidenceText(clean).indexOf(token) !== -1 && evidenceText(confirm).indexOf(token) !== -1;
-        if (poison && clean && confirm && same(clean, confirm) && persistedMarker) {
+        var expectedMarker = String(variant.marker || token).toLowerCase();
+        var persistedMarker = evidenceText(clean).indexOf(expectedMarker) !== -1 && evidenceText(confirm).indexOf(expectedMarker) !== -1;
+        var persistedMutation = poison && clean && confirm && same(poison, clean) && same(clean, confirm) && authBase && !same(authBase, clean);
+        if (poison && clean && confirm && same(clean, confirm) && (persistedMarker || persistedMutation)) {
           findings.push({
             title: "Web cache poisoning via " + variant.name,
             severity: "high",
@@ -151,7 +183,7 @@
       });
     }
     if (modes.indexOf("deception") !== -1 && baseLooksPrivate) {
-      deceptionVariants(exchange.url, token).forEach(function (variant, index) {
+      deceptionVariants(exchange.url, token, input).forEach(function (variant, index) {
         var authenticated = map["deception-auth-" + index], anonymous = map["deception-anon-" + index], confirm = map["deception-confirm-" + index];
         if (authenticated && anonymous && confirm && authenticated.status_code >= 200 && authenticated.status_code < 300 && same(authenticated, anonymous) && same(anonymous, confirm)) {
           findings.push({
