@@ -96,15 +96,30 @@
   function operation(id, value, body) {
     return { id: id, type: "http_request", base_exchange_id: value.exchange.exchange_id, method: value.exchange.method, body_base64: encode64(body), protocol: "auto" };
   }
+  function chain(input,value) {
+    if(input.allow_server_config_uploads!==true) return null;
+    var ext=extension(input,"server_config_extension","l33t"), filename=marker(input)+"."+ext;
+    var url=String(input.safe_readback_url||"").replace(/\{filename\}/g,encodeURIComponent(filename));
+    if(!/^https?:\/\/[^\s]+$/i.test(url)) throw new Error("safe_readback_url is required for the opted-in server configuration chain");
+    return {extension:ext,filename:filename,url:url,mime:"application/x-huntproxy-inert"};
+  }
   function plan(input, context) {
-    var value = source(input, context), operations = [], list = variants(input, value.fileType);
+    var value = source(input, context), operations = [], list = variants(input, value.fileType), workflow=chain(input,value);
     list.forEach(function (variant, index) {
       var body = mutated(value, variant);
       for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("variant-" + index + "-" + repeat, value, body));
     });
-    return { operations: operations, result: {
+    if(workflow){
+      var config={filename:".htaccess",type:"text/plain",content:"AddType "+workflow.mime+" ."+workflow.extension+"\n"};
+      var payload={filename:workflow.filename,type:"text/plain",content:"HuntProxy inert upload marker: "+marker(input)+"\n"};
+      for(var setup=0;setup<2;setup+=1) operations.push(operation("server-config-"+setup,value,mutated(value,config)));
+      for(var upload=0;upload<2;upload+=1) operations.push(operation("server-payload-"+upload,value,mutated(value,payload)));
+      for(var read=0;read<2;read+=1) operations.push({id:"server-readback-"+read,type:"http_request",base_exchange_id:value.exchange.exchange_id,method:"GET",url:workflow.url,header_tombstones:["Content-Type","Content-Length"],body_base64:encode64(""),protocol:"auto"});
+    }
+    return { operations: operations, execution: workflow?"sequential":"parallel", stop_on_error:!!workflow, result: {
       variants: list.map(function (item) { return { name: item.name, role: item.role, filename: item.filename }; }),
-      marker: marker(input), destructive_payloads: false, executable_payloads: false, retrieval_performed: false,
+      marker: marker(input), destructive_payloads: false, executable_payloads: false, retrieval_performed:!!workflow,
+      server_config_chain: workflow?{filename:workflow.filename,declared_mime:workflow.mime,safe_readback_url:workflow.url}:null,
       comparison_model: "allowed control versus prohibited control versus normalization variants"
     } };
   }
@@ -131,6 +146,9 @@
     return similarity(first, second) >= 0.9 ? first : null;
   }
   function includesMarker(item, markers) { var text = preview(item); return (markers || []).some(function (marker) { return text.indexOf(String(marker).toLowerCase()) !== -1; }); }
+  function responseHeader(item,name) {
+    return (item&&item.response_headers||[]).filter(function(header){return String(header.name).toLowerCase()===String(name).toLowerCase();}).map(function(header){return decode64(header.value_base64||"");});
+  }
   function reflectedParentPath(item, variant) {
     var text=preview(item).replace(/&#x2f;|&#47;|&sol;/gi,"/");
     try { text=decodeURIComponent(text); } catch (_) {}
@@ -147,7 +165,7 @@
     return !(input.success_markers && input.success_markers.length) || includesMarker(item, input.success_markers);
   }
   function analyze(input, observations) {
-    var map = byId(observations), list = variants(input), findings = [], outcomes = [];
+    var map = byId(observations), list = variants(input), findings = [], outcomes = [], workflow=chain(input);
     var allowedIndex = list.map(function (item) { return item.role; }).indexOf("allowed-control");
     var blockedIndex = list.map(function (item) { return item.role; }).indexOf("blocked-control");
     var allowed = allowedIndex >= 0 ? pair(map, "variant-" + allowedIndex + "-") : null;
@@ -189,9 +207,23 @@
       remediation: "Apply a normalized extension allowlist, generate server-side filenames, and store uploads outside the web root.",
       evidence_exchange_ids: [allowed.exchange_id, prohibited.exchange_id].filter(Boolean), metadata: { variant: "control-prohibited-extension", marker: marker(input), prohibited_extension: extension(input, "prohibited_extension", "php") }
     });
+    var chainResult=null;
+    if(workflow){
+      var configPair=pair(map,"server-config-"), payloadPair=pair(map,"server-payload-"), readbackPair=pair(map,"server-readback-");
+      var configured=accepted(configPair,input), payloadAccepted=accepted(payloadPair,input), markerReturned=!!readbackPair&&preview(readbackPair).indexOf(marker(input).toLowerCase())!==-1;
+      var mimeApplied=!!readbackPair&&responseHeader(readbackPair,"content-type").some(function(value){return value.toLowerCase().split(";")[0].trim()===workflow.mime;});
+      chainResult={config_accepted:configured,payload_accepted:payloadAccepted,readback_reproduced:!!readbackPair,marker_returned:markerReturned,declared_mime_applied:mimeApplied};
+      if(configured&&payloadAccepted&&markerReturned&&mimeApplied) findings.push({
+        title:"Upload server configuration chain applied to inert file",severity:"high",confidence:"firm",
+        explanation:"The server accepted a directory configuration file, then served an inert alternate-extension upload twice with the unique configured MIME type. This proves the bounded configuration chain without uploading executable content.",
+        remediation:"Reject server configuration filenames, store uploads outside interpreted directories, disable per-directory overrides, and generate server-side filenames.",
+        evidence_exchange_ids:[configPair.exchange_id,payloadPair.exchange_id,readbackPair.exchange_id].filter(Boolean),
+        metadata:{variant:"server-config-chain",role:"multi-stage",marker:marker(input),extension:workflow.extension,executable_payload:false}
+      });
+    }
     return { findings: findings, result: {
       allowed_control_accepted: !!allowedAccepted, prohibited_control_blocked: !!prohibitedBlocked, prohibited_control_accepted: !!prohibitedAccepted,
-      outcomes: outcomes, tested_operations: observations.length,
+      outcomes: outcomes, server_config_chain:chainResult, tested_operations: observations.length,
       limitations: ["Acceptance does not prove that an uploaded object is web-accessible or executable; this extension never uploads executable code and does not retrieve uploads by default.", "Only the first supported multipart file part is mutated.", "Storage renaming and asynchronous malware scanning require separate read-back validation."]
     } };
   }

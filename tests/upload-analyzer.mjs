@@ -84,4 +84,20 @@ const imageResult = plugin.analyze({ ...input, allowed_extension: "jpg" }, image
 assert.equal(imageResult.result.allowed_control_accepted, true, "image-only endpoints retain an accepted image MIME control");
 assert.ok(imageResult.findings.some((finding) => finding.metadata.variant === "encoded-null-suffix"));
 
+const chainInput={...input,allow_server_config_uploads:true,server_config_extension:"l33t",safe_readback_url:"https://example.test/files/{filename}"};
+const chainPlan=plugin.plan(chainInput,context);
+assert.equal(chainPlan.execution,"sequential");
+assert.equal(chainPlan.stop_on_error,true);
+assert.equal(chainPlan.operations.length,44);
+assert.deepEqual(Array.from(chainPlan.operations.slice(-6),operation=>operation.id),["server-config-0","server-config-1","server-payload-0","server-payload-1","server-readback-0","server-readback-1"]);
+for(const operation of chainPlan.operations.slice(-6,-2)) assert.doesNotMatch(Buffer.from(operation.body_base64,"base64").toString("binary"),/<\?(?:php|=)|<script/i);
+const chainObservations=chainPlan.operations.map((operation)=>observation(operation));
+for(const item of chainObservations.filter((entry)=>entry.id.startsWith("server-readback-"))){
+  item.response_body_hash="inert-readback"; item.response_preview.text="HuntProxy inert upload marker: hp-upload";
+  item.response_headers=[{name:"Content-Type",value_base64:Buffer.from("application/x-huntproxy-inert").toString("base64")}];
+}
+const chainResult=plugin.analyze(chainInput,chainObservations,context);
+assert.ok(chainResult.findings.some((finding)=>finding.metadata.variant==="server-config-chain"&&!finding.metadata.executable_payload));
+assert.equal(chainResult.result.server_config_chain.declared_mime_applied,true);
+
 console.log("UploadAnalyzer hardening tests passed.");

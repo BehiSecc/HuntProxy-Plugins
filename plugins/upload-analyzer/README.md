@@ -13,6 +13,8 @@ tests reuse a captured image MIME when possible. Add success/failure markers
 for endpoints that return 200 on both acceptance and rejection.
 
 The plugin does not upload executable content, retrieve uploaded paths, or
-claim code execution. Public retrieval, storage renaming, asynchronous scanning,
-and execution require a separate explicitly authorized validation step.
-
+claim code execution by default. An explicit `allow_server_config_uploads=true`
+plus an in-scope `safe_readback_url` enables a sequential `.htaccess` → inert
+alternate-extension → read-back chain. It proves configuration application with
+a unique harmless MIME type and marker; it never uploads executable syntax.
+Storage renaming, asynchronous scanning, and execution require separate validation.
