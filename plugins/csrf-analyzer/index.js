@@ -240,7 +240,9 @@
         operations.push(fresh?workflow(id,exchange,fresh,mutation.patch,refresh):operation(id,exchange,mutation.patch));
       }
     });
-    return { operations: operations, result: { mutations: mutations.map(function (item) { return { name: item.name, kind: item.kind, negative_control: item.negative_control }; }), repeated_state_changes: operations.length, planned_requests:operations.length*(fresh?2:1), fresh_token_workflows:!!fresh, semantic_comparison: true } };
+    var planned={ operations: operations, result: { mutations: mutations.map(function (item) { return { name: item.name, kind: item.kind, negative_control: item.negative_control }; }), repeated_state_changes: operations.length, planned_requests:operations.length*(fresh?2:1), fresh_token_workflows:!!fresh, semantic_comparison: true } };
+    if(fresh) planned.execution="sequential";
+    return planned;
   }
   function terminalObservations(items){return items.map(function(item){if(!item||!item.terminal)return item;var terminal={};Object.keys(item.terminal||{}).forEach(function(key){terminal[key]=item.terminal[key];});terminal.id=item.id;if(item.error)terminal.error=item.error;return terminal;});}
   function byId(items) { var map = {}; items.forEach(function (item) { map[item.id] = item; }); return map; }

@@ -14,7 +14,8 @@ that still carry a valid token.
 For one-time tokens, provide `fresh_token` with an in-scope acquisition URL,
 a body regex whose first capture is the token, and its typed request location.
 Each replay becomes a host-owned GET → POST workflow. Extracted values remain
-internal and a missing token aborts before the state-changing request.
+internal and a missing token aborts before the state-changing request. Fresh-token
+workflows run sequentially so concurrent acquisitions cannot invalidate each other.
 
 Provide `success_markers` and `failure_markers` when HTTP status alone cannot
 prove the state change. The analyzer normalizes common volatile response fields

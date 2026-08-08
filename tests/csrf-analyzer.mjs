@@ -36,6 +36,7 @@ const input = {
   success_markers: ["updated"], failure_markers: ["rejected"], max_mutations: 80,
 };
 const plan = plugin.plan(input, context());
+assert.equal(plan.execution, undefined, "ordinary CSRF plans retain the host's bounded concurrency");
 const mutations = Array.from(plan.result.mutations, (item) => item.name);
 for (const required of [
   "origin-remove", "origin-cross-site", "referer-remove", "referer-cross-site",
@@ -108,6 +109,7 @@ assert.equal(JSON.parse(Buffer.from(nestedInvalid.body_base64,"base64")).profile
 const freshInput={allow_state_change:true,token_names:["csrf_token"],max_mutations:80,fresh_token:{acquire_url:"https://example.test/profile",body_regex:'name="csrf_token" value="([^"]+)"',location:"body",name:"csrf_token"},secondary_identity:{cookie:"sid=secondary"},paired_cookie_tests:[{name:"explicit-pair",identity:{cookie:"sid=victim; csrf=paired"},token:{location:"body",name:"csrf_token",value:"paired-explicit"}}]};
 const freshPlan=plugin.plan(freshInput,context());
 assert.equal(freshPlan.result.fresh_token_workflows,true);
+assert.equal(freshPlan.execution,"sequential","rotating token acquisition and submit workflows cannot overlap");
 assert.equal(freshPlan.result.planned_requests,freshPlan.operations.length*2);
 assert.ok(freshPlan.operations.every((op)=>op.type==="http_workflow"&&op.steps.length===2));
 assert.equal(freshPlan.operations[0].steps[0].extract[0].name,"csrf_fresh");
