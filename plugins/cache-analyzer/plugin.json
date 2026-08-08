@@ -2,11 +2,11 @@
   "schema_version": 1,
   "id": "cache-analyzer",
   "name": "CacheAnalyzer",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Test cache-key discrepancies, cache poisoning, and web cache deception with cache-busted controls and confirmation.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "d7c4db79b635242c258c1c9d940ee28b2dcbbceff9cf41fca6609391b9e5e8bb",
+  "entrypoint_sha256": "9d74e8bade3fad7c61053aef4cb0b4394d89232b19c304c72ae0bd7c77d066c5",
   "resources": {
     "headers": { "path": "resources/headers", "sha256": "175619d3e49c28431b4ced6363ba63544771db298834195fd3ccb3fc422e9af7" },
     "cookies": { "path": "resources/cookies", "sha256": "dc1d66e40324e017c7020405f25376ccda9cdc6091c00d5e07720312e9ae585b" }
@@ -37,6 +37,9 @@
       "max_poison_variants": { "type": "integer", "minimum": 1, "maximum": 504, "default": 304 },
       "static_extensions": { "type": "array", "maxItems": 10, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9]{1,12}$" }, "default": ["js", "css", "ico"] },
       "path_delimiters": { "type": "array", "maxItems": 32, "uniqueItems": true, "items": { "type": "string", "minLength": 1, "maxLength": 12 }, "description": "Literal or percent-encoded delimiters to test before a static-looking suffix." },
+      "static_directories": { "type": "array", "maxItems": 10, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,80}$" }, "description": "Static-directory cache prefixes for encoded traversal normalization probes." },
+      "exact_cache_files": { "type": "array", "maxItems": 10, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,80}$" }, "description": "Exactly cached filenames for cache-normalization probes." },
+      "normalization_delimiters": { "type": "array", "maxItems": 8, "uniqueItems": true, "items": { "type": "string", "enum": ["%23", "%3f", "%3b", ";", "%00", "%09"] }, "description": "Origin delimiters placed before encoded traversal sequences." },
       "max_deception_variants": { "type": "integer", "minimum": 1, "maximum": 100, "default": 40 }
     } }
   }]

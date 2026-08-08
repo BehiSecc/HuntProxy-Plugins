@@ -138,6 +138,12 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.equal(fatGet.method, "GET");
   assert.match(Buffer.from(fatGet.body_base64, "base64").toString(), /^callback=hpmulti12345f0$/);
 
+  const normalizationPlan = plugin.plan({ marker: "norm12345", allow_cache_side_effects: true, modes: ["deception"], static_extensions: ["js"], path_delimiters: [";"], static_directories: ["resources"], exact_cache_files: ["robots.txt"], normalization_delimiters: ["%23"], max_deception_variants: 10 }, context("https://example.test/my-account"));
+  const normalizationUrls = normalizationPlan.operations.filter((op) => op.id.startsWith("deception-auth-")).map((op) => op.url);
+  assert.ok(normalizationUrls.includes("https://example.test/resources/..%2fmy-account"));
+  assert.ok(normalizationUrls.includes("https://example.test/my-account%23%2f%2e%2e%2fresources"));
+  assert.ok(normalizationUrls.includes("https://example.test/my-account%23%2f%2e%2e%2frobots.txt"));
+
   const cookieContext = context("https://example.test/");
   cookieContext.resources.cookies = "fehost\nsession\n";
   const cookieInput = { marker: "cookie1234", allow_cache_side_effects: true, modes: ["poisoning"], cookie_names: ["fehost"], use_header_wordlist: false, max_header_candidates: 1 };

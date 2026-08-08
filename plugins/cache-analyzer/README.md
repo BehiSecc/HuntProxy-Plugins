@@ -23,3 +23,9 @@ carrier, nested target, and delimiter; `fat_get_parameters` sends harmless form
 markers in GET bodies. `full_query_oracle` deliberately compares a marked query
 with the query-free URL and therefore additionally requires
 `allow_shared_cache_key_tests=true`.
+
+Deception mode covers appended static suffixes plus both sides of encoded path
+normalization: static-prefix traversal toward the private path, and private
+path plus a delimiter/traversal toward a static directory or exact cached
+filename. Candidate directories, filenames, and delimiters stay bounded and
+caller-configurable.
