@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "id": "403-bypasser",
+  "name": "403Bypasser",
+  "version": "0.1.0",
+  "description": "Test denied endpoints with safe path, method, forwarding-header, host, and encoding variants.",
+  "enabled": true,
+  "entrypoint": "index.js",
+  "entrypoint_sha256": "42381160e6738037a838c9b0358208f66f447966075da124c0b2b3f419910a47",
+  "capabilities": ["http.semantic"],
+  "limits": { "timeout_ms": 300000, "max_operations": 500, "max_concurrency": 6, "memory_mb": 32 },
+  "actions": [{
+    "name": "scan",
+    "description": "Generate and compare authorization-bypass variants for one denied request.",
+    "required_capabilities": ["http.semantic"],
+    "input_schema": { "type": "object", "additionalProperties": false, "required": [], "properties": { "allow_state_changes": { "type": "boolean", "default": false }, "include_not_found": { "type": "boolean", "default": false, "description": "Also investigate a 404 control, with lower-severity results." }, "max_variants": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 } } }
+  }]
+}
