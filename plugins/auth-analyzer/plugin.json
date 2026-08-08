@@ -2,11 +2,11 @@
   "schema_version": 1,
   "id": "auth-analyzer",
   "name": "AuthAnalyzer",
-  "version": "1.1.0",
-  "description": "Replay saved request shapes under primary, secondary, and anonymous identities to identify reproducible authorization differences.",
+  "version": "1.2.0",
+  "description": "Replay saved request shapes under two verified-distinct identities, or explicitly audit an expected-protected shape anonymously.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "496ee630d48653b94c7fb0a5034dfa9f7c714d42d06c247b83d396ce7c77ef7b",
+  "entrypoint_sha256": "cfb6fa6d0f991380941bb53f9e87a0a735ab842ed364ff7bde35946579351c4a",
   "capabilities": ["http.semantic", "identity.use"],
   "limits": { "timeout_ms": 900000, "max_operations": 3000, "max_concurrency": 4, "memory_mb": 48 },
   "actions": [{
@@ -47,6 +47,22 @@
             }
           }
         }
+      }
+    }
+  }, {
+    "name": "anonymous_audit",
+    "description": "Send only anonymous controls to a request shape that the caller explicitly confirms should require authentication.",
+    "required_capabilities": ["http.semantic", "identity.use"],
+    "input_schema": {
+      "type": "object", "additionalProperties": false, "required": ["domains", "confirm_expected_protected"],
+      "properties": {
+        "domains": { "type": "array", "minItems": 1, "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "confirm_expected_protected": { "const": true },
+        "exchange_ids": { "type": "array", "maxItems": 499, "uniqueItems": true, "items": { "type": "integer", "minimum": 1 } },
+        "allow_state_changes": { "type": "boolean", "default": false },
+        "max_requests": { "type": "integer", "minimum": 1, "maximum": 500, "default": 100 },
+        "similarity_threshold": { "type": "number", "minimum": 0.5, "maximum": 1, "default": 0.92 },
+        "ignore_patterns": { "type": "array", "maxItems": 20, "items": { "type": "string", "maxLength": 200 } }
       }
     }
   }]

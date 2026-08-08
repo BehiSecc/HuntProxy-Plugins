@@ -30,6 +30,19 @@
     if (identity && identity.cookie) headers.push({ name: "Cookie", value: String(identity.cookie) });
     return headers;
   }
+  function identityKey(identity) {
+    var headers = identityHeaders(identity).map(function (item) {
+      return String(item.name).toLowerCase().trim() + ":" + String(item.value).trim();
+    }).filter(function (item) { return item.split(":").slice(1).join(":").length > 0; });
+    headers.sort();
+    return headers.join("\n");
+  }
+  function validateComparisonIdentities(input) {
+    if (!input.primary || !input.secondary) throw new Error("primary and secondary identities are required");
+    var primary = identityKey(input.primary), secondary = identityKey(input.secondary);
+    if (!primary || !secondary) throw new Error("primary and secondary identities must each contain a non-empty cookie or header");
+    if (primary === secondary) throw new Error("primary and secondary identities must be distinct");
+  }
   function shapes(input, context) {
     var all = [base(context)].concat(context.related_exchanges || []), seen = {}, domains = input.domains || [];
     return all.filter(function (shape) {
@@ -46,9 +59,17 @@
     return op;
   }
   function plan(input, context) {
-    if (!input.primary || !input.secondary) throw new Error("primary and secondary identities are required");
     if (!Array.isArray(input.domains) || !input.domains.length) throw new Error("at least one domain pattern is required");
-    var operations = [], selected = shapes(input, context), includeAnonymous = input.include_anonymous !== false;
+    var operations = [], selected = shapes(input, context);
+    if (context.action === "anonymous_audit") {
+      if (input.confirm_expected_protected !== true) throw new Error("anonymous audit requires confirm_expected_protected=true");
+      selected.forEach(function (shape, index) {
+        for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("shape-" + index + "-anonymous-" + repeat, shape, null, true));
+      });
+      return { operations: operations, result: { request_shapes: selected.length, identities: ["anonymous"], mode: "anonymous_audit" } };
+    }
+    validateComparisonIdentities(input);
+    var includeAnonymous = input.include_anonymous !== false;
     selected.forEach(function (shape, index) {
       for (var repeat = 0; repeat < 2; repeat += 1) {
         operations.push(operation("shape-" + index + "-primary-" + repeat, shape, input.primary, false));
@@ -56,7 +77,7 @@
         if (includeAnonymous) operations.push(operation("shape-" + index + "-anonymous-" + repeat, shape, null, true));
       }
     });
-    return { operations: operations, result: { request_shapes: selected.length, identities: includeAnonymous ? 3 : 2 } };
+    return { operations: operations, result: { request_shapes: selected.length, identities: includeAnonymous ? ["primary", "secondary", "anonymous"] : ["primary", "secondary"], mode: "identity_comparison" } };
   }
   function mapById(items) { var map = {}; items.forEach(function (item) { map[item.id] = item; }); return map; }
   function text(item) {
@@ -95,6 +116,21 @@
   function allowed(item) { return item && item.status_code >= 200 && item.status_code < 400; }
   function analyze(input, observations, context) {
     var map = mapById(observations), findings = [], classifications = [];
+    if (context.action === "anonymous_audit") {
+      shapes(input, context).forEach(function (shape, index) {
+        var anonymous = pair(map, "shape-" + index + "-anonymous-", input), anonymousAllowed = allowed(anonymous);
+        classifications.push({ exchange_id: shape.exchange_id, anonymous_stable: !!anonymous, anonymous_allowed: !!anonymousAllowed, mode: "anonymous_audit" });
+        if (anonymousAllowed) findings.push({
+          title: "Possible unauthenticated authorization exposure", severity: "high", confidence: "firm",
+          explanation: "The caller identified this request shape as expected to be protected, but two anonymous requests reproducibly received an allowed response.",
+          remediation: "Require authentication and authorize the requested object or action before returning protected content.",
+          evidence_exchange_ids: [anonymous.exchange_id].filter(Boolean),
+          metadata: { source_exchange_id: shape.exchange_id, method: shape.method, url: shape.url, mode: "anonymous_audit" }
+        });
+      });
+      return { findings: findings, result: { mode: "anonymous_audit", classifications: classifications, tested_operations: observations.length } };
+    }
+    validateComparisonIdentities(input);
     shapes(input, context).forEach(function (shape, index) {
       var prefix = "shape-" + index + "-", primary = pair(map, prefix + "primary-", input), secondary = pair(map, prefix + "secondary-", input);
       var anonymous = input.include_anonymous === false ? null : pair(map, prefix + "anonymous-", input);
@@ -134,7 +170,7 @@
         });
       }
     });
-    return { findings: findings, result: { classifications: classifications, tested_operations: observations.length } };
+    return { findings: findings, result: { mode: "identity_comparison", classifications: classifications, tested_operations: observations.length } };
   }
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };
 }());

@@ -121,6 +121,8 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
 {
   const plugin = await load("auth-analyzer");
   const ctx = privilegedContext({ related: [{ exchange_id: 43, method: "POST", url: "https://api.example.test/change" }] });
+  assert.throws(() => plugin.plan({ primary: {}, secondary: {}, domains: ["example.test"] }, ctx), /non-empty/);
+  assert.throws(() => plugin.plan({ primary: { cookie: "sid=same" }, secondary: { cookie: "sid=same" }, domains: ["example.test"] }, ctx), /distinct/);
   const input = { primary: { cookie: "sid=one" }, secondary: { headers: [{ name: "Authorization", value: "Bearer two" }] }, domains: ["example.test", "*.example.test"] };
   const plan = plugin.plan(input, ctx);
   assert.equal(plan.operations.length, 6, "unsafe related shape is skipped by default");
@@ -137,6 +139,19 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
   });
   const differentialResult = plugin.analyze(input, differential, ctx);
   assert.ok(differentialResult.findings.some((finding) => /outcome changes/i.test(finding.title)));
+
+  const anonymousContext = privilegedContext(); anonymousContext.action = "anonymous_audit";
+  const anonymousInput = { domains: ["example.test"], confirm_expected_protected: true, max_requests: 1 };
+  assert.throws(() => plugin.plan({ domains: ["example.test"] }, anonymousContext), /confirm_expected_protected/);
+  const anonymousPlan = plugin.plan(anonymousInput, anonymousContext);
+  assert.equal(anonymousPlan.operations.length, 2);
+  assert.ok(anonymousPlan.operations.every((op) => op.id.includes("anonymous") && op.header_tombstones.includes("Cookie")));
+  assert.deepEqual(Array.from(anonymousPlan.result.identities), ["anonymous"]);
+  const anonymousObservations = anonymousPlan.operations.map((op) => observation(op, 200, "public-admin", "admin users"));
+  const anonymousResult = plugin.analyze(anonymousInput, anonymousObservations, anonymousContext);
+  assert.equal(anonymousResult.findings.length, 1);
+  assert.equal(anonymousResult.result.classifications[0].mode, "anonymous_audit");
+  assert.equal(Object.hasOwn(anonymousResult.result.classifications[0], "primary_allowed"), false);
 }
 
 {
