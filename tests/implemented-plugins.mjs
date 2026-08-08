@@ -156,7 +156,7 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const shapePlan = plugin.plan(shapeInput, context());
   const shapePoisons = shapePlan.operations.filter((op) => /^poison-\d+$/.test(op.id));
   assert.ok(shapePoisons.some((op) => op.url === "https://example.test/admin?hpmulti12345q0"), "full-query oracle uses the query-free clean key");
-  assert.ok(shapePoisons.some((op) => /utm_content=hpmulti12345k0%3Bcallback%3D/.test(op.url)), "delimiter cloaking uses a shared unique carrier prefix");
+  assert.ok(shapePoisons.some((op) => /utm_content=hpmulti12345k0;callback=/.test(op.url)), "literal delimiter is preserved on the wire with a shared unique carrier prefix");
   const cloakingPoison = shapePoisons.find((op) => /utm_content=/.test(op.url));
   const cloakingIndex = cloakingPoison.id.slice("poison-".length);
   const cloakingClean = shapePlan.operations.find((op) => op.id === `poison-clean-${cloakingIndex}`);

@@ -23,6 +23,8 @@ carrier, nested target, and delimiter; `fat_get_parameters` sends harmless form
 markers in GET bodies. `full_query_oracle` deliberately compares a marked query
 with the query-free URL and therefore additionally requires
 `allow_shared_cache_key_tests=true`.
+Literal cloaking delimiters remain literal on the wire; encoded delimiter
+choices remain encoded so callers can test both parser behaviors explicitly.
 
 Use `oracle_families` to run only named poisoning families, such as
 `["full-query"]`; omit it to preserve the broad default scan. Confirmed

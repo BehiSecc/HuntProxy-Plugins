@@ -18,6 +18,10 @@
     return url + (url.indexOf("?") === -1 ? "?" : "&") + encodeURIComponent(name) + "=" + encodeURIComponent(value);
   }
 
+  function addCloakedQuery(url, carrier, sharedValue, delimiter, target, markerValue) {
+    return url + (url.indexOf("?") === -1 ? "?" : "&") + encodeURIComponent(carrier) + "=" + encodeURIComponent(sharedValue) + delimiter + encodeURIComponent(target) + "=" + encodeURIComponent(markerValue);
+  }
+
   function encodeBase64(value) {
     var bytes = unescape(encodeURIComponent(String(value))), output = "", alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     for (var index = 0; index < bytes.length; index += 3) {
@@ -137,7 +141,7 @@
     (familyEnabled(input, "parameter-cloaking") ? (input.parameter_cloaking || []) : []).slice(0, 20).forEach(function (entry, index) {
       var carrier = String(entry.carrier), target = String(entry.target), delimiter = String(entry.delimiter || ";"), markerValue = token + "p" + index;
       var sharedValue = token + "k" + index, clean = addQuery(baseUrl, carrier, sharedValue);
-      shapeVariants.push({ name: "cloaking:" + carrier.toLowerCase() + delimiter + target.toLowerCase(), poison_url: addQuery(baseUrl, carrier, sharedValue + delimiter + target + "=" + markerValue), clean_url: clean, headers: [], marker: markerValue });
+      shapeVariants.push({ name: "cloaking:" + carrier.toLowerCase() + delimiter + target.toLowerCase(), poison_url: addCloakedQuery(baseUrl, carrier, sharedValue, delimiter, target, markerValue), clean_url: clean, headers: [], marker: markerValue });
     });
     (familyEnabled(input, "fat-get") ? (input.fat_get_parameters || []) : []).slice(0, 20).forEach(function (name, index) {
       var markerValue = token + "f" + index, cleanValue = "hpclean" + cacheBuster(token + ":fat:" + name);
