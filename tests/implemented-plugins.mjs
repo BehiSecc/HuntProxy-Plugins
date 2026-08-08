@@ -37,6 +37,8 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const plugin = await load("403-bypasser");
   const plan = plugin.plan({}, context());
   assert.ok(plan.operations.length > 10 && plan.operations.length <= 202);
+  const originalUrlCarrier = plan.operations.find((op) => op.headers?.some((header) => header.name === "X-Original-URL") && op.url === "https://example.test/");
+  assert.ok(originalUrlCarrier, "forwarding-header bypasses are tested on a benign carrier path");
   const observations = plan.operations.map((op) => observation(op));
   for (const item of observations.filter((item) => item.id === "variant-0-0" || item.id === "variant-0-1")) {
     item.status_code = 200; item.response_body_hash = "allowed"; item.response_preview.text = "allowed";
@@ -87,6 +89,14 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
   const result = plugin.analyze(input, observations, ctx);
   assert.equal(result.findings.length, 1);
   assert.match(result.findings[0].title, /cross-user/i);
+
+  const differential = plan.operations.map((op) => {
+    const secondary = op.id.includes("secondary");
+    const anonymous = op.id.includes("anonymous");
+    return observation(op, secondary ? 200 : 403, `${op.id}-${Math.random()}`, secondary ? `<input name="csrf" value="${Math.random()}">admin` : "denied");
+  });
+  const differentialResult = plugin.analyze(input, differential, ctx);
+  assert.ok(differentialResult.findings.some((finding) => /outcome changes/i.test(finding.title)));
 }
 
 {

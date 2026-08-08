@@ -37,12 +37,21 @@
       values.push({ name: "path:" + entry.name, url: entry.url, method: baseExchange.method });
     });
     [
-      ["x-original-url", "X-Original-URL", path],
-      ["x-rewrite-url", "X-Rewrite-URL", path],
+      ["x-original-url", "X-Original-URL"],
+      ["x-rewrite-url", "X-Rewrite-URL"],
+      ["x-forwarded-uri", "X-Forwarded-Uri"],
+      ["x-original-uri", "X-Original-Uri"]
+    ].forEach(function (item) {
+      var headers = [{ name: item[1], value: path }];
+      values.push({ name: "header:" + item[0] + ":direct", method: baseExchange.method, headers: headers });
+      values.push({ name: "header:" + item[0] + ":root-carrier", method: baseExchange.method, url: parsed.origin + "/" + parsed.query, headers: headers });
+    });
+    [
       ["x-forwarded-for", "X-Forwarded-For", "127.0.0.1"],
       ["x-real-ip", "X-Real-IP", "127.0.0.1"],
-      ["forwarded", "Forwarded", "for=127.0.0.1;host=" + parsed.origin.replace(/^https?:\/\//, "")],
-      ["x-forwarded-uri", "X-Forwarded-Uri", path]
+      ["client-ip", "Client-IP", "127.0.0.1"],
+      ["true-client-ip", "True-Client-IP", "127.0.0.1"],
+      ["forwarded", "Forwarded", "for=127.0.0.1;host=" + parsed.origin.replace(/^https?:\/\//, "")]
     ].forEach(function (item) {
       values.push({ name: "header:" + item[0], method: baseExchange.method, headers: [{ name: item[1], value: item[2] }] });
     });
@@ -90,7 +99,7 @@
   }
 
   function sameResponse(a, b) {
-    if (!a || !b || a.status_code !== b.status_code) return false;
+    if (!a || !b || a.error || b.error || a.status_code !== b.status_code) return false;
     if (a.response_body_hash && b.response_body_hash) return a.response_body_hash === b.response_body_hash;
     return a.response_length === b.response_length;
   }
@@ -102,9 +111,11 @@
     if (!firstBase || !secondBase) return { findings: [], result: { error: "baseline observations missing" } };
     var denied = firstBase.status_code === 401 || firstBase.status_code === 403 || (input.include_not_found === true && firstBase.status_code === 404);
     if (!denied) return { findings: [], result: { skipped: "base request was not an eligible denied response", status_code: firstBase.status_code } };
-    var baselineStable = sameResponse(firstBase, secondBase), findings = [];
+    var baselineStable = sameResponse(firstBase, secondBase), findings = [], errors = [];
     variants(baseExchange, input).forEach(function (variant, index) {
       var first = map["variant-" + index + "-0"], repeat = map["variant-" + index + "-1"];
+      if (first && first.error) errors.push({ variant: variant.name, repeat: 0, error: first.error });
+      if (repeat && repeat.error) errors.push({ variant: variant.name, repeat: 1, error: repeat.error });
       if (first && repeat && allowed(first.status_code) && sameResponse(first, repeat)) {
         findings.push({
           title: "Access-control bypass using " + variant.name,
@@ -117,7 +128,7 @@
         });
       }
     });
-    return { findings: findings, result: { baseline_status: firstBase.status_code, baseline_stable: baselineStable, tested_variants: variants(baseExchange, input).length } };
+    return { findings: findings, result: { baseline_status: firstBase.status_code, baseline_stable: baselineStable, tested_variants: variants(baseExchange, input).length, operation_errors: errors } };
   }
 
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };
