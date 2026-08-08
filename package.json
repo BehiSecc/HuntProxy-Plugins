@@ -1,0 +1,12 @@
+{
+  "name": "huntproxy-first-party-plugins",
+  "private": true,
+  "version": "0.1.0",
+  "description": "First-party, agent-oriented security extensions for HuntProxy",
+  "scripts": {
+    "test": "node tests/validate-manifests.mjs && node tests/implemented-plugins.mjs && node tests/request-smuggler-racer.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
