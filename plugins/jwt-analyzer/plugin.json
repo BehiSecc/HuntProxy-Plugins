@@ -1,23 +1,23 @@
 {
-  "schema_version": 1, "id": "jwt-analyzer", "name": "JWTAnalyzer", "version": "1.3.0",
+  "schema_version": 1, "id": "jwt-analyzer", "name": "JWTAnalyzer", "version": "1.3.1",
   "description": "Detect HTTP JWTs, report passive claim and algorithm issues, and run bounded signature, claim, and key-selection mutations.",
-  "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "63ac1e218b9fbb03b708bbd1774d31df7e4a06d6db440ca0f7477d7f7ce60674",
+  "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "9634c5592c50488ea483efc9c54f7ecbc1792021613bb8fb21ba8734f75db6fe",
   "resources": { "hmac-secrets": { "path": "resources/hmac-secrets", "sha256": "f8896553bd7d0e9a5ae3accb4a2d4e1bb855aba9e641b01bd8e758f65d029a74" }, "rsa-test-key": { "path": "resources/rsa-test-key.json", "sha256": "4bc3f91b035832d7d1617806884d8331955927d030868dae88f8a6a52b0a6362" }, "rsa-test-jwks": { "path": "resources/rsa-test-jwks.json", "sha256": "a90d3649c0a46cde4f8cdfb41dc72ef339199dd0ed683ea49a14c3553e538da9" } },
   "capabilities": ["http.semantic", "identity.use"],
   "limits": { "timeout_ms": 300000, "max_operations": 50, "max_concurrency": 2, "memory_mb": 32 },
   "actions": [{ "name": "scan", "description": "Analyze the privileged base request JWT and optionally replay a bounded set of safe active mutations.", "required_capabilities": ["http.semantic", "identity.use"],
     "input_schema": { "type": "object", "additionalProperties": false, "$defs": {
-      "text_predicate": { "type": "object", "additionalProperties": false, "minProperties": 1, "properties": { "equals": { "type": "string" }, "contains": { "type": "string" }, "regex": { "type": "string" } } },
+      "text_predicate": { "type": "object", "additionalProperties": false, "minProperties": 1, "properties": { "equals": { "type": "string", "maxLength": 2048 }, "contains": { "type": "string", "maxLength": 2048 }, "regex": { "type": "string", "maxLength": 2048 } } },
       "success_predicate": { "type": "object", "additionalProperties": false, "minProperties": 1, "properties": {
         "status_codes": { "type": "array", "maxItems": 20, "uniqueItems": true, "items": { "type": "integer", "minimum": 100, "maximum": 599 } },
         "headers": { "type": "array", "maxItems": 20, "items": { "type": "object", "additionalProperties": false, "required": ["name"], "properties": { "name": { "type": "string", "minLength": 1 }, "equals": { "type": "string" }, "contains": { "type": "string" }, "regex": { "type": "string" } }, "anyOf": [{ "required": ["equals"] }, { "required": ["contains"] }, { "required": ["regex"] }] } },
-        "body_contains": { "type": "string" }, "body_regex": { "type": "string" },
-        "json": { "type": "array", "maxItems": 20, "items": { "type": "object", "additionalProperties": false, "required": ["pointer"], "properties": { "pointer": { "type": "string", "pattern": "^($|/)" }, "equals": {}, "exists": { "type": "boolean" } } },
+        "body_contains": { "type": "string", "maxLength": 2048 }, "body_regex": { "type": "string", "maxLength": 2048 },
+        "json": { "type": "array", "maxItems": 20, "items": { "type": "object", "additionalProperties": false, "required": ["pointer"], "properties": { "pointer": { "type": "string", "pattern": "^($|/)", "maxLength": 1024 }, "equals": {}, "exists": { "type": "boolean" } } },
         "redirect_location": { "$ref": "#/$defs/text_predicate" }
       } }
     }, "properties": {
-      "token": { "type": "string", "description": "Optional explicit JWT; captured Authorization/Cookie tokens are preferred." },
-      "active": { "type": "boolean", "default": true },
+      "token": { "type": "string", "maxLength": 16384, "description": "Optional explicit JWT; captured Authorization/Cookie tokens are preferred." },
+      "active": { "type": "boolean", "default": false, "description": "Explicitly opt into repeated network validation probes. Omit for passive/offline analysis only." },
       "tests": { "type": "array", "uniqueItems": true, "maxItems": 12, "items": { "enum": ["none", "invalid_signature", "missing_signature", "expired", "no_exp", "empty_hmac", "weak_hmac", "kid_path", "algorithm_confusion", "embedded_jwk", "jku", "x5u"] } },
       "hmac_secrets": { "type": "array", "maxItems": 5000, "items": { "type": "string", "maxLength": 256 }, "description": "Additional bounded HMAC candidate secrets; values never appear in results." },
       "max_secrets": { "type": "integer", "minimum": 1, "maximum": 5000, "default": 2000 },
@@ -25,7 +25,7 @@
       "claim_overrides": { "type": "object", "maxProperties": 20, "description": "Explicit JSON claim changes for correctly signed proof tokens." },
       "server_public_key": { "type": "string", "maxLength": 16384, "description": "Explicit server public-key bytes used as the HMAC secret for an algorithm-confusion probe." },
       "jku_url": { "type": "string", "pattern": "^https?://", "maxLength": 4096, "description": "Explicit in-scope URL where the caller hosts the bundled rsa-test-jwks resource for a JKU trust probe." },
-      "prebuilt_tokens": { "type": "object", "additionalProperties": false, "properties": { "embedded_jwk": { "type": "string" }, "jku": { "type": "string" }, "x5u": { "type": "string" } }, "description": "Correctly signed specialist probes generated by a trusted external key workflow." },
+      "prebuilt_tokens": { "type": "object", "additionalProperties": false, "properties": { "embedded_jwk": { "type": "string", "maxLength": 16384 }, "jku": { "type": "string", "maxLength": 16384 }, "x5u": { "type": "string", "maxLength": 16384 } }, "description": "Correctly signed specialist probes generated by a trusted external key workflow." },
       "target_url": { "type": "string", "pattern": "^https?://", "maxLength": 4096, "description": "Optional in-scope URL used by repeated original-token controls and every JWT variant." },
       "success": { "$ref": "#/$defs/success_predicate", "description": "Explicit specialist-token oracle. A finding requires two matching variants and two non-matching original-token controls." },
       "similarity_threshold": { "type": "number", "minimum": 0.5, "maximum": 1, "default": 0.92 },

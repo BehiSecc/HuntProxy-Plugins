@@ -189,11 +189,11 @@
   }
   function plan(input, context) {
     var jwt = parsed(input, context), operations = [], targetUrl = input.target_url || null;
-    if (input.active !== false) {
+    if (input.active === true) {
       for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("baseline-" + repeat, context.base_exchange.exchange_id, jwt.located, jwt.located.token, targetUrl));
       variants(input, context).forEach(function (variant, index) { for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("variant-" + index + "-" + repeat, context.base_exchange.exchange_id, jwt.located, variant.token, targetUrl)); });
     }
-    return { operations: operations, result: { token_location: jwt.located.kind, algorithm: jwt.header.alg || null, weak_hmac_secret_found: !!weakSecret(input, context, jwt), active_variants: input.active === false ? [] : variants(input, context).map(function (item) { return item.name; }), target_url: targetUrl, explicit_success_oracle: !!input.success, bundled_jwks_resource: "rsa-test-jwks" } };
+    return { operations: operations, result: { token_location: jwt.located.kind, algorithm: jwt.header.alg || null, weak_hmac_secret_found: !!weakSecret(input, context, jwt), active_variants: input.active === true ? variants(input, context).map(function (item) { return item.name; }) : [], target_url: targetUrl, explicit_success_oracle: !!input.success, bundled_jwks_resource: "rsa-test-jwks" } };
   }
   function byId(items) { var out = {}; items.forEach(function (item) { out[item.id] = item; }); return out; }
   function responseText(item) { return item && item.response_body_base64 ? decode64(item.response_body_base64) : String(item && item.response_preview && item.response_preview.text || ""); }
@@ -251,7 +251,7 @@
     if (jwt.header.jku || jwt.header.x5u) passive("JWT references a remote key URL", "medium", "The token header selects verification material through a URL and requires a strict allowlist.");
     if (weakSecret(input, context, jwt) !== null) passive("JWT is signed with a weak HMAC secret", "high", "The captured HS256 signature was verified using the bounded configured weak-secret dictionary.");
     var baseline = pair(map, "baseline-", input), explicitOracle=!!input.success;
-    if (input.active !== false && baseline) variants(input, context).forEach(function (variant, index) {
+    if (input.active === true && baseline) variants(input, context).forEach(function (variant, index) {
       var accepted = pair(map, "variant-" + index + "-", input);
       var oracleAccepted = explicitOracle && accepted && successMatches(map["variant-"+index+"-0"],input.success) && successMatches(map["variant-"+index+"-1"],input.success);
       var negativeControl = explicitOracle && !successMatches(map["baseline-0"],input.success) && !successMatches(map["baseline-1"],input.success);

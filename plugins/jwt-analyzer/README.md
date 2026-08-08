@@ -5,6 +5,10 @@ performs passive claim/header checks, and can send repeated active validation
 probes. It covers unsigned, missing/invalid signature, expiry, empty-HMAC, KID
 path, bounded weak-HMAC, and explicitly configured algorithm-confusion tests.
 
+Network probes are off by default. Set `active=true` only after confirming that
+replaying the captured request and its JWT variants is safe for the target; an
+omitted or false value performs passive/offline analysis without sending requests.
+
 Weak HMAC candidates are verified offline; candidate secrets are never returned
 in job results. When a key is verified, claim mutations are re-signed correctly.
 Set `target_subject` or `claim_overrides` for a meaningful proof. Embedded JWK

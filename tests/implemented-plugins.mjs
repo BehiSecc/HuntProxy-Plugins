@@ -295,6 +295,9 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
   const encode = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
   const token = `${encode({ alg: "RS256", typ: "JWT" })}.${encode({ sub: "1", exp: 4102444800 })}.signature`;
   const ctx = privilegedContext({ headers: [["Authorization", `Bearer ${token}`]] });
+  const passivePlan = plugin.plan({}, ctx);
+  assert.equal(passivePlan.operations.length, 0, "JWT analysis is passive unless active=true is explicit");
+  assert.deepEqual(Array.from(passivePlan.result.active_variants), []);
   const input = { active: true, tests: ["none", "invalid_signature", "expired"] };
   const plan = plugin.plan(input, ctx);
   assert.equal(plan.operations.length, 8);
