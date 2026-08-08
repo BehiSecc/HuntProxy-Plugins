@@ -1,6 +1,17 @@
 (function () {
   "use strict";
 
+  var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  function decode64(value) {
+    var output = "", buffer = 0, bits = 0;
+    String(value || "").replace(/=+$/, "").split("").forEach(function (character) {
+      var index = B64.indexOf(character); if (index < 0) return;
+      buffer = (buffer << 6) | index; bits += 6;
+      if (bits >= 8) { bits -= 8; output += String.fromCharCode((buffer >> bits) & 255); }
+    });
+    return output;
+  }
+
   var DEFAULTS = {
     query: ["admin", "debug", "redirect", "url", "callback", "return", "next", "id", "user", "role"],
     body: ["admin", "debug", "id", "user", "role", "isAdmin", "enabled"],
@@ -47,7 +58,10 @@
   function operation(base, input, location, words, id) {
     var value = marker(input, id);
     var op = { id: id, type: "http_request", base_exchange_id: base.exchange_id, method: base.method, protocol: "auto" };
-    if (location === "query") op.query_params = words.map(function (word) { return { name: word, value: value }; });
+    var query = [];
+    if (input.cache_bust !== false) query.push({ name: String(input.cache_buster_name || "hp_pf_cb"), value: marker(input, "cache-" + id) });
+    if (location === "query") query = query.concat(words.map(function (word) { return { name: word, value: value }; }));
+    if (query.length) op.query_params = query;
     if (location === "header") op.headers = words.map(function (word) { return { name: word, value: value }; });
     if (location === "cookie") op.cookie_params = words.map(function (word) { return { name: word, value: value }; });
     if (location === "body") op.body_params = words.map(function (word) { return { name: word, value: value }; });
@@ -74,8 +88,8 @@
 
   function plan(input, context) {
     var base = baseExchange(context), operations = [], skipped = [];
-    operations.push({ id: "baseline-0", type: "http_request", base_exchange_id: base.exchange_id, method: base.method, protocol: "auto" });
-    operations.push({ id: "baseline-1", type: "http_request", base_exchange_id: base.exchange_id, method: base.method, protocol: "auto" });
+    operations.push(operation(base, input, null, [], "baseline-0"));
+    operations.push(operation(base, input, null, [], "baseline-1"));
     var all = candidates(input, context);
     var phase = input.phase === "confirm" ? "confirm" : "screen";
     Object.keys(all).forEach(function (location) {
@@ -109,27 +123,58 @@
     return map;
   }
 
-  function changed(a, b, baselineUnstable) {
-    if (!a || !b) return false;
+  function responseText(item) {
+    if (item && item.response_body_base64) return decode64(item.response_body_base64);
+    return String(item && item.response_preview && item.response_preview.text || "");
+  }
+
+  function normalized(item, input) {
+    var output = responseText(item).toLowerCase();
+    var buster = String(input.cache_buster_name || "hp_pf_cb").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    output = output
+      .replace(new RegExp("([?&]" + buster + "=)[^&\\\"'<> ]+", "gi"), "$1<cachebuster>")
+      .replace(/(<input\b[^>]*\bname=["']?(?:csrf|csrf_token|_csrf|xsrf|_token|authenticity_token)["']?[^>]*\bvalue=)["'][^"']*["']/gi, "$1\"<volatile>\"")
+      .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi, "<uuid>")
+      .replace(/\s+/g, " ").trim();
+    (input.ignore_patterns || []).forEach(function (pattern) { try { output = output.replace(new RegExp(String(pattern), "gi"), "<ignored>"); } catch (_) {} });
+    return output;
+  }
+
+  function similarity(left, right) {
+    if (left === right) return 1;
+    if (!left || !right) return 0;
+    var a = {}, b = {}, union = {}, same = 0, total = 0;
+    left.split(/[^a-z0-9_]+/).filter(Boolean).forEach(function (token) { a[token] = true; union[token] = true; });
+    right.split(/[^a-z0-9_]+/).filter(Boolean).forEach(function (token) { b[token] = true; union[token] = true; });
+    Object.keys(union).forEach(function (token) { total += 1; if (a[token] && b[token]) same += 1; });
+    return total ? same / total : 0;
+  }
+
+  function equivalent(a, b, input) {
+    if (!a || !b || a.error || b.error || a.status_code !== b.status_code) return false;
+    var threshold = Math.max(0.5, Math.min(Number(input.similarity_threshold == null ? 0.96 : input.similarity_threshold), 1));
+    return similarity(normalized(a, input), normalized(b, input)) >= threshold;
+  }
+
+  function changed(a, b, baselineUnstable, input) {
+    if (!a || !b || a.error || b.error) return false;
     if (a.status_code !== b.status_code) return true;
     if (baselineUnstable) return false;
-    if (a.response_body_hash && b.response_body_hash) return a.response_body_hash !== b.response_body_hash;
-    if (a.response_length != null && b.response_length != null && Math.abs(a.response_length - b.response_length) > 8) return true;
-    return String(a.response_preview && a.response_preview.text || "") !== String(b.response_preview && b.response_preview.text || "");
+    return !equivalent(a, b, input);
   }
 
   function analyze(input, observations, context) {
     var map = byId(observations), baseline = map["baseline-0"], second = map["baseline-1"];
     if (!baseline || !second) return { findings: [], result: { error: "baseline observations missing" } };
-    var baselineUnstable = changed(baseline, second, false);
+    var baselineUnstable = changed(baseline, second, false, input);
     var all = candidates(input, context), findings = [];
     if (input.phase === "confirm") {
       Object.keys(all).forEach(function (location) {
         all[location].forEach(function (word, index) {
           var first = map["confirm-" + location + "-" + index + "-0"];
           var repeat = map["confirm-" + location + "-" + index + "-1"];
-          var reproducible = first && repeat && first.status_code === repeat.status_code && first.response_body_hash === repeat.response_body_hash;
-          if (reproducible && changed(baseline, first, baselineUnstable)) {
+          var reproducible = equivalent(first, repeat, input);
+          if (reproducible && changed(baseline, first, baselineUnstable, input)) {
             findings.push({
               title: "Hidden " + location + " parameter: " + word,
               severity: "info",
@@ -148,7 +193,7 @@
     Object.keys(all).forEach(function (location) {
       narrowed[location] = [];
       for (var start = 0, bucket = 0; start < all[location].length; start += bucketSize, bucket += 1) {
-        if (changed(baseline, map["screen-" + location + "-" + bucket], baselineUnstable)) {
+        if (changed(baseline, map["screen-" + location + "-" + bucket], baselineUnstable, input)) {
           narrowed[location] = narrowed[location].concat(all[location].slice(start, start + bucketSize));
         }
       }
@@ -159,8 +204,8 @@
         phase: "screen",
         baseline_unstable: baselineUnstable,
         candidate_buckets: narrowed,
-        follow_up: { phase: "confirm", locations: Object.keys(narrowed), words_by_location: narrowed, use_only_supplied_words: true, max_words: Number(input.max_words || 500), max_requests: Number(input.max_requests || 5000), marker: input.marker },
-        note: "Run the confirm phase with each candidate bucket as words for its matching location."
+        follow_up: Object.keys(narrowed).some(function (location) { return narrowed[location].length > 0; }) ? { phase: "confirm", locations: Object.keys(narrowed).filter(function (location) { return narrowed[location].length > 0; }), words_by_location: narrowed, use_only_supplied_words: true, max_words: Number(input.max_words || 500), max_requests: Number(input.max_requests || 5000), marker: input.marker, cache_bust: input.cache_bust !== false, cache_buster_name: input.cache_buster_name, similarity_threshold: input.similarity_threshold, ignore_patterns: input.ignore_patterns } : null,
+        note: "Candidate buckets are cache-busted and must be confirmed individually; null follow_up means no response differential was observed."
       }
     };
   }

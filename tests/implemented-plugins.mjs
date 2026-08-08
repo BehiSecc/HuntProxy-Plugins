@@ -26,7 +26,8 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const plan = plugin.plan(input, context());
   assert.ok(plan.operations.length >= 4);
   assert.ok(plan.operations.every((op) => op.type === "http_request" && op.base_exchange_id === 42));
-  const observations = plan.operations.map((op) => observation(op, 200, op.id.startsWith("baseline") ? "a" : "b", op.id));
+  assert.ok(plan.operations.every((op) => op.query_params?.some((param) => param.name === "hp_pf_cb")));
+  const observations = plan.operations.map((op) => observation(op, 200, op.id.startsWith("baseline") ? "a" : "b", op.id.startsWith("baseline") ? "base" : "changed"));
   const result = plugin.analyze(input, observations, context());
   assert.ok(result.findings.some((finding) => finding.metadata.parameter === "debug"));
   assert.ok(plugin.plan({ phase: "screen", locations: ["cookie"], words: ["debug"], max_words: 10 }, context()).operations.some((op) => Array.isArray(op.cookie_params)));

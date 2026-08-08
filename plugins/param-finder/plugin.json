@@ -2,11 +2,11 @@
   "schema_version": 1,
   "id": "param-finder",
   "name": "ParamFinder",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Discover hidden query, body, cookie, and header parameters using batched differential probing and harvested words.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "4efd54244653e726b44f8498ce16215d54ee9b2580eb1ed717bdbea1949f30d3",
+  "entrypoint_sha256": "9e0247c2060d09e4805bd13b52371dad7673b75eb8b4717474aae1a8ee9e715e",
   "resources": {
     "assetnote-params": { "path": "resources/assetnote-params", "sha256": "9cf95d2dbd129cc51df9c88f31b5514578ac052357c4ef3d010b2883fd40850b" },
     "boring_headers": { "path": "resources/boring_headers", "sha256": "c96c9b29315bd9afb4c1bad40fc26d95f8bebab16f8409ef72f69bc90d73f01a" },
@@ -37,6 +37,10 @@
         "words_by_location": { "type": "object", "additionalProperties": { "type": "array", "maxItems": 5000, "items": { "type": "string", "minLength": 1, "maxLength": 256 } } },
         "use_only_supplied_words": { "type": "boolean", "default": false, "description": "Used by the generated confirmation follow-up so only narrowed candidates are retested." },
         "marker": { "type": "string", "minLength": 4, "maxLength": 80 },
+        "cache_bust": { "type": "boolean", "default": true, "description": "Add a unique keyed query parameter to every control and probe so intermediary caches do not hide origin behavior." },
+        "cache_buster_name": { "type": "string", "pattern": "^[A-Za-z0-9_.-]{1,64}$", "default": "hp_pf_cb" },
+        "similarity_threshold": { "type": "number", "minimum": 0.5, "maximum": 1, "default": 0.96 },
+        "ignore_patterns": { "type": "array", "maxItems": 20, "items": { "type": "string", "maxLength": 200 } },
         "max_requests": { "type": "integer", "minimum": 4, "maximum": 5000, "default": 500 }
       }
     }
