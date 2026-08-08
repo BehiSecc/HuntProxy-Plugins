@@ -123,6 +123,16 @@ function context(url = "https://example.test/account") {
   const pathTunnel = tunnel.operations.find((operation) => operation.id === "probe-1-0").streams[0];
   assert.ok(nameTunnel.headers.some((header) => header.name.includes("\r\n\r\nGET")));
   assert.ok(pathTunnel.headers.some((header) => header.name === ":path" && header.value.includes("\r\n\r\nGET")));
+  const tunnelObservations = tunnel.operations.map((operation, index) => {
+    if (operation.type !== "raw_http2") return { id: operation.id, raw: { exchange_id: 1100 + index, ...wire([{ status: 200, body: "normal" }]) } };
+    const canary = operation.id.startsWith("h2-direct-canary"), nested = operation.id.startsWith("probe-");
+    const body = nested ? "prefix HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n" : (canary ? "canary" : "normal");
+    return { id: operation.id, protocol: "h2", timed_out: false, streams: [{ id: `${operation.id}-stream`, exchange_id: 1100 + index, status_code: canary ? 404 : 200, response_length: body.length, response_body_hash: canary ? "canary-hash" : (nested ? "nested-hash" : "base-hash"), response_body_base64: Buffer.from(body).toString("base64") }] };
+  });
+  const tunnelStarted = performance.now();
+  const tunnelResult = plugin.analyze({ ...input, families: ["h2_tunnel"], repeats: 3 }, tunnelObservations, ctx);
+  assert.equal(tunnelResult.findings.length, 2);
+  assert.ok(performance.now() - tunnelStarted < 250, "H2 tunnelling analysis must stay below the host JavaScript stage budget");
 }
 
 {

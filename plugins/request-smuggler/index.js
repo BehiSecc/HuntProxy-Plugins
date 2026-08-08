@@ -193,7 +193,7 @@
   function outcome(item) { var value = rawResult(item); if (value) return String(value.read_outcome || "missing"); if (item && Array.isArray(item.streams)) return item.timed_out ? "timeout" : "idle"; return "error"; }
   function transcript(item) { var value = rawResult(item); return value ? fromBase64(value.response_transcript_base64 || value.response_base64 || "") : ""; }
   function segments(item) {
-    if (item && Array.isArray(item.streams)) return item.streams.map(function (stream) { return { status: stream.status_code || null, text: fromBase64(stream.response_body_base64 || "") }; });
+    if (item && Array.isArray(item.streams)) return item.streams.map(function (stream) { var encoded=String(stream.response_body_base64||"");return { status: stream.status_code || null, text: item.id&&item.id.indexOf("probe-")===0?fromBase64(encoded.slice(0,87384)):"", hash:stream.response_body_hash||"", length:stream.response_length==null?0:Number(stream.response_length) }; });
     var value = rawResult(item), bytes = transcript(item); if (!value) return [];
     return (value.responses || []).map(function (response) { return { status: response.status_code || null, text: bytes.slice(response.offset, response.offset + response.length) }; });
   }
@@ -205,7 +205,7 @@
     right.split(/[^a-z0-9_<>]+/).filter(Boolean).forEach(function (token) { b[token] = 1; union[token] = 1; });
     Object.keys(union).forEach(function (token) { total += 1; if (a[token] && b[token]) same += 1; }); return total ? same / total : 0;
   }
-  function sameSegment(left, right) { return !!(left && right && left.status === right.status && similarity(left.text, right.text) >= 0.9); }
+  function sameSegment(left, right) { if(!left||!right||left.status!==right.status)return false;if(left.hash&&right.hash)return left.hash===right.hash;if(left.length!=null&&right.length!=null&&left.length===right.length&&!left.text&&!right.text)return true;return similarity(left.text,right.text)>=0.9; }
   function stable(left, right) {
     var a = segments(left), b = segments(right); if (!hasResult(left) || !hasResult(right) || outcome(left) !== outcome(right) || a.length !== b.length) return false;
     for (var index = 0; index < a.length; index += 1) {
