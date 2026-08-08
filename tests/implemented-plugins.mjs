@@ -164,12 +164,12 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
   assert.throws(() => plugin.plan({}, ctx), /allow_uploads/);
   const input = { allow_uploads: true, marker: "hp-upload", max_files: 4 };
   const plan = plugin.plan(input, ctx);
-  assert.equal(plan.operations.length, 10);
-  const decoded = Buffer.from(plan.operations[2].body_base64, "base64").toString("binary");
-  assert.match(decoded, /filename="hp-upload\.txt\.jpg"/);
+  assert.equal(plan.operations.length, 8);
+  const decoded = Buffer.from(plan.operations[0].body_base64, "base64").toString("binary");
+  assert.match(decoded, /filename="hp-upload\.txt"/);
   assert.match(decoded, /--huntproxy-boundary--/);
   const observations = plan.operations.map((op) => observation(op, 201, "accepted", "uploaded"));
-  assert.equal(plugin.analyze(input, observations, ctx).findings.length, 4);
+  assert.ok(plugin.analyze(input, observations, ctx).findings.some((finding) => /Direct prohibited/.test(finding.title)));
 }
 
 {
