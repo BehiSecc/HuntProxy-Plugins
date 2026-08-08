@@ -81,6 +81,17 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
     }
   }
   assert.equal(plugin.analyze({}, falsePositive, context()).findings.length, 0, "ordinary carrier responses are not bypasses");
+
+  const methodContext = privilegedContext({ method: "POST", url: "https://example.test/admin-roles", headers: [["Content-Type", "application/x-www-form-urlencoded"]], body: "username=missing&action=upgrade" });
+  const methodInput = { allow_state_changes: true, success_markers: ["could not change user role"] };
+  const methodPlan = plugin.plan(methodInput, methodContext);
+  const getIndex = Array.from(methodPlan.result.variants).indexOf("method:get");
+  const getOps = methodPlan.operations.filter((op) => op.id.startsWith(`variant-${getIndex}-`));
+  assert.equal(getOps.length, 2);
+  assert.ok(getOps.every((op) => op.method === "GET" && op.body_base64 === ""));
+  assert.ok(getOps.every((op) => op.query_params.some((part) => part.name === "username" && part.value === "missing")));
+  const methodObservations = methodPlan.operations.map((op) => observation(op, op.id.startsWith(`variant-${getIndex}-`) ? 400 : 401, op.id.startsWith(`variant-${getIndex}-`) ? "protected-outcome" : "denied", op.id.startsWith(`variant-${getIndex}-`) ? "Could not change user role" : "Unauthorized"));
+  assert.ok(plugin.analyze(methodInput, methodObservations, methodContext).findings.some((finding) => finding.metadata.variant === "method:get"));
 }
 
 {
@@ -187,6 +198,42 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
   const hsResult = plugin.analyze(hsInput, hsObservations, hsContext);
   assert.ok(hsResult.findings.some((finding) => /weak HMAC secret/i.test(finding.title)));
   assert.ok(hsResult.findings.some((finding) => /bypass using weak hmac/i.test(finding.title)));
+
+  const specialistInput = {
+    active: true,
+    tests: ["embedded_jwk"],
+    prebuilt_tokens: { embedded_jwk: token },
+    target_url: "https://example.test/my-account?id=administrator",
+    success: {
+      status_codes: [200],
+      body_contains: "administrator",
+      headers: [{ name: "X-Role", equals: "administrator" }],
+      json: [{ pointer: "/user/role", equals: "administrator" }],
+    },
+  };
+  const specialistPlan = plugin.plan(specialistInput, ctx);
+  assert.ok(specialistPlan.operations.every((op) => op.url === specialistInput.target_url));
+  const specialistObservations = specialistPlan.operations.map((op) => {
+    const accepted = op.id.startsWith("variant-");
+    const body = accepted ? JSON.stringify({ user: { role: "administrator" }, text: "administrator" }) : JSON.stringify({ error: "login" });
+    return {
+      ...observation(op, accepted ? 200 : 302, accepted ? "accepted-admin" : "negative-control", body),
+      response_body_base64: Buffer.from(body).toString("base64"),
+      response_headers: accepted ? [{ name: "X-Role", value: "administrator" }] : [{ name: "Location", value: "/login" }],
+    };
+  });
+  const specialistResult = plugin.analyze(specialistInput, specialistObservations, ctx);
+  assert.equal(specialistResult.findings.length, 1);
+  assert.equal(specialistResult.result.negative_control_rejected, true);
+  const falsePositive = specialistObservations.map((item) => ({ ...item, status_code: 200, response_body_base64: Buffer.from(JSON.stringify({ user: { role: "administrator" }, text: "administrator" })).toString("base64"), response_headers: [{ name: "X-Role", value: "administrator" }] }));
+  assert.equal(plugin.analyze(specialistInput, falsePositive, ctx).findings.length, 0, "matching original-token controls suppress specialist findings");
+
+  const redirectInput = { ...specialistInput, success: { status_codes: [302], redirect_location: { contains: "/administrator" } } };
+  const redirectObservations = specialistPlan.operations.map((op) => ({
+    ...observation(op, 302, op.id.startsWith("variant-") ? "redirect-admin" : "redirect-login", ""),
+    response_headers: [{ name: "Location", value: op.id.startsWith("variant-") ? "/administrator" : "/login" }],
+  }));
+  assert.equal(plugin.analyze(redirectInput, redirectObservations, ctx).findings.length, 1);
 }
 
 {

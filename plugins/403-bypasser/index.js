@@ -31,7 +31,23 @@
     return variants;
   }
 
-  function variants(baseExchange, input) {
+  function formQueryParams(context) {
+    var identity = context.base_exchange && context.base_exchange.identity;
+    if (!identity || !identity.request_body_base64) return [];
+    var contentType = "";
+    (identity.request_headers || []).forEach(function (header) {
+      if (String(header.name).toLowerCase() === "content-type") contentType = atob64(header.value_base64).toLowerCase();
+    });
+    if (contentType.indexOf("application/x-www-form-urlencoded") === -1) return [];
+    return atob64(identity.request_body_base64).split("&").filter(Boolean).map(function (part) {
+      var at = part.indexOf("="), name = at < 0 ? part : part.slice(0, at), value = at < 0 ? "" : part.slice(at + 1);
+      try { name = decodeURIComponent(name.replace(/\+/g, " ")); } catch (_) {}
+      try { value = decodeURIComponent(value.replace(/\+/g, " ")); } catch (_) {}
+      return { name: name, value: value };
+    }).filter(function (part) { return part.name.length > 0; });
+  }
+
+  function variants(baseExchange, input, context) {
     var parsed = splitUrl(baseExchange.url), path = parsed.path, values = [];
     pathVariants(baseExchange.url).forEach(function (entry) {
       values.push({ name: "path:" + entry.name, url: entry.url, method: baseExchange.method });
@@ -56,7 +72,14 @@
       values.push({ name: "header:" + item[0], method: baseExchange.method, headers: [{ name: item[1], value: item[2] }] });
     });
     ["GET", "HEAD", "OPTIONS"].forEach(function (method) {
-      if (method !== String(baseExchange.method).toUpperCase()) values.push({ name: "method:" + method.toLowerCase(), method: method });
+      if (method !== String(baseExchange.method).toUpperCase()) {
+        var variant = { name: "method:" + method.toLowerCase(), method: method };
+        if (method === "GET") {
+          var query = formQueryParams(context);
+          if (query.length) { variant.query_params = query; variant.body_base64 = ""; variant.header_tombstones = ["Content-Type", "Content-Length"]; }
+        }
+        values.push(variant);
+      }
     });
     values.push({ name: "header:method-override-get", method: baseExchange.method, headers: [{ name: "X-HTTP-Method-Override", value: "GET" }] });
     if (input.allow_state_changes === true) {
@@ -77,7 +100,7 @@
     });
     var parsed = splitUrl(baseExchange.url);
     for (var carrierRepeat = 0; carrierRepeat < 2; carrierRepeat += 1) operations.push({ id: "carrier-root-" + carrierRepeat, type: "http_request", base_exchange_id: baseExchange.exchange_id, method: baseExchange.method, url: parsed.origin + "/" + parsed.query, protocol: "auto" });
-    variants(baseExchange, input).forEach(function (variant, index) {
+    variants(baseExchange, input, context).forEach(function (variant, index) {
       for (var repeat = 0; repeat < 2; repeat += 1) {
         var op = {
           id: "variant-" + index + "-" + repeat,
@@ -88,10 +111,13 @@
         };
         if (variant.url) op.url = variant.url;
         if (variant.headers) op.headers = variant.headers;
+        if (variant.query_params) op.query_params = variant.query_params;
+        if (variant.body_base64 != null) op.body_base64 = variant.body_base64;
+        if (variant.header_tombstones) op.header_tombstones = variant.header_tombstones;
         operations.push(op);
       }
     });
-    return { operations: operations, result: { variants: variants(baseExchange, input).map(function (item) { return item.name; }) } };
+    return { operations: operations, result: { variants: variants(baseExchange, input, context).map(function (item) { return item.name; }), form_body_moved_to_query_for_get: formQueryParams(context).length > 0 } };
   }
 
   function mapById(observations) {
@@ -123,14 +149,15 @@
     var denied = firstBase.status_code === 401 || firstBase.status_code === 403 || (input.include_not_found === true && firstBase.status_code === 404);
     if (!denied) return { findings: [], result: { skipped: "base request was not an eligible denied response", status_code: firstBase.status_code } };
     var baselineStable = sameResponse(firstBase, secondBase), findings = [], errors = [], carrierFirst=map["carrier-root-0"], carrierRepeat=map["carrier-root-1"], carrierStable=sameResponse(carrierFirst,carrierRepeat);
-    variants(baseExchange, input).forEach(function (variant, index) {
+    variants(baseExchange, input, context).forEach(function (variant, index) {
       var first = map["variant-" + index + "-0"], repeat = map["variant-" + index + "-1"];
       if (first && first.error) errors.push({ variant: variant.name, repeat: 0, error: first.error });
       if (repeat && repeat.error) errors.push({ variant: variant.name, repeat: 1, error: repeat.error });
       var rootCarrier=/:root-carrier$/.test(variant.name), pathOnly=/^path:/.test(variant.name);
       var distinctFromCarrier=!rootCarrier || (carrierStable && !sameResponse(first,carrierFirst) && !sameResponse(repeat,carrierRepeat));
       var markerProof=markersMatch(first,input) && markersMatch(repeat,input);
-      if (first && repeat && allowed(first.status_code) && sameResponse(first, repeat) && distinctFromCarrier && markerProof) {
+      var explicitSuccess=(input.success_markers||[]).length>0 && markerProof;
+      if (first && repeat && (allowed(first.status_code) || explicitSuccess) && sameResponse(first, repeat) && distinctFromCarrier && markerProof) {
         var stronglyConfirmed=(input.success_markers||[]).length>0 || !pathOnly;
         findings.push({
           title: (stronglyConfirmed ? "Access-control bypass using " : "Potential access-control bypass using ") + variant.name,
@@ -143,7 +170,7 @@
         });
       }
     });
-    return { findings: findings, result: { baseline_status: firstBase.status_code, baseline_stable: baselineStable, carrier_stable: carrierStable, tested_variants: variants(baseExchange, input).length, operation_errors: errors } };
+    return { findings: findings, result: { baseline_status: firstBase.status_code, baseline_stable: baselineStable, carrier_stable: carrierStable, tested_variants: variants(baseExchange, input, context).length, operation_errors: errors } };
   }
 
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };
