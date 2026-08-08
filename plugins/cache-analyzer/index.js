@@ -52,6 +52,10 @@
     return { origin: match[1], path: match[2] || "/", query: match[3] || "" };
   }
 
+  function familyEnabled(input, name) {
+    return !input.oracle_families || !input.oracle_families.length || input.oracle_families.indexOf(name) !== -1;
+  }
+
   function poisonVariants(baseUrl, token, input, context) {
     var variants = [], combinationVariants = [], shapeVariants = [], seen = {}, headerLimit = Math.max(1, Math.min(Number(input.max_header_candidates || 300), 500));
     var unsafe = { "content-length": 1, "transfer-encoding": 1, "connection": 1, "proxy-connection": 1, "cookie": 1, "set-cookie": 1 };
@@ -77,17 +81,17 @@
       var headerValue = special[key] || pieces.slice(1).join("~") || markerValue + ".invalid";
       return { name: name, value: headerValue.replace(/%s/g, markerValue).replace(/%h/g, "invalid") };
     }
-    [
+    (familyEnabled(input, "headers") ? [
       "X-Forwarded-Host", "X-Host", "X-Original-URL", "X-Rewrite-URL", "X-Forwarded-Scheme",
       "X-Forwarded-Proto", "X-Forwarded-Port", "Forwarded", "X-HTTP-Method-Override", "X-Method-Override",
       "X-Original-Host", "X-Forwarded-Prefix", "X-Forwarded-Uri", "X-Original-Uri", "X-Forwarded-Server",
       "X-Real-IP", "X-Forwarded-For", "True-Client-IP", "Client-IP", "Fastly-Host", "X-Cache-Key",
       "X-ProxyUser-IP", "X-Original-User-Agent", "X-Request-URI", "X-Accel-Redirect", "Authorization"
-    ].forEach(addHeader);
-    (input.headers || []).forEach(addHeader);
-    if (input.use_header_wordlist !== false && context.resources && typeof context.resources.headers === "string") context.resources.headers.split(/\r?\n/).forEach(addHeader);
+    ] : []).forEach(addHeader);
+    if (familyEnabled(input, "headers")) (input.headers || []).forEach(addHeader);
+    if (familyEnabled(input, "headers") && input.use_header_wordlist !== false && context.resources && typeof context.resources.headers === "string") context.resources.headers.split(/\r?\n/).forEach(addHeader);
     var combinations = input.header_combinations || [["X-Forwarded-Host~%s.invalid", "X-Forwarded-Scheme~http"]];
-    combinations.slice(0, Math.max(0, Math.min(Number(input.max_header_combinations == null ? 12 : input.max_header_combinations), 20))).forEach(function (combination, index) {
+    (familyEnabled(input, "header-combinations") ? combinations : []).slice(0, Math.max(0, Math.min(Number(input.max_header_combinations == null ? 12 : input.max_header_combinations), 20))).forEach(function (combination, index) {
       var markerValue = token + "m" + index, headers = [], names = {}, valid = true;
       (combination || []).slice(0, 4).forEach(function (value) {
         var header = combinationHeader(value, markerValue), key = header && header.name.toLowerCase();
@@ -107,8 +111,8 @@
       }
       cookieSeen[key] = true; cookieNames.push(name);
     }
-    (input.cookie_names || []).forEach(addCookieName);
-    if (input.use_cookie_wordlist === true && context.resources && typeof context.resources.cookies === "string") {
+    if (familyEnabled(input, "cookies")) (input.cookie_names || []).forEach(addCookieName);
+    if (familyEnabled(input, "cookies") && input.use_cookie_wordlist === true && context.resources && typeof context.resources.cookies === "string") {
       context.resources.cookies.split(/\r?\n/).forEach(addCookieName);
     }
     cookieNames.slice(0, Math.max(1, Math.min(Number(input.max_cookie_candidates || 40), 100))).forEach(function (name) {
@@ -121,21 +125,21 @@
         clean_cookies: [{ name: name, value: cleanValue }], marker: markerValue
       });
     });
-    ["utm_source", "utm_content", "ref", "callback"].forEach(function (name) {
+    (familyEnabled(input, "query-parameters") ? ["utm_source", "utm_content", "ref", "callback"] : []).forEach(function (name) {
       var clean = addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":query:" + name));
       variants.push({ name: "query:" + name, poison_url: addQuery(clean, name, token), clean_url: clean, headers: [], marker: token });
     });
-    if (input.full_query_oracle === true) {
+    if (familyEnabled(input, "full-query") && input.full_query_oracle === true) {
       if (input.allow_shared_cache_key_tests !== true) throw new Error("full-query testing requires allow_shared_cache_key_tests=true");
       var parsed = splitUrl(baseUrl), shared = parsed.origin + parsed.path, fullMarker = token + "q0";
       shapeVariants.push({ name: "full-query", poison_url: shared + "?" + encodeURIComponent(fullMarker), clean_url: shared, headers: [], marker: fullMarker });
     }
-    (input.parameter_cloaking || []).slice(0, 20).forEach(function (entry, index) {
+    (familyEnabled(input, "parameter-cloaking") ? (input.parameter_cloaking || []) : []).slice(0, 20).forEach(function (entry, index) {
       var carrier = String(entry.carrier), target = String(entry.target), delimiter = String(entry.delimiter || ";"), markerValue = token + "p" + index;
       var clean = addQuery(baseUrl, carrier, "hpclean" + index);
       shapeVariants.push({ name: "cloaking:" + carrier.toLowerCase() + delimiter + target.toLowerCase(), poison_url: addQuery(baseUrl, carrier, "1" + delimiter + target + "=" + markerValue), clean_url: clean, headers: [], marker: markerValue });
     });
-    (input.fat_get_parameters || []).slice(0, 20).forEach(function (name, index) {
+    (familyEnabled(input, "fat-get") ? (input.fat_get_parameters || []) : []).slice(0, 20).forEach(function (name, index) {
       var markerValue = token + "f" + index, cleanValue = "hpclean" + cacheBuster(token + ":fat:" + name);
       var clean = addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":fat-key:" + name));
       shapeVariants.push({
@@ -197,7 +201,7 @@
         if (variant.clean_body_base64 != null) { clean.body_base64 = variant.clean_body_base64; confirm.body_base64 = variant.clean_body_base64; }
         operations.push(poison); operations.push(clean); operations.push(confirm);
       });
-      if (input.url_normalization_oracle === true) {
+      if (familyEnabled(input, "url-normalization") && input.url_normalization_oracle === true) {
         if (input.allow_shared_cache_key_tests !== true) throw new Error("URL-normalization testing requires allow_shared_cache_key_tests=true");
         for (var normalizationRepeat = 0; normalizationRepeat < 2; normalizationRepeat += 1) {
           var suffix = token + "n" + normalizationRepeat;
@@ -308,11 +312,11 @@
             explanation: "A unique marker supplied only by the poisoning request persisted in two clean responses for the cache-busted URL.",
             remediation: "Include the input in the cache key or reject it, and prevent untrusted values from influencing cached responses.",
             evidence_exchange_ids: [poison.exchange_id, clean.exchange_id, confirm.exchange_id].filter(Boolean),
-            metadata: { variant: variant.name, marker: token }
+            metadata: { variant: variant.name, subtype: variant.name === "full-query" ? "full-query" : variant.name, marker: token }
           });
         }
       });
-      if (input.url_normalization_oracle === true) {
+      if (familyEnabled(input, "url-normalization") && input.url_normalization_oracle === true) {
         var normalizationEvidence = [], normalizationConfirmed = true;
         for (var normalizationRepeat = 0; normalizationRepeat < 2; normalizationRepeat += 1) {
           var rawPoison = map["normalization-poison-" + normalizationRepeat], rawClean = map["normalization-clean-" + normalizationRepeat], rawConfirm = map["normalization-confirm-" + normalizationRepeat];
