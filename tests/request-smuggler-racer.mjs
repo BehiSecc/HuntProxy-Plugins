@@ -44,6 +44,8 @@ function context(url = "https://example.test/account") {
   const zeroClVictim = Buffer.from(zeroClPair.members[1].request_base64, "base64").toString();
   assert.match(zeroClEarly, /Content-Length : 45\r\n/);
   assert.match(zeroClVictim, /^GET \/resources\/images\/blog\.svg HTTP\/1\.1\r\nX: yGET \/hp-abc12345-not-found HTTP\/1\.1/);
+  assert.equal(zeroClPair.members[1].options.pause_at_byte, 1);
+  assert.equal(zeroClPair.members[1].options.pause_ms, 50);
   assert.equal(Buffer.from(zeroCl.operations.find((operation) => operation.id === "control-0-0").request_base64, "base64").toString(), zeroClVictim);
   assert.equal(zeroCl.result.techniques.length, 26);
   assert.equal(zeroCl.result.request_count, 316);
@@ -88,6 +90,25 @@ function context(url = "https://example.test/account") {
   const zeroClResult = plugin.analyze({ ...input, families: ["0_cl"], probe_path: "/resources/images/blog.svg" }, zeroClObservations, ctx);
   assert.equal(zeroClResult.findings.length, 26);
   assert.equal(zeroClResult.findings[0].metadata.family, "0_cl");
+  const unstableInput = { ...input, families: ["0_cl"], repeats: 5, max_techniques: 1, zero_cl_offsets: [4], zero_cl_delay_ms: 75, probe_path: "/resources/images/blog.svg" };
+  const unstablePlan = plugin.plan(unstableInput, ctx);
+  assert.equal(unstablePlan.operations.find((operation) => operation.type === "raw_http1_group").members[1].options.pause_ms, 75);
+  const unstableObservations = unstablePlan.operations.map((operation, index) => {
+    if (operation.type === "raw_http1_group") return {
+      id: operation.id,
+      dispatch: "parallel_barrier",
+      members: operation.members.map((member, memberIndex) => {
+        const divergent = member.id.startsWith("victim-") && /-(0|1)$/.test(member.id);
+        return { id: member.id, raw: { exchange_id: 700 + index * 2 + memberIndex, ...wire([{ status: divergent ? 400 : 200, body: divergent ? "invalid request" : "normal account" }]) } };
+      }),
+    };
+    const responses = operation.id.startsWith("direct-canary") ? [{ status: 404, body: "canary" }] : [{ status: 200, body: "normal account" }];
+    return { id: operation.id, raw: { exchange_id: 700 + index, ...wire(responses) } };
+  });
+  const unstableResult = plugin.analyze(unstableInput, unstableObservations, ctx);
+  assert.equal(unstableResult.findings.length, 1);
+  assert.equal(unstableResult.findings[0].confidence, "tentative");
+  assert.equal(unstableResult.findings[0].metadata.signal, "victim_divergence");
   const connectionObservations = connectionState.operations.map((operation, index) => {
     const responses = operation.id.startsWith("direct-canary") ? [{ status: 404, body: "canary" }]
       : operation.id.startsWith("control-") ? [{ status: 421, body: "invalid host" }]

@@ -181,7 +181,8 @@
     return { response_mode: "until_idle", read_timeout_ms: Math.max(1000, Math.min(Number(input.read_timeout_ms || 8000), 30000)), idle_timeout_ms: Math.max(500, Math.min(Number(input.idle_timeout_ms || 1500), 5000)), half_close_write: false };
   }
   function raw(id, parsed, request, input) { return { id: id, type: "raw_http1", target_url: parsed.url, request_base64: toBase64(request), use_project_cookies: false, options: options(input) }; }
-  function rawGroup(id, parsed, members, input) { return { id: id, type: "raw_http1_group", target_url: parsed.url, members: members.map(function (member) { return { id: member.id, request_base64: toBase64(member.request), use_project_cookies: false, options: options(input) }; }) }; }
+  function rawGroup(id, parsed, members, input) { return { id: id, type: "raw_http1_group", target_url: parsed.url, members: members.map(function (member) { return { id: member.id, request_base64: toBase64(member.request), use_project_cookies: false, options: member.options || options(input) }; }) }; }
+  function delayedZeroClOptions(input) { var value = options(input); value.pause_at_byte = 1; value.pause_ms = Math.max(1, Math.min(Number(input.zero_cl_delay_ms || 50), 1000)); value.await_response_before_continue = false; return value; }
   function rawH2(id, parsed, request, input) { return { id: id, type: "raw_http2", target_url: parsed.url, streams: [{ id: id + "-stream", headers: request.headers, body_text: request.body }], options: { timeout_ms: Math.max(1000, Math.min(Number(input.read_timeout_ms || 8000), 30000)), final_data_together: false } }; }
   function isH2Mode(mode){return mode==="h2"||mode==="h2_tunnel"||mode==="h2_header_injection";}
   function rawPause(id,parsed,request,input){return {id:id,type:"raw_http1",target_url:parsed.url,request_base64:toBase64(request.bytes),use_project_cookies:false,options:{pause_at_byte:request.split,pause_ms:Math.max(1,Math.min(Number(input.pause_ms||61000),120000)),await_response_before_continue:input.pause_await_response===true,half_close_write:false,response_mode:"until_idle",read_timeout_ms:Math.max(1000,Math.min(Number(input.read_timeout_ms||30000),120000)),idle_timeout_ms:Math.max(500,Math.min(Number(input.idle_timeout_ms||1500),5000))}};}
@@ -218,7 +219,7 @@
           operations.push(raw("control-" + index + "-" + repeat, set.parsed, control, input));
           operations.push(rawGroup("pair-" + index + "-" + repeat, set.parsed, [
             { id: "probe-" + index + "-" + repeat, request: probe.early },
-            { id: "victim-" + index + "-" + repeat, request: victim }
+            { id: "victim-" + index + "-" + repeat, request: victim, options: delayedZeroClOptions(input) }
           ], input));
           operations.push(raw("recovery-" + index + "-" + repeat, set.parsed, clean, input));
         } else if (isH2Mode(technique.mode)) {
@@ -305,7 +306,8 @@
       }
       var confirmed = directStable && canaryDistinct && clean === repeats && contaminated >= threshold;
       var candidate = directStable && clean === repeats && timeouts >= threshold;
-      var responseCandidate=directStable&&clean===repeats&&divergentVictims>=threshold;
+      var unstableZero=technique.mode==="zero_cl_pair"&&divergentVictims>=Math.max(2,Math.ceil(repeats*0.4));
+      var responseCandidate=directStable&&clean===repeats&&(divergentVictims>=threshold||unstableZero);
       diagnostics.push({ family: technique.family, technique: technique.name, polarity: technique.polarity, clean_controls: clean, canary_confirmations: contaminated, divergent_victims: divergentVictims, probe_only_timeouts: timeouts, repeats: repeats, signal: confirmed ? "marker_contamination" : responseCandidate ? "victim_divergence" : candidate ? "timing_candidate" : "none" });
       if (confirmed) findings.push({
         title: "Confirmed " + (h2Mode ? "HTTP/2 downgrade/tunnelling" : "HTTP/1 request desynchronization") + ": " + technique.name, severity: technique.mode==="h2_header_injection"?"medium":"high", confidence: "firm",

@@ -15,7 +15,11 @@ canary response only in the grouped case confirms that the hidden length
 consumed its prefix. A bounded `zero_cl_offsets` sweep accounts for headers
 inserted during front-end rewriting. It also covers whitespace/tab,
 folded-name/value, hop-by-hop, duplicate, underscore, and bare LF/CR
-header-hiding variants. Each retains repeated quorum and a clean recovery.
+header-hiding variants. The second connection pauses after its first byte for
+the bounded `zero_cl_delay_ms` interval, giving the early-response request a
+deterministic lead without serializing the pair. Each retains repeated quorum
+and a clean recovery. Repeated non-canary divergence is reported separately as
+tentative; only reproducible canary revelation is firm.
 
 `connection_state` compares a Host-bearing request directly and as the second
 request on one established connection. Set `connection_state_host` and
