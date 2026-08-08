@@ -23,6 +23,12 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const resourceContext = context(); resourceContext.resources = { params };
   const resourcePlan = plugin.plan({ locations: ["query"], max_words: 20 }, resourceContext);
   assert.ok(resourcePlan.result.candidates.query.includes("account"));
+  const lateContext = context(); lateContext.resources = { params: Array.from({ length: 700 }, (_, index) => `ordinary_${index}`).concat(["roleid", "chosen_discount"]).join("\n"), headers: Array.from({ length: 700 }, (_, index) => `X-Ordinary-${index}`).concat(["X-Custom-IP-Authorization"]).join("\n") };
+  const latePlan = plugin.plan({ locations: ["query", "header"], cache_key_tests: false }, lateContext);
+  assert.ok(latePlan.result.candidates.query.includes("roleid"));
+  assert.ok(latePlan.result.candidates.query.includes("chosen_discount"));
+  assert.ok(latePlan.result.candidates.header.includes("X-Custom-IP-Authorization"));
+  assert.equal(latePlan.result.truncated, false);
   const input = { phase: "confirm", locations: ["query"], words_by_location: { query: ["debug"] }, max_words: 20 };
   const plan = plugin.plan(input, context());
   assert.ok(plan.operations.length >= 4);

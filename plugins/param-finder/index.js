@@ -13,14 +13,14 @@
   }
 
   var DEFAULTS = {
-    query: ["admin", "debug", "redirect", "url", "callback", "return", "next", "id", "user", "role"],
-    body: ["admin", "debug", "id", "user", "role", "isAdmin", "enabled"],
+    query: ["chosen_discount", "roleid", "admin", "debug", "redirect", "url", "callback", "return", "next", "id", "user", "role"],
+    body: ["chosen_discount", "roleid", "admin", "debug", "id", "user", "role", "isAdmin", "enabled"],
     cookie: ["admin", "debug", "role", "session", "user", "auth"],
-    header: ["X-Forwarded-Host", "X-Original-URL", "X-Rewrite-URL", "X-Forwarded-For", "X-HTTP-Method-Override"]
+    header: ["X-Custom-IP-Authorization", "X-Forwarded-Host", "X-Original-URL", "X-Rewrite-URL", "X-Forwarded-For", "X-HTTP-Method-Override"]
   };
 
   function uniqueWords(input, context, location) {
-    var out = [], seen = {}, max = Math.max(1, Math.min(Number(input.max_words || 500), 5000));
+    var out = [], seen = {}, max = Math.max(1, Math.min(Number(input.max_words || 100000), 100000));
     function add(value) {
       value = String(value || "").trim();
       if (!value || value.length > 128) return;
@@ -29,9 +29,9 @@
       var key = value.toLowerCase();
       if (!seen[key] && out.length < max) { seen[key] = true; out.push(value); }
     }
-    if (input.use_only_supplied_words !== true) (DEFAULTS[location] || []).forEach(add);
     (input.harvested_words || []).forEach(add);
     (input.words || []).forEach(add);
+    if (input.use_only_supplied_words !== true) (DEFAULTS[location] || []).forEach(add);
     var resources = context.resources || {};
     var names = location === "header" ? ["headers", "boring_headers"] : ["params", "assetnote-params", "words"];
     if (input.use_only_supplied_words !== true) {
@@ -111,7 +111,7 @@
           }
         });
       } else {
-        var bucketSize = Math.max(2, Math.min(Number(input.bucket_size || 16), 64));
+        var bucketSize = Math.max(2, Math.min(Number(input.bucket_size || 64), 64));
         for (var start = 0, bucket = 0; start < words.length; start += bucketSize, bucket += 1) {
           var id = "screen-" + location + "-" + bucket;
           var op = operation(base, input, location, words.slice(start, start + bucketSize), id);
@@ -127,8 +127,9 @@
     });
     var operationLimit = Math.max(4, Math.min(Number(input.max_requests || 5000), 5000));
     if (phase === "confirm" && operationLimit % 2 === 1) operationLimit -= 1;
+    var plannedOperations = operations.length;
     operations = operations.slice(0, operationLimit);
-    return { operations: operations, result: { phase: phase, candidates: all, skipped_locations: Array.from(new Set(skipped)), operation_count: operations.length, truncated: operations.length >= operationLimit } };
+    return { operations: operations, result: { phase: phase, candidates: all, skipped_locations: Array.from(new Set(skipped)), operation_count: operations.length, planned_operation_count: plannedOperations, truncated: plannedOperations > operationLimit } };
   }
 
   function byId(observations) {
@@ -224,7 +225,7 @@
       });
       return { findings: findings, result: { phase: "confirm", baseline_unstable: baselineUnstable, confirmed: findings.length } };
     }
-    var narrowed = {}, bucketSize = Math.max(2, Math.min(Number(input.bucket_size || 16), 64));
+    var narrowed = {}, bucketSize = Math.max(2, Math.min(Number(input.bucket_size || 64), 64));
     Object.keys(all).forEach(function (location) {
       narrowed[location] = [];
       for (var start = 0, bucket = 0; start < all[location].length; start += bucketSize, bucket += 1) {
