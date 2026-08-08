@@ -8,12 +8,14 @@ backend connection after the front end closes the original client connection.
 CL.TE, TE.CL, TE.TE permutations, and CL.0 use a marker oracle. CL.0 leaves
 the smuggled header block incomplete so the next request completes it, matching
 real single-connection behavior. The 0.CL family dispatches an early-response
-request with no body and an independent `XGET` victim over two separate
-connections behind one start barrier. A normal victim response that is
-impossible without the hidden length interpretation confirms the discrepancy.
-It covers bounded whitespace/tab, folded-name/value, hop-by-hop, duplicate,
-underscore, and bare LF/CR header-hiding variants. Each retains a standalone
-`XGET` control, repeated quorum, and a clean recovery request.
+request with no body and an independent valid chopped-prefix/revealed-canary
+request over two separate connections behind one start barrier. The same
+second request is sent alone as a control and resolves to the normal path; a
+canary response only in the grouped case confirms that the hidden length
+consumed its prefix. A bounded `zero_cl_offsets` sweep accounts for headers
+inserted during front-end rewriting. It also covers whitespace/tab,
+folded-name/value, hop-by-hop, duplicate, underscore, and bare LF/CR
+header-hiding variants. Each retains repeated quorum and a clean recovery.
 
 `connection_state` compares a Host-bearing request directly and as the second
 request on one established connection. Set `connection_state_host` and

@@ -68,24 +68,28 @@
     var smuggled = "GET " + canaryPath + " HTTP/1.1\r\nX-HuntProxy-Desync: " + marker;
     return message("POST", path, parsed.authority, inherited, ["Content-Length: " + smuggled.length, "Content-Type: text/plain"], smuggled, false) + normalGet(path, parsed, inherited, true);
   }
-  function malformedMethod(path, parsed, inherited, marker) {
-    return message("XGET", path, parsed.authority, inherited, ["X-HuntProxy-Desync: " + marker], "", true);
-  }
-  function zeroCl(parsed, path, inherited, marker, hiddenLines) {
-    return message("GET", path, parsed.authority, inherited, hiddenLines.concat(["X-HuntProxy-Desync: " + marker]), "", false);
+  function zeroCl(parsed, path, canaryPath, inherited, marker, variant, offset) {
+    var chopped = "GET " + path + " HTTP/1.1\r\nX: y";
+    var revealed = "GET " + canaryPath + " HTTP/1.1\r\nHost: " + parsed.authority + "\r\nX-HuntProxy-Desync: " + marker + "\r\nConnection: close\r\n\r\n";
+    var hiddenLength = chopped.length + offset;
+    return {
+      early: message("GET", path, parsed.authority, inherited, variant.lines(hiddenLength).concat(["X-HuntProxy-Desync: " + marker]), "", false),
+      victim: chopped + revealed,
+      offset: offset
+    };
   }
   function zeroClVariants() {
     return [
-      { name: "space before colon", lines: ["Content-Length : 1"] },
-      { name: "wrapped value", lines: ["Content-Length:\r\n 1"] },
-      { name: "tab before colon", lines: ["Content-Length\t: 1"] },
-      { name: "leading whitespace", lines: ["X-Junk: x", " Content-Length: 1"] },
-      { name: "hop-by-hop", lines: ["Content-Length: 1", "Connection: Content-Length"] },
-      { name: "hidden hop-by-hop", lines: ["Content-Length: 1", "Connection : Content-Length"] },
-      { name: "duplicate", lines: ["Content-Length: 1", "Content-Length: 1"] },
-      { name: "underscore", lines: ["Content_Length: 1"] },
-      { name: "LF name wrap", lines: ["X-Junk: x\nContent-Length: 1"] },
-      { name: "CR name wrap", lines: ["X-Junk: x\rContent-Length: 1"] }
+      { name: "space before colon", lines: function (value) { return ["Content-Length : " + value]; } },
+      { name: "wrapped value", lines: function (value) { return ["Content-Length:\r\n " + value]; } },
+      { name: "tab before colon", lines: function (value) { return ["Content-Length\t: " + value]; } },
+      { name: "leading whitespace", lines: function (value) { return ["X-Junk: x", " Content-Length: " + value]; } },
+      { name: "hop-by-hop", lines: function (value) { return ["Content-Length: " + value, "Connection: Content-Length"]; } },
+      { name: "hidden hop-by-hop", lines: function (value) { return ["Content-Length: " + value, "Connection : Content-Length"]; } },
+      { name: "duplicate", lines: function (value) { return ["Content-Length: " + value, "Content-Length: " + value]; } },
+      { name: "underscore", lines: function (value) { return ["Content_Length: " + value]; } },
+      { name: "LF name wrap", lines: function (value) { return ["X-Junk: x\nContent-Length: " + value]; } },
+      { name: "CR name wrap", lines: function (value) { return ["X-Junk: x\rContent-Length: " + value]; } }
     ];
   }
   function withHost(path, parsed, inherited, host, close) {
@@ -147,8 +151,9 @@
       add("te_te", "TE.TE " + permutation[0] + " (TE.CL oracle)", teCl(parsed, path, canaryPath, inherited, marker, permutation[1]), true, "te_cl");
     });
     add("cl_0", "CL.0 marker pipeline", clZero(parsed, path, canaryPath, inherited, marker), true);
-    var zeroVariants = zeroClVariants();
-    add("0_cl", "0.CL " + zeroVariants[0].name, zeroCl(parsed, path, inherited, marker, zeroVariants[0].lines), true, "0_cl", "zero_cl_pair");
+    var zeroVariants = zeroClVariants(), zeroOffsets = Array.isArray(input.zero_cl_offsets) && input.zero_cl_offsets.length ? input.zero_cl_offsets : [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16];
+    zeroOffsets = zeroOffsets.map(function (value) { value = Number(value); if (!Number.isInteger(value) || value < 0 || value > 64) throw new Error("zero_cl_offsets must contain integers from 0 to 64"); return value; }).filter(function (value, index, values) { return values.indexOf(value) === index; });
+    add("0_cl", "0.CL " + zeroVariants[0].name + " offset " + zeroOffsets[0], zeroCl(parsed, path, canaryPath, inherited, marker, zeroVariants[0], zeroOffsets[0]), true, "0_cl", "zero_cl_pair");
     var connectionHost = String(input.connection_state_host || (marker + "." + parsed.authority));
     if (!connectionHost || /[\r\n\s]/.test(connectionHost) || connectionHost.length > 255) throw new Error("connection_state_host must be a CRLF-free Host value");
     var connectionPath = safePath(input.connection_state_path || path, "connection_state_path");
@@ -163,8 +168,11 @@
     add("pause", "server-side pause-based CL.0", pauseProbe(parsed,path,canaryPath,inherited,marker), true, "pause", "pause");
     add("parser_discrepancy", "conflicting duplicate Content-Length", message("POST", path, parsed.authority, inherited, ["Content-Length: 4", "Content-Length: 5", "Content-Type: text/plain"], "12345", false) + normalGet(path, parsed, inherited, true), false);
     add("parser_discrepancy", "signed Content-Length", message("POST", path, parsed.authority, inherited, ["Content-Length: +5", "Content-Type: text/plain"], "12345", false) + normalGet(path, parsed, inherited, true), false);
+    zeroOffsets.slice(1).forEach(function (offset) {
+      add("0_cl", "0.CL " + zeroVariants[0].name + " offset " + offset, zeroCl(parsed, path, canaryPath, inherited, marker, zeroVariants[0], offset), true, "0_cl", "zero_cl_pair");
+    });
     zeroVariants.slice(1).forEach(function (variant) {
-      add("0_cl", "0.CL " + variant.name, zeroCl(parsed, path, inherited, marker, variant.lines), true, "0_cl", "zero_cl_pair");
+      add("0_cl", "0.CL " + variant.name + " offset " + zeroOffsets[0], zeroCl(parsed, path, canaryPath, inherited, marker, variant, zeroOffsets[0]), true, "0_cl", "zero_cl_pair");
     });
     var selected = input.families && input.families.length ? input.families : ["cl_te", "te_cl", "te_te", "cl_0", "0_cl", "connection_state", "h2_cl", "h2_te", "h2_crlf", "h2_split", "h2_tunnel", "parser_discrepancy"];
     return { parsed: parsed, inherited: inherited, path: path, canary_path: canaryPath, connection_host: connectionHost, connection_path: connectionPath, items: items.filter(function (item) { return selected.indexOf(item.family) !== -1; }).slice(0, Math.max(1, Math.min(Number(input.max_techniques || 30), 30))) };
@@ -195,8 +203,8 @@
       for (var repeat = 0; repeat < repeats; repeat += 1) {
         var clean = normalGet(set.path, set.parsed, set.inherited, true), control = clean, victim = clean, probe = technique.request;
         if (technique.mode === "zero_cl_pair") {
-          control = malformedMethod(set.path, set.parsed, set.inherited, String(input.marker));
-          victim = control;
+          control = technique.request.victim;
+          victim = technique.request.victim;
         } else if (technique.mode === "connection_state") {
           control = technique.request;
           probe = normalGet(set.path, set.parsed, set.inherited, false) + withHost(set.connection_path, set.parsed, set.inherited, set.connection_host, true);
@@ -209,7 +217,7 @@
         } else if (technique.mode === "zero_cl_pair") {
           operations.push(raw("control-" + index + "-" + repeat, set.parsed, control, input));
           operations.push(rawGroup("pair-" + index + "-" + repeat, set.parsed, [
-            { id: "probe-" + index + "-" + repeat, request: probe },
+            { id: "probe-" + index + "-" + repeat, request: probe.early },
             { id: "victim-" + index + "-" + repeat, request: victim }
           ], input));
           operations.push(raw("recovery-" + index + "-" + repeat, set.parsed, clean, input));
@@ -285,7 +293,7 @@
         var probeSegments=segments(probe), victimSegments=segments(victim), recoverySegments=segments(recovery), downstream=probeSegments.concat(victimSegments,recoverySegments);
         if (technique.mode === "zero_cl_pair") {
           var mutantControl=segments(control)[0], mutantVictim=victimSegments[0];
-          if (mutantControl && mutantVictim && !matchesBase(mutantControl,baseSignature) && matchesBase(mutantVictim,baseSignature)) contaminated += 1;
+          if (mutantControl && mutantVictim && matchesBase(mutantControl,baseSignature) && matchesCanary(mutantVictim,canarySignature,baseSignature)) contaminated += 1;
         } else if (technique.mode === "connection_state") {
           var directHost=segments(control)[0], indirectHost=probeSegments.length > 1 ? probeSegments[probeSegments.length-1] : null;
           if (directHost && indirectHost && directHost.status !== indirectHost.status && matchesBase(probeSegments[0],baseSignature)) contaminated += 1;
@@ -295,7 +303,7 @@
         var victimFirst=segments(victim)[0],recoveryFirst=segments(recovery)[0]; if((victimFirst&&!matchesBase(victimFirst,baseSignature))||(recoveryFirst&&!matchesBase(recoveryFirst,baseSignature))) divergentVictims+=1;
         if (outcome(probe) === "timeout" && outcome(control) !== "timeout") timeouts += 1;
       }
-      var confirmed = directStable && (technique.mode === "zero_cl_pair" || canaryDistinct) && clean === repeats && contaminated >= threshold;
+      var confirmed = directStable && canaryDistinct && clean === repeats && contaminated >= threshold;
       var candidate = directStable && clean === repeats && timeouts >= threshold;
       var responseCandidate=directStable&&clean===repeats&&divergentVictims>=threshold;
       diagnostics.push({ family: technique.family, technique: technique.name, polarity: technique.polarity, clean_controls: clean, canary_confirmations: contaminated, divergent_victims: divergentVictims, probe_only_timeouts: timeouts, repeats: repeats, signal: confirmed ? "marker_contamination" : responseCandidate ? "victim_divergence" : candidate ? "timing_candidate" : "none" });
