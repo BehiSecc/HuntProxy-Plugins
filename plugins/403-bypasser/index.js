@@ -75,6 +75,8 @@
     var operations = [0, 1].map(function (repeat) {
       return { id: "baseline-" + repeat, type: "http_request", base_exchange_id: baseExchange.exchange_id, method: baseExchange.method, protocol: "auto" };
     });
+    var parsed = splitUrl(baseExchange.url);
+    for (var carrierRepeat = 0; carrierRepeat < 2; carrierRepeat += 1) operations.push({ id: "carrier-root-" + carrierRepeat, type: "http_request", base_exchange_id: baseExchange.exchange_id, method: baseExchange.method, url: parsed.origin + "/" + parsed.query, protocol: "auto" });
     variants(baseExchange, input).forEach(function (variant, index) {
       for (var repeat = 0; repeat < 2; repeat += 1) {
         var op = {
@@ -105,30 +107,43 @@
   }
 
   function allowed(status) { return status >= 200 && status < 300; }
+  function body(item) { return String(item && item.response_body_base64 ? atob64(item.response_body_base64) : item && item.response_preview && item.response_preview.text || "").toLowerCase(); }
+  function atob64(value) {
+    var alphabet="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/",output="",buffer=0,bits=0;
+    String(value||"").replace(/=+$/,"").split("").forEach(function(character){var index=alphabet.indexOf(character);if(index<0)return;buffer=(buffer<<6)|index;bits+=6;if(bits>=8){bits-=8;output+=String.fromCharCode((buffer>>bits)&255);}});return output;
+  }
+  function markersMatch(item, input) {
+    var text=body(item), success=input.success_markers||[], failure=input.failure_markers||[];
+    return (!success.length || success.some(function(marker){return text.indexOf(String(marker).toLowerCase())!==-1;})) && !failure.some(function(marker){return text.indexOf(String(marker).toLowerCase())!==-1;});
+  }
 
   function analyze(input, observations, context) {
     var baseExchange = base(context), map = mapById(observations), firstBase = map["baseline-0"], secondBase = map["baseline-1"];
     if (!firstBase || !secondBase) return { findings: [], result: { error: "baseline observations missing" } };
     var denied = firstBase.status_code === 401 || firstBase.status_code === 403 || (input.include_not_found === true && firstBase.status_code === 404);
     if (!denied) return { findings: [], result: { skipped: "base request was not an eligible denied response", status_code: firstBase.status_code } };
-    var baselineStable = sameResponse(firstBase, secondBase), findings = [], errors = [];
+    var baselineStable = sameResponse(firstBase, secondBase), findings = [], errors = [], carrierFirst=map["carrier-root-0"], carrierRepeat=map["carrier-root-1"], carrierStable=sameResponse(carrierFirst,carrierRepeat);
     variants(baseExchange, input).forEach(function (variant, index) {
       var first = map["variant-" + index + "-0"], repeat = map["variant-" + index + "-1"];
       if (first && first.error) errors.push({ variant: variant.name, repeat: 0, error: first.error });
       if (repeat && repeat.error) errors.push({ variant: variant.name, repeat: 1, error: repeat.error });
-      if (first && repeat && allowed(first.status_code) && sameResponse(first, repeat)) {
+      var rootCarrier=/:root-carrier$/.test(variant.name), pathOnly=/^path:/.test(variant.name);
+      var distinctFromCarrier=!rootCarrier || (carrierStable && !sameResponse(first,carrierFirst) && !sameResponse(repeat,carrierRepeat));
+      var markerProof=markersMatch(first,input) && markersMatch(repeat,input);
+      if (first && repeat && allowed(first.status_code) && sameResponse(first, repeat) && distinctFromCarrier && markerProof) {
+        var stronglyConfirmed=(input.success_markers||[]).length>0 || !pathOnly;
         findings.push({
-          title: "Access-control bypass using " + variant.name,
-          severity: firstBase.status_code === 404 ? "medium" : "high",
-          confidence: baselineStable ? "firm" : "tentative",
-          explanation: "A denied control became an allowed response and the result was reproduced.",
+          title: (stronglyConfirmed ? "Access-control bypass using " : "Potential access-control bypass using ") + variant.name,
+          severity: stronglyConfirmed && firstBase.status_code !== 404 ? "high" : "medium",
+          confidence: stronglyConfirmed && baselineStable ? "firm" : "tentative",
+          explanation: rootCarrier ? "A denied control became a reproducible allowed response that differs from the ordinary benign carrier response." : pathOnly && !stronglyConfirmed ? "A path mutation became reproducibly allowed, but no success marker was supplied to prove it reached the protected resource." : "A denied control became an allowed response and the result was reproduced on the same protected path.",
           remediation: "Normalize paths and forwarding headers before authorization, and enforce access control after routing.",
           evidence_exchange_ids: [firstBase.exchange_id, secondBase.exchange_id, first.exchange_id, repeat.exchange_id].filter(Boolean),
           metadata: { variant: variant.name, baseline_status: firstBase.status_code, bypass_status: first.status_code }
         });
       }
     });
-    return { findings: findings, result: { baseline_status: firstBase.status_code, baseline_stable: baselineStable, tested_variants: variants(baseExchange, input).length, operation_errors: errors } };
+    return { findings: findings, result: { baseline_status: firstBase.status_code, baseline_stable: baselineStable, carrier_stable: carrierStable, tested_variants: variants(baseExchange, input).length, operation_errors: errors } };
   }
 
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };

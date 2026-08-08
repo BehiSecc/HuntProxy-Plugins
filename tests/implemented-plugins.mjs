@@ -58,15 +58,29 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const plugin = await load("403-bypasser");
   const plan = plugin.plan({}, context());
   assert.ok(plan.operations.length > 10 && plan.operations.length <= 202);
+  assert.ok(plan.operations.some((op) => op.id === "carrier-root-0"));
   const originalUrlCarrier = plan.operations.find((op) => op.headers?.some((header) => header.name === "X-Original-URL") && op.url === "https://example.test/");
   assert.ok(originalUrlCarrier, "forwarding-header bypasses are tested on a benign carrier path");
   const observations = plan.operations.map((op) => observation(op));
-  for (const item of observations.filter((item) => item.id === "variant-0-0" || item.id === "variant-0-1")) {
-    item.status_code = 200; item.response_body_hash = "allowed"; item.response_preview.text = "allowed";
+  for (const item of observations.filter((item) => item.id.startsWith("carrier-root-"))) {
+    item.status_code = 200; item.response_body_hash = "ordinary-root"; item.response_preview.text = "ordinary root";
+  }
+  const originalIndex = plan.result.variants.indexOf("header:x-original-url:root-carrier");
+  for (const item of observations.filter((item) => item.id === `variant-${originalIndex}-0` || item.id === `variant-${originalIndex}-1`)) {
+    item.status_code = 200; item.response_body_hash = "protected-admin"; item.response_preview.text = "protected admin";
   }
   const result = plugin.analyze({}, observations, context());
   assert.equal(result.findings.length, 1);
   assert.match(result.findings[0].title, /Access-control bypass/);
+
+  const falsePositive = plan.operations.map((op) => observation(op));
+  for (const item of falsePositive.filter((item) => item.id.startsWith("carrier-root-") || /^variant-(?:[0-9]+)-(?:0|1)$/.test(item.id))) {
+    const variant = item.id.match(/^variant-([0-9]+)-/) && plan.result.variants[Number(item.id.match(/^variant-([0-9]+)-/)[1])];
+    if (item.id.startsWith("carrier-root-") || /:root-carrier$/.test(variant || "")) {
+      item.status_code = 200; item.response_body_hash = "ordinary-root"; item.response_preview.text = "ordinary root";
+    }
+  }
+  assert.equal(plugin.analyze({}, falsePositive, context()).findings.length, 0, "ordinary carrier responses are not bypasses");
 }
 
 {
