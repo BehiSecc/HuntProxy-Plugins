@@ -1,15 +1,14 @@
 # IpRotate
 
-IpRotate creates regional AWS API Gateway HTTP proxy integrations for a scoped
-target, cycles a saved HuntProxy request through those endpoints, and removes
-the created REST APIs afterward.
+IpRotate enables project-level AWS API Gateway routing for one exact target
+origin. While enabled, matching Proxy, Browser, Reply, Fuzzer, crawler, and
+semantic plugin requests automatically rotate across the configured regions.
+Raw HTTP operations remain exact and bypass rotation.
 
 Copy `aws-credentials.toml.example` to `aws-credentials.toml` and add the keys.
-The host reads this file; its contents are never passed to plugin JavaScript or
-returned in job data. Python 3 with the official `boto3` package must be
-available to the HuntProxy process.
+Python 3 with the official `boto3` package must be available to HuntProxy.
 
-Use `target_scope` for an exact hostname or a suffix such as `*.example.com`.
-Use the target origin (for example `https://api.example.com`) for `target_url`.
-Run `provision`, pass its `gateway_endpoints` to `rotate`, then pass its
-`deployments` to `cleanup`.
+Use `enable` with the target origin and regions, `status` to inspect active or
+cleanup-pending profiles, and `disable` when finished. Disable stops routing
+before deleting the HuntProxy-managed API Gateways. If AWS cleanup partly
+fails, run `disable` again.

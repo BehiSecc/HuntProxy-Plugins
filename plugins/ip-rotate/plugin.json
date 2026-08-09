@@ -2,55 +2,41 @@
   "schema_version": 1,
   "id": "ip-rotate",
   "name": "IpRotate",
-  "version": "1.0.0",
-  "description": "Provision scoped regional AWS API Gateways, rotate saved requests through them, and remove HuntProxy-managed gateways.",
+  "version": "1.1.0",
+  "description": "Enable and disable project-level AWS API Gateway IP rotation for an exact target origin.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "7fc3baa6ff84b0a2465076afd8777ae01ecf577b70fa801c6cd14a9756a42a66",
+  "entrypoint_sha256": "3721e998b5abb7fd3997b8ce6f67c7e744d436639ff6efda43dad5eeb2441f81",
   "resources": { "aws-control": { "path": "resources/aws-control.py", "sha256": "29d7457a58811fa0bd0d8b1b5dbeae751e307551edc7cc2891cf503d6ceef7e2" } },
-  "capabilities": ["http.semantic", "aws.api_gateway"],
-  "limits": { "timeout_ms": 900000, "max_operations": 500, "max_concurrency": 8, "memory_mb": 16 },
+  "capabilities": ["aws.api_gateway"],
+  "limits": { "timeout_ms": 900000, "max_operations": 30, "max_concurrency": 1, "memory_mb": 16 },
   "actions": [
     {
-      "name": "provision",
-      "description": "Create one regional HTTP proxy API Gateway per selected region. Credentials are read from ip-rotate/aws-credentials.toml; copy the included example first.",
+      "name": "enable",
+      "description": "Provision regional gateways and automatically rotate matching project traffic until disabled. Credentials come from ip-rotate/aws-credentials.toml.",
       "required_capabilities": ["aws.api_gateway"],
       "input_schema": {
-        "type": "object", "additionalProperties": false, "required": ["target_url", "target_scope", "regions"],
+        "type": "object", "additionalProperties": false, "required": ["target_url", "regions"],
         "properties": {
-          "target_url": { "type": "string", "maxLength": 2048, "pattern": "^https?://", "description": "Scoped target origin; paths, query strings, and fragments are not accepted." },
-          "target_scope": { "$ref": "#/$defs/target_scope" },
+          "target_url": { "type": "string", "maxLength": 2048, "pattern": "^https?://[^/?#]+/?$", "description": "Exact HTTP(S) target origin, for example https://api.example.com." },
           "regions": { "type": "array", "minItems": 1, "maxItems": 30, "uniqueItems": true, "items": { "type": "string", "pattern": "^[a-z]{2}(?:-[a-z0-9]+)+-[0-9]+$", "maxLength": 32 } },
           "stage_name": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[A-Za-z0-9._-]+$", "default": "huntproxy" }
-        },
-        "$defs": { "target_scope": { "type": "string", "maxLength": 253, "pattern": "^(?:\\*\\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$", "description": "Exact target hostname or wildcard suffix, for example api.example.com or *.example.com." } }
-      }
-    },
-    {
-      "name": "rotate",
-      "description": "Send bounded copies of one saved request through provisioned gateway stages, cycling the endpoints sequentially.",
-      "required_capabilities": ["aws.api_gateway"],
-      "input_schema": {
-        "type": "object", "additionalProperties": false, "required": ["gateway_endpoints", "target_scope"],
-        "properties": {
-          "gateway_endpoints": { "type": "array", "minItems": 1, "maxItems": 30, "uniqueItems": true, "items": { "type": "string", "maxLength": 512, "pattern": "^https://[A-Za-z0-9-]+\\.execute-api\\.[A-Za-z0-9-]+\\.amazonaws\\.com/[^?#]+/?$" } },
-          "target_scope": { "$ref": "#/$defs/target_scope" },
-          "requests": { "type": "integer", "minimum": 1, "maximum": 500, "description": "Total copies; defaults to one per endpoint." },
-          "include_auth": { "type": "boolean", "default": false },
-          "allow_state_changes": { "type": "boolean", "default": false }
-        },
-        "$defs": { "target_scope": { "type": "string", "maxLength": 253, "pattern": "^(?:\\*\\.)?(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$" } }
-      }
-    },
-    {
-      "name": "cleanup",
-      "description": "Delete API Gateway REST APIs returned by provision; only HuntProxy IpRotate-named APIs are accepted.",
-      "required_capabilities": ["aws.api_gateway"],
-      "input_schema": {
-        "type": "object", "additionalProperties": false, "required": ["deployments"],
-        "properties": {
-          "deployments": { "type": "array", "minItems": 1, "maxItems": 30, "uniqueItems": true, "items": { "type": "object", "additionalProperties": false, "required": ["region", "rest_api_id"], "properties": { "region": { "type": "string", "maxLength": 32 }, "rest_api_id": { "type": "string", "minLength": 5, "maxLength": 32, "pattern": "^[a-z0-9]+$" } } } }
         }
+      }
+    },
+    {
+      "name": "status",
+      "description": "List enabled and cleanup-pending IP rotation profiles for this project.",
+      "required_capabilities": ["aws.api_gateway"],
+      "input_schema": { "type": "object", "additionalProperties": false, "properties": {} }
+    },
+    {
+      "name": "disable",
+      "description": "Immediately stop rotating the exact target origin, then delete its HuntProxy-managed API Gateways.",
+      "required_capabilities": ["aws.api_gateway"],
+      "input_schema": {
+        "type": "object", "additionalProperties": false, "required": ["target_url"],
+        "properties": { "target_url": { "type": "string", "maxLength": 2048, "pattern": "^https?://[^/?#]+/?$" } }
       }
     }
   ]

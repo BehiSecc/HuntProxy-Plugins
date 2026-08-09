@@ -47,6 +47,8 @@ filesystem, network, or process access.
   capabilities and cannot be synthesized through ordinary semantic HTTP.
 - IpRotate's AWS credentials are read by its host capability from the local
   plugin credential file and never enter JavaScript context or job output.
+  Enabled profiles are project-scoped and exact-origin matched; disable turns
+  routing off before attempting remote gateway cleanup.
 - Cancellation must stop scheduling immediately and close owned connections.
 - The host caps simultaneously active jobs and retains only a bounded set of
   completed in-memory results.

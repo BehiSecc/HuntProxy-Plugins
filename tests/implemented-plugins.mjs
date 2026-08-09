@@ -19,30 +19,26 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
 
 {
   const plugin = await load("ip-rotate");
-  const provisionContext = context("https://api.example.test/v1");
-  provisionContext.action = "provision";
-  const provision = plugin.plan({ target_url: "https://api.example.test", target_scope: "*.example.test", regions: ["us-east-1", "eu-west-1"] }, provisionContext);
-  assert.equal(provision.operations.length, 2);
-  assert.ok(provision.operations.every((op) => op.type === "aws_api_gateway" && op.action === "provision"));
-  const provisioned = plugin.analyze({}, provision.operations.map((op, index) => ({ id: op.id, aws_gateway: { action: "provisioned", region: op.region, rest_api_id: `api${index}id`, endpoint: `https://api${index}id.execute-api.${op.region}.amazonaws.com/huntproxy` } })), provisionContext);
-  assert.equal(provisioned.result.gateway_endpoints.length, 2);
+  const enableContext = context(); enableContext.action = "enable";
+  const enable = plugin.plan({ target_url: "https://api.example.test", regions: ["us-east-1", "eu-west-1"] }, enableContext);
+  assert.equal(enable.execution, "sequential");
+  assert.equal(enable.stop_on_error, true);
+  assert.equal(enable.operations.length, 1);
+  assert.deepEqual(Array.from(enable.operations[0].regions), ["us-east-1", "eu-west-1"]);
+  assert.equal(enable.operations[0].action, "enable");
+  assert.equal(enable.operations[0].type, "aws_api_gateway");
+  assert.throws(() => plugin.plan({ target_url: "https://api.example.test/path", regions: ["us-east-1"] }, enableContext), /exact HTTP/);
 
-  const rotateContext = context("https://api.example.test/v1/items?page=2");
-  rotateContext.action = "rotate";
-  const rotate = plugin.plan({ target_scope: "*.example.test", gateway_endpoints: provisioned.result.gateway_endpoints, requests: 3 }, rotateContext);
-  assert.equal(rotate.execution, "sequential");
-  assert.equal(rotate.operations.length, 3);
-  assert.equal(rotate.operations[0].gateway_endpoint, "https://api0id.execute-api.us-east-1.amazonaws.com/huntproxy");
-  assert.equal(rotate.operations[2].gateway_endpoint, rotate.operations[0].gateway_endpoint);
-  assert.ok(rotate.operations.every((op) => op.type === "aws_api_gateway" && op.action === "request" && op.include_auth === false));
-  assert.throws(() => plugin.plan({ target_scope: "other.test", gateway_endpoints: provisioned.result.gateway_endpoints }, rotateContext), /outside target_scope/);
-  const postContext = context("https://api.example.test/update"); postContext.action = "rotate"; postContext.base_exchange.method = "POST";
-  assert.throws(() => plugin.plan({ target_scope: "*.example.test", gateway_endpoints: provisioned.result.gateway_endpoints }, postContext), /allow_state_changes/);
+  const statusContext = context(); statusContext.action = "status";
+  const status = plugin.plan({}, statusContext);
+  assert.equal(status.operations[0].action, "status");
+  const analyzed = plugin.analyze({}, [{ id: "ip-rotation-status", ip_rotation: { action: "status", profiles: [] } }], statusContext);
+  assert.deepEqual(Array.from(analyzed.result.ip_rotation.profiles), []);
 
-  const cleanupContext = context(); cleanupContext.action = "cleanup";
-  const cleanup = plugin.plan({ deployments: provisioned.result.deployments }, cleanupContext);
-  assert.equal(cleanup.operations.length, 2);
-  assert.ok(cleanup.operations.every((op) => op.type === "aws_api_gateway" && op.action === "delete"));
+  const disableContext = context(); disableContext.action = "disable";
+  const disable = plugin.plan({ target_url: "https://api.example.test" }, disableContext);
+  assert.equal(disable.stop_on_error, true);
+  assert.equal(disable.operations[0].action, "disable");
 }
 
 {
