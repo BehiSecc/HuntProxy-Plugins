@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "id": "minimal-plugin",
+  "name": "Minimal Plugin",
+  "version": "1.0.0",
+  "description": "Replay one saved GET, HEAD, or OPTIONS request and report the resulting response metadata.",
+  "enabled": true,
+  "entrypoint": "index.js",
+  "entrypoint_sha256": "3ea69483743981ba3e8bc394470cb6ec95f8a4d402a750681cb22f80fe248f47",
+  "capabilities": ["http.semantic"],
+  "limits": {
+    "timeout_ms": 30000,
+    "max_operations": 1,
+    "max_concurrency": 1,
+    "memory_mb": 8
+  },
+  "actions": [{
+    "name": "inspect",
+    "description": "Replay the selected saved exchange once and return response metadata.",
+    "required_capabilities": ["http.semantic"],
+    "input_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {}
+    }
+  }]
+}

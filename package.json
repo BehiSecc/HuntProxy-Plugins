@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "description": "First-party, agent-oriented security extensions for HuntProxy",
   "scripts": {
-    "test": "node tests/validate-manifests.mjs && node tests/implemented-plugins.mjs && node tests/csrf-analyzer.mjs && node tests/upload-analyzer.mjs && node tests/request-smuggler-racer.mjs && node tests/racer.mjs"
+    "validate-plugin": "node scripts/validate-plugin.mjs",
+    "test": "node tests/validate-manifests.mjs && node tests/validate-plugin.mjs && node examples/minimal-plugin/test.mjs && node tests/implemented-plugins.mjs && node tests/csrf-analyzer.mjs && node tests/upload-analyzer.mjs && node tests/request-smuggler-racer.mjs && node tests/racer.mjs"
   },
   "engines": {
     "node": ">=18"

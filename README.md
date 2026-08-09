@@ -38,6 +38,19 @@ tests/validate-manifests.mjs
 
 Run `npm test` to validate all manifests using only Node.js built-ins.
 
+## Build your own plugin
+
+Start with [Write a HuntProxy plugin](docs/writing-plugins.md) and the
+[minimal working example](examples/minimal-plugin/). The tutorial is the short
+path from copy to first run; [Plugin API v1](docs/plugin-api-v1.md) is the
+compact reference for manifests, operations, observations, and findings.
+
+Validate any plugin directory without first-party name assumptions:
+
+```bash
+node scripts/validate-plugin.mjs path/to/plugin
+```
+
 ## Install and run
 
 For a normal installation, copy the immediate children of `plugins/` into
@@ -63,8 +76,6 @@ safety acknowledgement it requires. Every generated request is saved in
 HuntProxy History with `plugin`, the extension name, and `plugin:<id>` labels.
 
 Packages are integrity-pinned by SHA-256. The current host does not have a
-publisher-signature trust store. Request Smuggler intentionally targets the
-host's exact HTTP/1 capabilities; malformed HTTP/2 and downgrade/tunneling
-families are not claimed. Racer supports semantic parallel dispatch and exact
-HTTP/1 final-byte synchronization; true HTTP/2 single-packet release is
-reported as unsupported without fallback.
+publisher-signature trust store. Advanced transports fail explicitly when the
+requested protocol or synchronization primitive is unavailable; they do not
+silently fall back to a weaker technique.

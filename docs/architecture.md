@@ -31,6 +31,9 @@ The classic JavaScript entrypoint assigns `globalThis.HuntProxyPlugin` with
 Only the host performs planned operations; the sandbox exposes no direct
 filesystem, network, or process access.
 
+Third-party authors should start with [Write a HuntProxy plugin](writing-plugins.md)
+and use [Plugin API v1](plugin-api-v1.md) as the contract reference.
+
 ## Safety and performance invariants
 
 - Nothing runs merely because a plugin is installed.
