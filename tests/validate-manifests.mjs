@@ -8,10 +8,10 @@ const pluginsDirectory = new URL("../plugins/", import.meta.url);
 const expectedNames = new Set([
   "ParamFinder", "AuthAnalyzer", "Request Smuggler", "Racer",
   "403Bypasser", "JWTAnalyzer", "CacheAnalyzer", "CSRFAnalyzer",
-  "UploadAnalyzer",
+  "UploadAnalyzer", "IpRotate",
 ]);
 const allowedCapabilities = new Set([
-  "http.semantic", "http.raw", "http.race", "identity.use",
+  "http.semantic", "http.raw", "http.race", "identity.use", "aws.api_gateway",
 ]);
 const seenIds = new Set();
 const seenNames = new Set();

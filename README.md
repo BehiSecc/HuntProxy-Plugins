@@ -17,6 +17,7 @@ without adding more UI to HuntProxy:
 - CacheAnalyzer
 - CSRFAnalyzer
 - UploadAnalyzer
+- IpRotate
 
 Enabled manifests have runnable implementations and offline unit coverage.
 Disabled manifests, if any, are specifications visible to development tooling

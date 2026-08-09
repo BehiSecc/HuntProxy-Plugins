@@ -29,7 +29,7 @@
     "capabilities": {
       "type": "array",
       "uniqueItems": true,
-      "items": { "enum": ["http.semantic", "http.raw", "http.race", "identity.use"] }
+      "items": { "enum": ["http.semantic", "http.raw", "http.race", "identity.use", "aws.api_gateway"] }
     },
     "limits": {
       "type": "object",
@@ -57,7 +57,7 @@
           "required_capabilities": {
             "type": "array",
             "uniqueItems": true,
-            "items": { "enum": ["http.semantic", "http.raw", "http.race", "identity.use"] }
+            "items": { "enum": ["http.semantic", "http.raw", "http.race", "identity.use", "aws.api_gateway"] }
           }
         }
       }

@@ -18,6 +18,34 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
 }
 
 {
+  const plugin = await load("ip-rotate");
+  const provisionContext = context("https://api.example.test/v1");
+  provisionContext.action = "provision";
+  const provision = plugin.plan({ target_url: "https://api.example.test", target_scope: "*.example.test", regions: ["us-east-1", "eu-west-1"] }, provisionContext);
+  assert.equal(provision.operations.length, 2);
+  assert.ok(provision.operations.every((op) => op.type === "aws_api_gateway" && op.action === "provision"));
+  const provisioned = plugin.analyze({}, provision.operations.map((op, index) => ({ id: op.id, aws_gateway: { action: "provisioned", region: op.region, rest_api_id: `api${index}id`, endpoint: `https://api${index}id.execute-api.${op.region}.amazonaws.com/huntproxy` } })), provisionContext);
+  assert.equal(provisioned.result.gateway_endpoints.length, 2);
+
+  const rotateContext = context("https://api.example.test/v1/items?page=2");
+  rotateContext.action = "rotate";
+  const rotate = plugin.plan({ target_scope: "*.example.test", gateway_endpoints: provisioned.result.gateway_endpoints, requests: 3 }, rotateContext);
+  assert.equal(rotate.execution, "sequential");
+  assert.equal(rotate.operations.length, 3);
+  assert.equal(rotate.operations[0].gateway_endpoint, "https://api0id.execute-api.us-east-1.amazonaws.com/huntproxy");
+  assert.equal(rotate.operations[2].gateway_endpoint, rotate.operations[0].gateway_endpoint);
+  assert.ok(rotate.operations.every((op) => op.type === "aws_api_gateway" && op.action === "request" && op.include_auth === false));
+  assert.throws(() => plugin.plan({ target_scope: "other.test", gateway_endpoints: provisioned.result.gateway_endpoints }, rotateContext), /outside target_scope/);
+  const postContext = context("https://api.example.test/update"); postContext.action = "rotate"; postContext.base_exchange.method = "POST";
+  assert.throws(() => plugin.plan({ target_scope: "*.example.test", gateway_endpoints: provisioned.result.gateway_endpoints }, postContext), /allow_state_changes/);
+
+  const cleanupContext = context(); cleanupContext.action = "cleanup";
+  const cleanup = plugin.plan({ deployments: provisioned.result.deployments }, cleanupContext);
+  assert.equal(cleanup.operations.length, 2);
+  assert.ok(cleanup.operations.every((op) => op.type === "aws_api_gateway" && op.action === "delete"));
+}
+
+{
   const plugin = await load("param-finder");
   const params = await readFile(new URL("param-finder/resources/params", root), "utf8");
   const resourceContext = context(); resourceContext.resources = { params };
