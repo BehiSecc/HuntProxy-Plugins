@@ -3,14 +3,17 @@
 
   var B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
   function fromBase64(value) {
-    var output = "", buffer = 0, bits = 0;
-    String(value || "").replace(/=+$/, "").split("").forEach(function (character) {
-      var index = B64.indexOf(character); if (index < 0) return;
-      buffer = (buffer << 6) | index; bits += 6;
-      if (bits >= 8) { bits -= 8; output += String.fromCharCode((buffer >> bits) & 255); }
-    });
+    value=String(value||"").replace(/\s+/g,"");var bytes=new Uint8Array(base64Length(value)),written=0;
+    for(var offset=0;offset<value.length;offset+=4){
+      var a=B64.indexOf(value.charAt(offset)),b=B64.indexOf(value.charAt(offset+1)),c=B64.indexOf(value.charAt(offset+2)),d=B64.indexOf(value.charAt(offset+3));
+      if(a<0||b<0)break;bytes[written++]=(a<<2)|(b>>4);
+      if(c>=0)bytes[written++]=((b&15)<<4)|(c>>2);
+      if(d>=0)bytes[written++]=((c&3)<<6)|d;
+    }
+    var output="";for(var start=0;start<written;start+=8192)output+=String.fromCharCode.apply(null,bytes.subarray(start,Math.min(written,start+8192)));
     return output;
   }
+  function base64Length(value){value=String(value||"").replace(/\s+/g,"");if(!value)return 0;var padding=/==$/.test(value)?2:/=$/.test(value)?1:0;return Math.max(0,Math.floor(value.length*3/4)-padding);}
   function toBase64(value) {
     var output = "";
     for (var index = 0; index < value.length; index += 3) {
@@ -164,7 +167,7 @@
     add("h2_split", "H2 CRLF request splitting", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_split",tunnelPath,tunnelOuterPath), true, "h2_split", "h2");
     add("h2_tunnel", "H2 header-name request tunnelling", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_tunnel_name",tunnelPath,tunnelOuterPath), false, "h2_tunnel", "h2_tunnel");
     add("h2_tunnel", "H2 pseudo-path request tunnelling", h2Probe(parsed, path, canaryPath, inherited, marker, "h2_tunnel_path",tunnelPath,tunnelOuterPath), false, "h2_tunnel", "h2_tunnel");
-    add("h2_tunnel", "H2 header-name Host injection", h2Probe(parsed,path,canaryPath,inherited,marker,"h2_header_name_host",tunnelPath,tunnelOuterPath),true,"h2_tunnel","h2_header_injection");
+    add("h2_tunnel", "H2 header-name Host injection", h2Probe(parsed,path,canaryPath,inherited,marker,"h2_header_name_host",tunnelPath,tunnelOuterPath),false,"h2_tunnel","h2_header_injection");
     add("pause", "server-side pause-based CL.0", pauseProbe(parsed,path,canaryPath,inherited,marker), true, "pause", "pause");
     add("parser_discrepancy", "conflicting duplicate Content-Length", message("POST", path, parsed.authority, inherited, ["Content-Length: 4", "Content-Length: 5", "Content-Type: text/plain"], "12345", false) + normalGet(path, parsed, inherited, true), false);
     add("parser_discrepancy", "signed Content-Length", message("POST", path, parsed.authority, inherited, ["Content-Length: +5", "Content-Type: text/plain"], "12345", false) + normalGet(path, parsed, inherited, true), false);
@@ -247,42 +250,89 @@
   }
   function byId(observations) { var output = {}; observations.forEach(function (item) { output[item.id] = item; if (Array.isArray(item.members)) item.members.forEach(function (member) { output[member.id] = member; }); }); return output; }
   function rawResult(item) { return item && !item.error && item.raw ? item.raw : null; }
-  function hasResult(item) { return !!rawResult(item) || !!(item && !item.error && Array.isArray(item.streams)); }
-  function outcome(item) { var value = rawResult(item); if (value) return String(value.read_outcome || "missing"); if (item && Array.isArray(item.streams)) return item.timed_out ? "timeout" : "idle"; return "error"; }
+  function h2StreamUsable(item, stream) {
+    return !!(item && stream && !item.error && item.protocol === "h2" && !item.timed_out && !item.goaway && !stream.reset && stream.status_code != null && stream.complete !== false && stream.truncated !== true && stream.response_body_truncated !== true);
+  }
+  function hasResult(item) {
+    if (rawResult(item)) return true;
+    return !!(item && Array.isArray(item.streams) && item.streams.some(function (stream) { return h2StreamUsable(item, stream); }));
+  }
+  function outcome(item) {
+    var value = rawResult(item); if (value) return String(value.read_outcome || "missing");
+    if (!item || item.error || !Array.isArray(item.streams) || item.protocol !== "h2") return "error";
+    if (item.timed_out) return "timeout";
+    if (item.goaway) return "goaway";
+    if (item.streams.some(function (stream) { return !!stream.reset; })) return "reset";
+    if (item.streams.length && item.streams.every(function (stream) { return h2StreamUsable(item, stream); })) return "complete";
+    return "incomplete";
+  }
   function transcript(item) { var value = rawResult(item); return value ? fromBase64(value.response_transcript_base64 || value.response_base64 || "") : ""; }
-  var segmentMemo=null,transcriptMemo=null;
+  var segmentMemo=null,transcriptMemo=null,markerMemo=null;
   function segments(item) {
     var key=item&&item.id;if(segmentMemo&&key&&Object.prototype.hasOwnProperty.call(segmentMemo,key))return segmentMemo[key];
     var output;
-    if (item && Array.isArray(item.streams)) output=item.streams.map(function (stream) { var encoded=String(stream.response_body_base64||"");return { status: stream.status_code || null, text: item.id&&item.id.indexOf("probe-")===0?fromBase64(encoded.slice(0,87384)):"", hash:stream.response_body_hash||"", length:stream.response_length==null?0:Number(stream.response_length) }; });
-    else { var value = rawResult(item); output=value?(value.responses || []).map(function (response) { return { status: response.status_code || null, text: null, source:item, offset:response.offset, length:response.length }; }):[]; }
+    if (item && Array.isArray(item.streams)) output=item.streams.map(function (stream) { var encoded=String(stream.response_body_base64||""),location="",contentType="";(stream.response_headers||[]).forEach(function(header){var name=String(header.name||"").toLowerCase(),value=header.value_base64?fromBase64(header.value_base64):String(header.value||"");if(name==="location")location=value;else if(name==="content-type")contentType=value;});return { status: stream.status_code == null ? null : Number(stream.status_code), text: fromBase64(encoded.slice(0,87384)), hash:stream.response_body_hash||"", length:stream.response_length==null?0:Number(stream.response_length), protocol:"h2", location:location, contentType:contentType, complete:stream.complete!==false, reset:stream.reset||null, truncated:stream.truncated===true||stream.response_body_truncated===true, usable:h2StreamUsable(item,stream) }; });
+    else { var value = rawResult(item),encoded=value?String(value.response_transcript_base64||value.response_base64||""):"",available=base64Length(encoded);output=value?(value.responses || []).map(function (response) { var evidenceTruncated=response.offset+response.length>available;return { status: response.status_code == null ? null : Number(response.status_code), text: null, source:item, offset:response.offset, length:response.length, protocol:"h1", complete:true, reset:null, truncated:evidenceTruncated, usable:response.status_code!=null&&!evidenceTruncated }; }):[]; }
     if(segmentMemo&&key)segmentMemo[key]=output;return output;
   }
-  function normalized(value) { value = String(value || ""); if (value.length > 32768) value = value.slice(0, 16384) + value.slice(-16384); return value.toLowerCase().replace(/^(date|set-cookie|x-request-id|traceparent):.*$/gmi, "").replace(/\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/gi, "<id>").replace(/\b\d{10,13}\b/g, "<time>").replace(/\s+/g, " ").trim(); }
-  function segmentText(segment){if(!segment)return "";if(segment.text!=null)return segment.text;var item=segment.source,key=item&&item.id,bytes=transcriptMemo&&key&&transcriptMemo[key];if(bytes==null){bytes=transcript(item);if(transcriptMemo&&key)transcriptMemo[key]=bytes;}segment.text=bytes.slice(segment.offset,segment.offset+Math.min(segment.length,32768));return segment.text;}
-  function segmentLength(segment){return segment&&segment.length!=null?Number(segment.length):segmentText(segment).length;}
+  function normalized(value) { value = String(value || ""); if (value.length > 32768) value = value.slice(0, 16384) + value.slice(-16384);if(markerMemo)value=value.replace(new RegExp(markerMemo,"gi"),"<marker>");return value.toLowerCase().replace(/\b[0-9a-f]{8}-[0-9a-f-]{27,}\b/gi, "<id>").replace(/\b\d{10,13}\b/g, "<time>").replace(/\s+/g, " ").trim(); }
+  function segmentText(segment){if(!segment)return "";if(segment.text!=null)return segment.text;var item=segment.source,key=item&&item.id,bytes=transcriptMemo&&key&&transcriptMemo[key];if(bytes==null){bytes=transcript(item);if(transcriptMemo&&key)transcriptMemo[key]=bytes;}segment.text=segment.length>32768?bytes.slice(segment.offset,segment.offset+16384)+bytes.slice(segment.offset+segment.length-16384,segment.offset+segment.length):bytes.slice(segment.offset,segment.offset+segment.length);return segment.text;}
+  function semanticText(segment) {
+    if(segment&&segment.semantic!=null)return segment.semantic;
+    var text=segmentText(segment),separator=text.indexOf("\r\n\r\n"),body=text,location=segment&&segment.location||"",contentType=segment&&segment.contentType||"";
+    if(segment&&segment.protocol==="h1"&&separator>=0){
+      var lines=text.slice(0,separator).split("\r\n");body=text.slice(separator+4);
+      lines.slice(1).forEach(function(line){var split=line.indexOf(":");if(split<=0)return;var name=line.slice(0,split).trim().toLowerCase(),value=line.slice(split+1).trim();if(name==="location")location=value;else if(name==="content-type")contentType=value;});
+    }
+    var normalizedBody=normalized(body),normalizedLocation=normalized(location),normalizedType=normalized(contentType),semantic="status:"+(segment&&segment.status==null?"":segment.status)+"|location:"+normalizedLocation+"|type:"+normalizedType+"|body:"+normalizedBody;if(segment){segment.semantic=semantic;segment.semanticBody=normalizedBody;segment.semanticLocation=normalizedLocation;}return semantic;
+  }
+  function usableSegment(segment){return !!(segment&&segment.usable!==false&&segment.status!=null&&segment.complete!==false&&!segment.reset&&!segment.truncated);}
   function similarity(left, right) {
-    left = normalized(left); right = normalized(right); if (left === right) return 1; if (!left || !right) return 0;
+    left = String(left || ""); right = String(right || ""); if (left === right) return 1; if (!left || !right) return 0;
     var a = {}, b = {}, union = {}, same = 0, total = 0;
     left.split(/[^a-z0-9_<>]+/).filter(Boolean).forEach(function (token) { a[token] = 1; union[token] = 1; });
     right.split(/[^a-z0-9_<>]+/).filter(Boolean).forEach(function (token) { b[token] = 1; union[token] = 1; });
     Object.keys(union).forEach(function (token) { total += 1; if (a[token] && b[token]) same += 1; }); return total ? same / total : 0;
   }
-  function sameSegment(left, right) { if(!left||!right||left.status!==right.status)return false;if(left.hash&&right.hash)return left.hash===right.hash;return similarity(segmentText(left),segmentText(right))>=0.9; }
+  function sameSegment(left, right) { if(!usableSegment(left)||!usableSegment(right)||left.status!==right.status)return false;if(left.hash&&right.hash)return left.hash===right.hash;var a=semanticText(left),b=semanticText(right);return a===b||similarity(a,b)>=0.98; }
+  function sameCanarySegment(left,right){
+    if(!usableSegment(left)||!usableSegment(right)||left.status!==right.status)return false;
+    semanticText(left);semanticText(right);
+    if(right.semanticLocation)return left.semanticLocation===right.semanticLocation&&(!right.semanticBody||left.semanticBody===right.semanticBody);
+    if(left.hash&&right.hash&&(left.length>0||right.length>0))return left.hash===right.hash;
+    if(right.semanticBody)return left.semanticBody===right.semanticBody;
+    return false;
+  }
   function stable(left, right) {
     var a = segments(left), b = segments(right); if (!hasResult(left) || !hasResult(right) || outcome(left) !== outcome(right) || a.length !== b.length) return false;
     for (var index = 0; index < a.length; index += 1) {
-      if (a[index].status !== b[index].status) return false;
-      var longest = Math.max(segmentLength(a[index]),segmentLength(b[index]),1), shortest = Math.min(segmentLength(a[index]),segmentLength(b[index]));
-      if (!sameSegment(a[index], b[index]) && shortest / longest < 0.9) return false;
+      if (!sameSegment(a[index], b[index])) return false;
     }
     return true;
   }
-  function matchesCanary(segment, canary, base) { return !!(segment && canary && base && (canary.status !== base.status ? segment.status === canary.status : sameSegment(segment, canary))); }
-  function matchesBase(segment, base) { if (!segment || !base || segment.status !== base.status) return false; var longest=Math.max(segmentLength(segment),segmentLength(base),1),shortest=Math.min(segmentLength(segment),segmentLength(base));return shortest/longest>=0.9||sameSegment(segment,base); }
+  function matchesCanary(segment, canary, base) { return !!(usableSegment(segment)&&usableSegment(canary)&&usableSegment(base)&&sameCanarySegment(segment,canary)); }
+  function matchesBase(segment, base) { return !!(usableSegment(segment)&&usableSegment(base)&&sameSegment(segment,base)); }
+  function nestedHttpSegments(segment) {
+    var text=segmentText(segment),output=[],cursor=0;
+    while(cursor<text.length){
+      var match=/HTTP\/1\.[01]\s+([1-5][0-9][0-9])[^\r\n]*\r\n/g;match.lastIndex=cursor;var found=match.exec(text);if(!found)break;
+      var start=found.index,headEnd=text.indexOf("\r\n\r\n",match.lastIndex);if(headEnd<0)break;
+      var headerLines=text.slice(match.lastIndex,headEnd).split("\r\n"),contentLength=null,validHeaders=true;
+      headerLines.forEach(function(line){var split=line.indexOf(":");if(split<=0){validHeaders=false;return;}if(line.slice(0,split).trim().toLowerCase()==="content-length"){var parsed=Number(line.slice(split+1).trim());if(Number.isInteger(parsed)&&parsed>=0)contentLength=parsed;else validHeaders=false;}});
+      if(!validHeaders||contentLength==null){cursor=headEnd+4;continue;}
+      var end=headEnd+4+contentLength;if(end>text.length)break;
+      output.push({status:Number(found[1]),text:text.slice(start,end),hash:"",length:end-start,protocol:"h1",complete:true,reset:null,truncated:false,usable:true});cursor=end;
+    }
+    return output;
+  }
+  function matchesNestedCanary(segment,canary,base){return nestedHttpSegments(segment).some(function(nested){return matchesCanary(nested,canary,base);});}
+  function probeRejected(item,probeSegments){
+    if(item&&Array.isArray(item.streams)&&item.streams.some(function(stream){return /^(PROTOCOL_ERROR|COMPRESSION_ERROR)$/.test(String(stream.reset||""));}))return true;
+    var first=probeSegments[0],status=first&&first.status;return usableSegment(first)&&[400,408,411,413,414,417,421,431,500,501,505].indexOf(status)!==-1;
+  }
   function evidence(items) { var output=[]; items.forEach(function(item){var value=rawResult(item);if(value&&value.exchange_id)output.push(value.exchange_id);if(item&&Array.isArray(item.streams))item.streams.forEach(function(stream){if(stream.exchange_id)output.push(stream.exchange_id);});});return output; }
   function analyze(input, observations, context) {
-    segmentMemo={};transcriptMemo={};
+    segmentMemo={};transcriptMemo={};markerMemo=String(input.marker||"").toLowerCase();
     var map = byId(observations), set = techniques(input, context), repeats = Math.max(3, Math.min(Number(input.repeats || 5), 9)), findings = [], diagnostics = [];
     var hasH2=set.items.some(function(item){return isH2Mode(item.mode);});
     var h1BaseDirect=[map["direct-base-0"],map["direct-base-1"]],h1CanaryDirect=[map["direct-canary-0"],map["direct-canary-1"]];
@@ -294,43 +344,48 @@
       var h2Mode=isH2Mode(technique.mode),baseDirect=h2Mode?h2BaseDirect:h1BaseDirect,canaryDirect=h2Mode?h2CanaryDirect:h1CanaryDirect;
       var directStable=h2Mode?h2Stable:h1Stable,baseSignature=segments(baseDirect[0])[0],canarySignature=segments(canaryDirect[0])[0];
       var canaryDistinct=directStable&&baseSignature&&canarySignature&&(baseSignature.status!==canarySignature.status||!sameSegment(baseSignature,canarySignature));
-      var controls = [], probes = [], victims = [], recoveries = [], observers = [], clean = 0, contaminated = 0, divergentVictims = 0, timeouts = 0, observerCount = technique.mode === "zero_cl_pair" ? Math.max(1, Math.min(Number(input.zero_cl_observers || 2), 5)) : 2;
+      var controls = [], probes = [], victims = [], recoveries = [], observers = [], clean = 0, contaminated = 0, divergentVictims = 0, timeouts = 0, probeRejections = 0, probeInconclusive = 0, probeDifferences = 0, observerCount = technique.mode === "zero_cl_pair" ? Math.max(1, Math.min(Number(input.zero_cl_observers || 2), 5)) : 2;
       for (var repeat = 0; repeat < repeats; repeat += 1) {
         var control = map["control-" + index + "-" + repeat], probe = map["probe-" + index + "-" + repeat], victim=map["victim-"+index+"-"+repeat], recovery=map["recovery-"+index+"-"+repeat]; controls.push(control); probes.push(probe); victims.push(victim); recoveries.push(recovery);
         var repeatObservers=[];for(var observer=0;observer<observerCount;observer+=1){var observed=map["observer-"+index+"-"+repeat+"-"+observer];repeatObservers.push(observed);observers.push(observed);}if(technique.mode!=="zero_cl_pair"&&repeatObservers.every(function(item){return !item;})){repeatObservers=[victim,recovery];observers.push(victim,recovery);}
-        var controlSegments = segments(control), controlClean = hasResult(control) && outcome(control) !== "timeout" && controlSegments.length >= 1 && controlSegments.every(function (segment) { return !canaryDistinct || !matchesCanary(segment, canarySignature, baseSignature); }); if (controlClean) clean += 1;
-        var probeSegments=segments(probe), victimSegments=segments(victim), recoverySegments=segments(recovery),observerSegments=[];repeatObservers.forEach(function(item){observerSegments=observerSegments.concat(segments(item));});var downstream=probeSegments.concat(victimSegments,recoverySegments,observerSegments);
+        var controlSegments = segments(control), controlClean = hasResult(control) && outcome(control) !== "timeout" && controlSegments.length >= 1 && controlSegments.every(function (segment) { return usableSegment(segment) && (!canaryDistinct || !matchesCanary(segment, canarySignature, baseSignature)); }); if (controlClean) clean += 1;
+        var probeSegments=segments(probe), victimSegments=segments(victim), recoverySegments=segments(recovery),observerSegments=[];repeatObservers.forEach(function(item){observerSegments=observerSegments.concat(segments(item));});var rejectedProbe=probeRejected(probe,probeSegments),downstream=(rejectedProbe?probeSegments.slice(1):probeSegments).concat(victimSegments,recoverySegments,observerSegments);
+        if(rejectedProbe)probeRejections+=1;else if(!hasResult(probe))probeInconclusive+=1;else if(probeSegments[0]&&!matchesBase(probeSegments[0],baseSignature))probeDifferences+=1;
+        var confirmedThisRepeat=false;
         if (technique.mode === "zero_cl_pair") {
           var mutantControl=segments(control)[0], mutantVictim=victimSegments[0];
-          if (canaryDistinct && mutantControl && matchesBase(mutantControl,baseSignature) && downstream.some(function(segment){return matchesCanary(segment,canarySignature,baseSignature);})) contaminated += 1;
+          confirmedThisRepeat=!!(canaryDistinct && mutantControl && matchesBase(mutantControl,baseSignature) && downstream.some(function(segment){return matchesCanary(segment,canarySignature,baseSignature);}));
         } else if (technique.mode === "connection_state") {
           var directHost=segments(control)[0], indirectHost=probeSegments.length > 1 ? probeSegments[probeSegments.length-1] : null;
-          if (directHost && indirectHost && directHost.status !== indirectHost.status && matchesBase(probeSegments[0],baseSignature)) contaminated += 1;
-        } else if (technique.confirmable && canaryDistinct && downstream.some(function (segment) { return matchesCanary(segment, canarySignature, baseSignature) && !sameSegment(segment, baseSignature); })) contaminated += 1;
-        if (technique.mode === "h2_tunnel" && probeSegments.some(function(segment){return /HTTP\/1\.[01]\s+[1-5][0-9][0-9]/i.test(segment.text)||matchesCanary(segment,canarySignature,baseSignature);})) contaminated += 1;
-        if(technique.mode==="h2_header_injection"&&probeSegments[0]&&!matchesBase(probeSegments[0],baseSignature))contaminated+=1;
-        var victimFirst=segments(victim)[0],recoveryFirst=segments(recovery)[0],observerDiverged=observerSegments.some(function(segment){return !matchesBase(segment,baseSignature);}); if((victimFirst&&!matchesBase(victimFirst,baseSignature))||(recoveryFirst&&!matchesBase(recoveryFirst,baseSignature))||observerDiverged) divergentVictims+=1;
+          confirmedThisRepeat=!!(usableSegment(directHost)&&usableSegment(indirectHost)&&!sameSegment(directHost,indirectHost)&&matchesBase(probeSegments[0],baseSignature));
+        } else if (technique.mode === "h2_tunnel") {
+          confirmedThisRepeat=!!(canaryDistinct&&probeSegments.some(function(segment){return usableSegment(segment)&&matchesNestedCanary(segment,canarySignature,baseSignature);}));
+        } else if (technique.mode !== "h2_header_injection" && technique.confirmable && canaryDistinct) {
+          confirmedThisRepeat=downstream.some(function(segment){return matchesCanary(segment,canarySignature,baseSignature);});
+        }
+        if(confirmedThisRepeat)contaminated+=1;
+        var victimFirst=segments(victim)[0],recoveryFirst=segments(recovery)[0],observerDiverged=observerSegments.some(function(segment){return usableSegment(segment)&&!matchesBase(segment,baseSignature);}); if((usableSegment(victimFirst)&&!matchesBase(victimFirst,baseSignature))||(usableSegment(recoveryFirst)&&!matchesBase(recoveryFirst,baseSignature))||observerDiverged) divergentVictims+=1;
         if (outcome(probe) === "timeout" && outcome(control) !== "timeout") timeouts += 1;
       }
       var confirmed = directStable && canaryDistinct && clean === repeats && contaminated >= threshold;
       var candidate = directStable && clean === repeats && timeouts >= threshold;
       var unstableZero=technique.mode==="zero_cl_pair"&&divergentVictims>=Math.max(2,Math.ceil(repeats*0.4));
       var responseCandidate=directStable&&clean===repeats&&(divergentVictims>=threshold||unstableZero),unstableMarker=directStable&&canaryDistinct&&clean===repeats&&contaminated>0;
-      diagnostics.push({ family: technique.family, technique: technique.name, polarity: technique.polarity, clean_controls: clean, canary_confirmations: contaminated, divergent_victims: divergentVictims, probe_only_timeouts: timeouts, repeats: repeats, signal: confirmed ? "marker_contamination" : unstableMarker ? "marker_contamination_unstable" : responseCandidate ? "victim_divergence" : candidate ? "timing_candidate" : "none" });
+      diagnostics.push({ family: technique.family, technique: technique.name, polarity: technique.polarity, clean_controls: clean, canary_confirmations: contaminated, divergent_victims: divergentVictims, probe_only_timeouts: timeouts, probe_rejections: probeRejections, probe_inconclusive: probeInconclusive, probe_response_differences: probeDifferences, repeats: repeats, signal: confirmed ? "marker_contamination" : unstableMarker ? "marker_contamination_unstable" : responseCandidate ? "victim_divergence" : candidate ? "timing_candidate" : probeRejections === repeats ? "rejected" : probeInconclusive === repeats ? "inconclusive" : "none" });
       if (confirmed) findings.push({
         title: "Confirmed " + (h2Mode ? "HTTP/2 downgrade/tunnelling" : "HTTP/1 request desynchronization") + ": " + technique.name, severity: technique.mode==="h2_header_injection"?"medium":"high", confidence: "firm",
         explanation: (technique.mode === "h2_tunnel" ? "A nested or directly routed canary response was reproducibly exposed by the HTTP/2 tunnelling probe" : technique.mode==="h2_header_injection"?"The malformed HTTP/2 header name reproducibly changed the downstream response":"A harmless marker request was reproducibly parsed out of the ambiguous pipeline") + " in " + contaminated + " of " + repeats + " attempts, while every standalone control remained clean.",
         remediation: "Reject ambiguous framing at the first hop, normalize Transfer-Encoding and Content-Length consistently across every hop, and close connections after parser errors.",
         evidence_exchange_ids: evidence(baseDirect.concat(canaryDirect, controls, probes, victims, recoveries, observers)), metadata: { family: technique.family, polarity: technique.polarity, signal: "marker_contamination", confirmations: contaminated, attempts: repeats }
       });
-      else if (unstableMarker||responseCandidate||candidate) findings.push({
+      else if (unstableMarker) findings.push({
         title: (h2Mode ? "HTTP/2 downgrade" : "HTTP/1 framing") + " discrepancy candidate: " + technique.name, severity: "medium", confidence: "tentative",
-        explanation: unstableMarker ? "The exact canary response appeared downstream after an ambiguous probe in " + contaminated + " of " + repeats + " attempts. This pool-dependent marker signal did not reach the configured firm quorum and is retained as unstable evidence." : responseCandidate ? "Requests following the ambiguous probe diverged from the stable baseline in " + divergentVictims + " of " + repeats + " attempts. Marker confirmation is still required before treating this as exploitable." : "The ambiguous request timed out in " + timeouts + " of " + repeats + " attempts while the pre-probe control completed. Timing alone is not proof of desynchronization, so marker confirmation or manual validation is required.",
+        explanation: "The exact canary response appeared downstream after an ambiguous probe in " + contaminated + " of " + repeats + " attempts. This pool-dependent marker signal did not reach the configured firm quorum and is retained as unstable evidence.",
         remediation: "Review every HTTP hop for inconsistent framing rules and validate on an isolated connection before treating this as exploitable.",
-        evidence_exchange_ids: evidence(controls.concat(probes,victims,recoveries,observers)), metadata: { family: technique.family, polarity: technique.polarity, signal: unstableMarker?"marker_contamination_unstable":responseCandidate?"victim_divergence":"timing_candidate", confirmations: contaminated, attempts: repeats }
+        evidence_exchange_ids: evidence(controls.concat(probes,victims,recoveries,observers)), metadata: { family: technique.family, polarity: technique.polarity, signal: "marker_contamination_unstable", confirmations: contaminated, attempts: repeats }
       });
     });
-    var result={ findings: findings, result: { direct_controls_stable: h1Stable && h2Stable, diagnostics: diagnostics, limitations: ["Firm framing findings require repeated downstream marker contamination; timeout-only signals remain tentative.", "HTTP/2 probes require HTTPS with ALPN h2 and never fall back to HTTP/1.", "Pause-based findings require the explicit pause family; browser client-side desync remains out of scope."] } };segmentMemo=null;transcriptMemo=null;return result;
+    var result={ findings: findings, result: { direct_controls_stable: h1Stable && h2Stable, diagnostics: diagnostics, limitations: ["Firm framing findings require repeated downstream marker contamination; timeout, rejection, and response-divergence-only signals remain diagnostics.", "HTTP/2 probes require HTTPS with ALPN h2 and never fall back to HTTP/1.", "HTTP/2 reset, GOAWAY, incomplete, and truncated streams are never treated as downstream responses.", "HTTP/2 nested-response confirmation requires a complete Content-Length-framed inner response.", "Pause-based findings require the explicit pause family; browser client-side desync remains out of scope."] } };segmentMemo=null;transcriptMemo=null;markerMemo=null;return result;
   }
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };
 }());

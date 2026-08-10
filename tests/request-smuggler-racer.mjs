@@ -66,7 +66,8 @@ function context(url = "https://example.test/account") {
   function wire(responses) {
     let transcript = ""; const summaries = [];
     for (const response of responses) {
-      const bytes = `HTTP/1.1 ${response.status} Test\r\nContent-Length: ${response.body.length}\r\n\r\n${response.body}`;
+      const extraHeaders = (response.headers || []).map(([name, value]) => `${name}: ${value}\r\n`).join("");
+      const bytes = `HTTP/1.1 ${response.status} Test\r\n${extraHeaders}Content-Length: ${response.body.length}\r\n\r\n${response.body}`;
       summaries.push({ status_code: response.status, offset: transcript.length, length: bytes.length }); transcript += bytes;
     }
     return { read_outcome: "idle", responses: summaries, response_transcript_base64: Buffer.from(transcript).toString("base64") };
@@ -115,9 +116,8 @@ function context(url = "https://example.test/account") {
     return { id: operation.id, raw: { exchange_id: 700 + index, ...wire(responses) } };
   });
   const unstableResult = plugin.analyze(unstableInput, unstableObservations, ctx);
-  assert.equal(unstableResult.findings.length, 1);
-  assert.equal(unstableResult.findings[0].confidence, "tentative");
-  assert.equal(unstableResult.findings[0].metadata.signal, "victim_divergence");
+  assert.equal(unstableResult.findings.length, 0, "response divergence without an exact marker remains diagnostic-only");
+  assert.equal(unstableResult.result.diagnostics[0].signal, "victim_divergence");
   const delayedMarkerObservations = unstablePlan.operations.map((operation, index) => {
     if (operation.type === "raw_http1_group") return {
       id: operation.id,
@@ -145,6 +145,61 @@ function context(url = "https://example.test/account") {
   const uniformEdgeResult = plugin.analyze(unstableInput, uniformEdgeObservations, ctx);
   assert.equal(uniformEdgeResult.findings.length, 0);
   assert.equal(uniformEdgeResult.result.diagnostics[0].canary_confirmations, 0, "a non-distinct canary baseline cannot increment confirmations");
+
+  const volatileInput = { ...input, families: ["cl_te"], repeats: 3 };
+  const volatilePlan = plugin.plan(volatileInput, ctx);
+  const volatileObservations = volatilePlan.operations.map((operation, index) => {
+    const directCanary = operation.id.startsWith("direct-canary");
+    const probe = operation.id.startsWith("probe-");
+    const response = directCanary ? { status: 404, body: "exact canary body" }
+      : probe ? { status: 400, body: "Bad Request" }
+      : { status: 401, body: "Unauthorized", headers: [["X-Tt-Trace-Host", "a".repeat(index % 2 ? 600 : 20)], ["Server-Timing", `edge;dur=${index}`]] };
+    return { id: operation.id, raw: { exchange_id: 1000 + index, ...wire([response]) } };
+  });
+  const volatileResult = plugin.analyze(volatileInput, volatileObservations, ctx);
+  assert.equal(volatileResult.findings.length, 0, "volatile CDN headers must not create a finding");
+  assert.equal(volatileResult.result.direct_controls_stable, true);
+  assert.equal(volatileResult.result.diagnostics[0].divergent_victims, 0);
+  assert.equal(volatileResult.result.diagnostics[0].probe_rejections, 3);
+
+  const rejectionCanaryObservations = volatilePlan.operations.map((operation, index) => {
+    const response = operation.id.startsWith("direct-canary") || operation.id.startsWith("probe-")
+      ? { status: 400, body: "Bad Request" }
+      : { status: 401, body: "Unauthorized" };
+    return { id: operation.id, raw: { exchange_id: 1100 + index, ...wire([response]) } };
+  });
+  const rejectionCanaryResult = plugin.analyze(volatileInput, rejectionCanaryObservations, ctx);
+  assert.equal(rejectionCanaryResult.findings.length, 0, "a rejected probe cannot confirm itself by matching a generic canary error");
+  assert.equal(rejectionCanaryResult.result.diagnostics[0].canary_confirmations, 0);
+
+  const wrongCanaryObservations = volatilePlan.operations.map((operation, index) => {
+    const response = operation.id.startsWith("direct-canary") ? { status: 404, body: "exact marker abc12345" }
+      : operation.id.startsWith("observer-") ? { status: 404, body: "generic edge not found" }
+      : { status: 200, body: "normal" };
+    return { id: operation.id, raw: { exchange_id: 1200 + index, ...wire([response]) } };
+  });
+  const wrongCanaryResult = plugin.analyze(volatileInput, wrongCanaryObservations, ctx);
+  assert.equal(wrongCanaryResult.findings.length, 0, "canary status without the canary body is not confirmation");
+  assert.equal(wrongCanaryResult.result.diagnostics[0].canary_confirmations, 0);
+
+  const redirectCanaryObservations = volatilePlan.operations.map((operation, index) => {
+    const location = operation.id.startsWith("direct-canary") ? "/hp-abc12345-not-found" : "/login";
+    const response = { status: 302, body: "Found", headers: [["Location", location], ["Content-Type", "text/plain"]] };
+    return { id: operation.id, raw: { exchange_id: 1300 + index, ...wire([response]) } };
+  });
+  const redirectCanaryResult = plugin.analyze(volatileInput, redirectCanaryObservations, ctx);
+  assert.equal(redirectCanaryResult.findings.length, 0, "a stock redirect body cannot match a different canary Location");
+  assert.equal(redirectCanaryResult.result.diagnostics[0].canary_confirmations, 0);
+
+  const sameStatusMarkerObservations = volatilePlan.operations.map((operation, index) => {
+    const markerResponse = operation.id.startsWith("direct-canary") || (operation.id.startsWith("observer-") && operation.id.endsWith("-0"));
+    const response = markerResponse ? { status: 200, body: "exact marker abc12345" } : { status: 200, body: "normal" };
+    return { id: operation.id, raw: { exchange_id: 1400 + index, ...wire([response]) } };
+  });
+  const sameStatusMarkerResult = plugin.analyze(volatileInput, sameStatusMarkerObservations, ctx);
+  assert.equal(sameStatusMarkerResult.findings.length, 1, "an exact same-status marker body remains confirmable");
+  assert.equal(sameStatusMarkerResult.findings[0].confidence, "firm");
+  assert.equal(sameStatusMarkerResult.findings[0].metadata.confirmations, 3);
   const connectionObservations = connectionState.operations.map((operation, index) => {
     const responses = operation.id.startsWith("direct-canary") ? [{ status: 404, body: "canary" }]
       : operation.id.startsWith("control-") ? [{ status: 421, body: "invalid host" }]
@@ -186,7 +241,8 @@ function context(url = "https://example.test/account") {
   });
   const started = performance.now();
   const teTeResult = plugin.analyze(teTeInput, teTeObservations, ctx);
-  assert.ok(performance.now() - started < 250, "TE.TE analysis must stay well below the host JavaScript stage budget");
+  const teTeElapsed = performance.now() - started;
+  assert.ok(teTeElapsed < 250, `TE.TE analysis must stay well below the host JavaScript stage budget (observed ${teTeElapsed.toFixed(1)}ms)`);
   assert.equal(teTeResult.result.diagnostics.length, 12);
 
   const h2Input = { ...input, families: ["h2_cl"], repeats: 3 };
@@ -201,7 +257,7 @@ function context(url = "https://example.test/account") {
   assert.match(h2Probe.streams[0].body_text, /^GET \/hp-abc12345-not-found HTTP\/1\.1/);
   function h2Observation(operation, index) {
     const status = operation.id.startsWith("h2-direct-canary") || operation.id.startsWith("observer-") ? 404 : 200;
-    return operation.type === "raw_http2" ? { id: operation.id, protocol: "h2", timed_out: false, streams: [{ id: `${operation.id}-stream`, exchange_id: 900 + index, status_code: status, response_body_base64: Buffer.from(status === 404 ? "canary" : "normal").toString("base64") }] }
+    return operation.type === "raw_http2" ? { id: operation.id, protocol: "h2", timed_out: false, goaway: null, streams: [{ id: `${operation.id}-stream`, exchange_id: 900 + index, status_code: status, response_body_base64: Buffer.from(status === 404 ? "canary" : "normal").toString("base64"), response_body_truncated: false, reset: null, complete: true, truncated: false }] }
       : { id: operation.id, raw: { exchange_id: 900 + index, ...wire([{ status: 200, body: "normal" }]) } };
   }
   const h2Result = plugin.analyze(h2Input, h2Plan.operations.map(h2Observation), ctx);
@@ -216,14 +272,25 @@ function context(url = "https://example.test/account") {
   assert.ok(hostInjection.headers.some((header) => header.name.includes("\r\nHost: abc12345.example.test")));
   const tunnelObservations = tunnel.operations.map((operation, index) => {
     if (operation.type !== "raw_http2") return { id: operation.id, raw: { exchange_id: 1100 + index, ...wire([{ status: 200, body: "normal" }]) } };
-    const canary = operation.id.startsWith("h2-direct-canary"), nested = operation.id.startsWith("probe-");
-    const body = nested ? "prefix HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n" : (canary ? "canary" : "normal");
-    return { id: operation.id, protocol: "h2", timed_out: false, streams: [{ id: `${operation.id}-stream`, exchange_id: 1100 + index, status_code: canary ? 404 : 200, response_length: body.length, response_body_hash: canary ? "canary-hash" : (nested ? "nested-hash" : "base-hash"), response_body_base64: Buffer.from(body).toString("base64") }] };
+    const canary = operation.id.startsWith("h2-direct-canary"), nested = /^probe-(0|1)-/.test(operation.id);
+    const body = nested ? "prefix HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 6\r\n\r\ncanary" : (canary ? "canary" : "normal");
+    return { id: operation.id, protocol: "h2", timed_out: false, goaway: null, streams: [{ id: `${operation.id}-stream`, exchange_id: 1100 + index, status_code: canary ? 404 : 200, response_length: body.length, response_body_hash: canary ? "canary-hash" : (nested ? "nested-hash" : "base-hash"), response_body_base64: Buffer.from(body).toString("base64"), response_body_truncated: false, reset: null, complete: true, truncated: false }] };
   });
   const tunnelStarted = performance.now();
   const tunnelResult = plugin.analyze({ ...input, families: ["h2_tunnel"], repeats: 3 }, tunnelObservations, ctx);
-  assert.equal(tunnelResult.findings.length, 3);
+  assert.equal(tunnelResult.findings.length, 2, "Host injection needs a routing oracle and is not confirmed by response difference alone");
+  assert.equal(tunnelResult.result.diagnostics[2].canary_confirmations, 0);
   assert.ok(performance.now() - tunnelStarted < 250, "H2 tunnelling analysis must stay below the host JavaScript stage budget");
+
+  const resetObservations = tunnel.operations.map((operation, index) => {
+    if (operation.type !== "raw_http2") return { id: operation.id, raw: { exchange_id: 1600 + index, ...wire([{ status: 200, body: "normal" }]) } };
+    if (!operation.id.startsWith("probe-")) return h2Observation(operation, 1600 + index);
+    return { id: operation.id, protocol: "h2", timed_out: false, goaway: null, streams: [{ id: `${operation.id}-stream`, exchange_id: 1600 + index, status_code: null, response_length: 0, response_body_hash: null, response_body_base64: null, response_body_truncated: false, reset: "PROTOCOL_ERROR", complete: false, truncated: false }] };
+  });
+  const resetResult = plugin.analyze({ ...input, families: ["h2_tunnel"], repeats: 3 }, resetObservations, ctx);
+  assert.equal(resetResult.findings.length, 0, "H2 protocol resets are rejection evidence, not downstream responses");
+  assert.ok(resetResult.result.diagnostics.every((diagnostic) => diagnostic.canary_confirmations === 0));
+  assert.ok(resetResult.result.diagnostics.every((diagnostic) => diagnostic.probe_rejections === 3));
 }
 
 {

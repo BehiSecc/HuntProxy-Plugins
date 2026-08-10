@@ -2,11 +2,11 @@
   "schema_version": 1,
   "id": "request-smuggler",
   "name": "Request Smuggler",
-  "version": "1.4.5",
+  "version": "1.4.6",
   "description": "Detect HTTP/1 desynchronization, including concurrent 0.CL contamination, plus HTTP/2 downgrade, splitting, response-queue, and tunnelling discrepancies with bounded differential controls.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "ffa6fec8879688a0785a6513aa2a811baa619235c969c6139cc7b7875849dd34",
+  "entrypoint_sha256": "28172ba45c40beecb0da23cbc5da0dbd093ee12e4f5ab2e2f988499b4d70bb2d",
   "capabilities": ["http.raw"],
   "limits": { "timeout_ms": 900000, "max_operations": 700, "max_concurrency": 1, "memory_mb": 32 },
   "actions": [{
