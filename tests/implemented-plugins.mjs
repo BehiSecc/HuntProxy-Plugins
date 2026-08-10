@@ -141,6 +141,7 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
 
 {
   const plugin = await load("cache-analyzer");
+  const responseHeader = (name, value) => ({ name, value_base64: Buffer.from(value).toString("base64") });
   const input = { marker: "a1b2c3d4e5", allow_cache_side_effects: true, use_header_wordlist: false, max_header_candidates: 4, max_poison_variants: 4, max_deception_variants: 4 };
   const plan = plugin.plan(input, context("https://example.test/account"));
   assert.ok(plan.operations.length <= 50);
@@ -188,6 +189,7 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const fullQueryOnlyObservations = fullQueryOnlyPlan.operations.map((op) => observation(op, 200, op.id.startsWith("poison-") ? "full-query-collision" : "ordinary-control", op.id.startsWith("poison-") ? "canonical hpmulti12345q0" : "ordinary page"));
   const fullQueryFinding = plugin.analyze(fullQueryOnlyInput, fullQueryOnlyObservations, context()).findings.find((finding) => finding.metadata.subtype === "full-query");
   assert.ok(fullQueryFinding, "confirmed full-query collision persists a dedicated finding subtype");
+  assert.doesNotMatch(fullQueryFinding.explanation, /pre-poison control/i, "marker-only families do not claim a control that was never planned");
   assert.equal(Array.from(fullQueryFinding.evidence_exchange_ids).length, 3);
   const shapeInput = { ...combinationInput, full_query_oracle: true, allow_shared_cache_key_tests: true, parameter_cloaking: [{ carrier: "utm_content", target: "callback", delimiter: ";" }], fat_get_parameters: ["callback"], max_poison_variants: 3 };
   const shapePlan = plugin.plan(shapeInput, context());
@@ -265,6 +267,140 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   privacyObservations.find((item) => item.id === "baseline-auth").response_headers = [{ name: "x-cache", value_base64: Buffer.from("miss").toString("base64") }];
   privacyObservations.find((item) => item.id === "baseline-anon").response_headers = [{ name: "x-cache", value_base64: Buffer.from("hit").toString("base64") }, { name: "age", value_base64: Buffer.from("3").toString("base64") }];
   assert.equal(plugin.analyze(input, privacyObservations, context("https://example.test/account")).result.base_appears_private, false, "volatile cache headers do not imply private content");
+
+  const proofInput = { marker: "cacheproof1", allow_cache_side_effects: true, modes: ["poisoning"], oracle_families: ["query-parameters"], use_header_wordlist: false, max_poison_variants: 1, poison_attempts: 1 };
+  const proofPlan = plugin.plan(proofInput, context());
+  assert.deepEqual(Array.from(proofPlan.operations, (op) => op.id), ["baseline-auth", "baseline-anon", "poison-preclean-0", "poison-0", "poison-clean-0", "poison-confirm-0"]);
+  const precleanUrl = new URL(proofPlan.operations.find((op) => op.id === "poison-preclean-0").url);
+  const cleanUrl = new URL(proofPlan.operations.find((op) => op.id === "poison-clean-0").url);
+  assert.notEqual(precleanUrl.href, cleanUrl.href, "preclean uses a separately cache-busted URL");
+  assert.equal(precleanUrl.origin + precleanUrl.pathname, cleanUrl.origin + cleanUrl.pathname, "preclean preserves the endpoint");
+  precleanUrl.searchParams.delete("hp_cache_bust"); cleanUrl.searchParams.delete("hp_cache_bust");
+  assert.equal(precleanUrl.href, cleanUrl.href, "preclean changes only the cache-buster value");
+
+  function proofObservations({ preclean = "ordinary", poison = "mutated", clean = "mutated", confirm = "mutated", headers = [] } = {}) {
+    const texts = { "poison-preclean-0": preclean, "poison-0": poison, "poison-clean-0": clean, "poison-confirm-0": confirm };
+    return proofPlan.operations.map((op) => {
+      const text = texts[op.id] || "ordinary";
+      const item = observation(op, 200, text, text);
+      if (["poison-preclean-0", "poison-0", "poison-clean-0", "poison-confirm-0"].includes(op.id)) item.response_headers = headers;
+      return item;
+    });
+  }
+
+  const hitHeaders = [responseHeader("X-Cache", "Hit from cloudfront"), responseHeader("Age", "4"), responseHeader("X-Cache-Hits", "0, 1")];
+  const mutationHit = plugin.analyze(proofInput, proofObservations({ headers: hitHeaders }), context()).findings.find((finding) => finding.metadata.variant === "query:utm_source");
+  assert.ok(mutationHit, "preclean-to-postclean mutation persistence is detected");
+  assert.equal(mutationHit.metadata.proof, "mutation_persistence");
+  assert.equal(mutationHit.metadata.cache_state, "hit");
+  assert.equal(mutationHit.confidence, "firm");
+  assert.equal(Array.from(mutationHit.evidence_exchange_ids).length, 4);
+
+  const missHeaders = [
+    responseHeader("Cache-Control", "max-age=0, no-cache, no-store"), responseHeader("X-Cache", "TCP_MISS"),
+    responseHeader("CF-Cache-Status", "BYPASS"), responseHeader("Cache-Status", "ExampleCache; fwd=uri-miss"),
+    responseHeader("Age", "0"), responseHeader("X-Cache-Hits", "0"),
+  ];
+  const mutationMiss = plugin.analyze(proofInput, proofObservations({ headers: missHeaders }), context()).findings.find((finding) => finding.metadata.variant === "query:utm_source");
+  assert.ok(mutationMiss, "negative cache headers do not erase independently observed mutation persistence");
+  assert.equal(mutationMiss.metadata.cache_state, "uncacheable");
+  assert.equal(mutationMiss.confidence, "tentative", "MISS/no-store evidence never upgrades mutation-only proof to firm");
+
+  function baselineCacheState(headers) {
+    const items = proofObservations();
+    items.find((item) => item.id === "baseline-auth").response_headers = headers;
+    return plugin.analyze(proofInput, items, context()).result.baseline_cache.authenticated.state;
+  }
+  assert.equal(baselineCacheState([responseHeader("Age", "0")]), "unknown", "Age: 0 is not proof of either a hit or miss");
+  assert.equal(baselineCacheState([responseHeader("Age", "2")]), "hit");
+  assert.equal(baselineCacheState([responseHeader("Cache-Control", "no-cache")]), "unknown", "no-cache permits revalidation and is not an uncacheable signal");
+  assert.equal(baselineCacheState([responseHeader("X-Cache", "HIT-for-pass")]), "miss", "pass responses are not classified as cache hits");
+  assert.equal(baselineCacheState([responseHeader("X-Cache", "HIT, HIT-for-pass")]), "hit", "a real hit wins over a separate pass member");
+  assert.equal(baselineCacheState([responseHeader("X-Cache", "TCP_REFRESH_HIT")]), "hit", "common CDN hit variants are recognized");
+  assert.equal(baselineCacheState([responseHeader("X-Cache", "TCP_MISS")]), "miss");
+  assert.equal(baselineCacheState([responseHeader("CF-Cache-Status", "HIT")]), "hit");
+  assert.equal(baselineCacheState([responseHeader("CF-Cache-Status", "BYPASS")]), "miss");
+  assert.equal(baselineCacheState([responseHeader("Cache-Status", "Edge; hit, Origin; fwd=uri-miss")]), "hit", "a cache hit in a multi-layer Cache-Status list is recognized");
+  assert.equal(baselineCacheState([responseHeader("Cache-Status", "Edge; fwd=uri-miss")]), "miss");
+  assert.equal(baselineCacheState([responseHeader("Vary", "*")]), "uncacheable", "Vary: * is classified as uncacheable");
+  assert.equal(baselineCacheState([responseHeader("Cache-Control", "private")]), "uncacheable");
+  assert.equal(baselineCacheState([responseHeader("X-Cache-Hits", "")]), "unknown", "an empty hit-count header is not a cache miss");
+  assert.equal(baselineCacheState([responseHeader("X-Cache-Hits", "0")]), "miss");
+  assert.equal(baselineCacheState([responseHeader("X-Cache-Hits", "1")]), "hit");
+  assert.equal(baselineCacheState([responseHeader("X-Cache", "HIT, MISS")]), "hit", "a comma-list containing an observed hit is positive evidence");
+  assert.equal(baselineCacheState([responseHeader("Age", "2"), responseHeader("Cache-Control", "no-store")]), "hit", "an observed hit wins contradictory policy metadata");
+
+  assert.equal(plugin.analyze(proofInput, proofObservations({ preclean: "mutated" }), context()).findings.length, 0, "a mutation present before poisoning is not causal evidence");
+  for (const failure of [{ status_code: 408 }, { status_code: 425 }, { status_code: 429 }, { status_code: 499 }, { status_code: 500 }, { error: "connection failed" }]) {
+    const failedPreclean = proofObservations();
+    Object.assign(failedPreclean.find((item) => item.id === "poison-preclean-0"), failure);
+    assert.equal(plugin.analyze(proofInput, failedPreclean, context()).findings.length, 0, "a failed preclean control makes mutation proof inconclusive");
+  }
+  const statusMutation = proofObservations({ preclean: "ordinary", poison: "ordinary", clean: "ordinary", confirm: "ordinary" });
+  for (const item of statusMutation.filter((entry) => entry.id === "poison-0" || entry.id === "poison-clean-0" || entry.id === "poison-confirm-0")) item.status_code = 301;
+  assert.equal(plugin.analyze(proofInput, statusMutation, context()).findings[0].metadata.proof, "mutation_persistence", "a stable post-poison status mutation remains detectable");
+  const markerBody = "hpcacheproof1";
+  const missingPrecleanMarker = proofObservations({ poison: markerBody, clean: markerBody, confirm: markerBody }).filter((item) => item.id !== "poison-preclean-0");
+  assert.equal(plugin.analyze(proofInput, missingPrecleanMarker, context()).findings.length, 0, "comparable marker proof requires its preclean control");
+  const escapedBuster = (value) => `ordinary <a href="/account?one=1&amp;hp_cache_bust=${value}">link</a>`;
+  assert.equal(plugin.analyze(proofInput, proofObservations({
+    preclean: escapedBuster("preclean"), poison: escapedBuster("poison"), clean: escapedBuster("clean"), confirm: escapedBuster("confirm"),
+  }), context()).findings.length, 0, "HTML-escaped cache-buster values do not look like a poisoned mutation");
+  assert.equal(plugin.analyze(proofInput, proofObservations({ preclean: markerBody, poison: markerBody, clean: markerBody, confirm: markerBody }), context()).findings.length, 0, "a preexisting marker cannot prove poisoning");
+
+  const markerPositive = proofObservations({ poison: markerBody, clean: markerBody, confirm: markerBody, headers: missHeaders });
+  const firstMarkerResult = plugin.analyze(proofInput, markerPositive, context());
+  const secondMarkerResult = plugin.analyze(proofInput, markerPositive, context());
+  assert.equal(JSON.stringify(firstMarkerResult), JSON.stringify(secondMarkerResult), "per-analysis memoization preserves deterministic output");
+  assert.equal(firstMarkerResult.findings[0].metadata.proof, "marker_persistence");
+  assert.equal(firstMarkerResult.findings[0].confidence, "tentative", "marker persistence without a positive cache HIT remains tentative");
+  for (const item of markerPositive.filter((item) => item.id === "poison-clean-0" || item.id === "poison-confirm-0")) {
+    item.response_preview.text = "ordinary"; item.response_body_hash = "ordinary";
+  }
+  assert.equal(plugin.analyze(proofInput, markerPositive, context()).findings.length, 0, "memoized observations never leak across analysis calls");
+
+  const headerInput = { ...proofInput, marker: "headerproof1", oracle_families: ["headers"], headers: ["X-Proof"], max_header_candidates: 1 };
+  const headerPlan = plugin.plan(headerInput, context());
+  const headerTexts = { "poison-preclean-0": "ordinary", "poison-0": "header mutation", "poison-clean-0": "header mutation", "poison-confirm-0": "header mutation" };
+  const headerObservations = headerPlan.operations.map((op) => observation(op, 200, headerTexts[op.id] || "ordinary", headerTexts[op.id] || "ordinary"));
+  assert.equal(plugin.analyze(headerInput, headerObservations, context()).findings[0].metadata.variant, "header:x-proof", "header mutations use the same preclean causality gate");
+
+  const capInput = {
+    marker: "operationcap1", allow_cache_side_effects: true, headers: Array.from({ length: 500 }, (_, index) => `X-Cap-${index}`),
+    use_header_wordlist: false, max_header_candidates: 500, max_header_combinations: 0, max_poison_variants: 504,
+    poison_attempts: 20, max_deception_variants: 100,
+  };
+  const capPlan = plugin.plan(capInput, context());
+  assert.ok(capPlan.operations.length <= 2000, "preclean controls never exceed the manifest operation budget");
+  assert.equal(capPlan.result.operation_count, capPlan.operations.length);
+  assert.equal(capPlan.result.poison_variant_limit_applied, true);
+  for (let index = 0; index < capPlan.result.poison_variants; index += 1) {
+    assert.ok(capPlan.operations.some((op) => op.id === `poison-preclean-${index}`));
+    assert.equal(capPlan.operations.filter((op) => op.id === `poison-${index}` || op.id.startsWith(`poison-${index}-retry-`)).length, 20);
+    assert.ok(capPlan.operations.some((op) => op.id === `poison-clean-${index}`));
+    assert.ok(capPlan.operations.some((op) => op.id === `poison-confirm-${index}`));
+  }
+  const fractionalCapPlan = plugin.plan({ ...capInput, poison_attempts: 19.5 }, context());
+  assert.equal(fractionalCapPlan.result.poison_attempts, 19, "fractional host input is normalized to the exact integer used by planning");
+  assert.ok(fractionalCapPlan.operations.length <= 2000, "fractional input cannot bypass the operation budget");
+
+  const stressInput = {
+    marker: "performancetest1", allow_cache_side_effects: true,
+    headers: Array.from({ length: 300 }, (_, index) => `X-Perf-${index}`), use_header_wordlist: false,
+    max_header_candidates: 300, max_poison_variants: 304, max_deception_variants: 40,
+  };
+  const stressPlan = plugin.plan(stressInput, context("https://example.test/dynamic"));
+  assert.equal(stressPlan.operations.length, 1338, "stress fixture matches the previously timing-out operation count");
+  const largeBody = Buffer.from("x".repeat(9500)).toString("base64"), largePreview = "x".repeat(4096);
+  const serializedStress = JSON.stringify(stressPlan.operations.map((op, index) => ({
+    ...observation(op, 200, `body-${index}`, largePreview), response_body_base64: largeBody,
+  })));
+  assert.ok(Buffer.byteLength(serializedStress) > 20 * 1024 * 1024, "stress fixture includes the reported large analysis payload");
+  const stressStarted = performance.now();
+  const stressResult = plugin.analyze(stressInput, JSON.parse(serializedStress), context("https://example.test/dynamic"));
+  const stressElapsed = performance.now() - stressStarted;
+  assert.equal(stressResult.findings.length, 0);
+  assert.ok(stressElapsed < 2000, `memoized 1,338-operation analysis stays within the 2s stage budget (${Math.round(stressElapsed)}ms)`);
 }
 
 function privilegedContext({ url = "https://example.test/admin", method = "GET", headers = [], body = "", related = [] } = {}) {

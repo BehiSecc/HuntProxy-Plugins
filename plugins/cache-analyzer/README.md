@@ -11,8 +11,12 @@ value on the same cache key. Authentication, session, token, and CSRF cookie
 names additionally require `allow_sensitive_cookie_mutation=true`.
 
 The action requires `allow_cache_side_effects=true`: even isolated tests can
-create cache entries. Findings without recognizable cache headers are marked
-tentative.
+create cache entries. Cache confidence uses header values rather than header
+presence: positive `Age`, `X-Cache`, `CF-Cache-Status`, `X-Cache-Hits`, or
+`Cache-Status` evidence can establish a hit, while explicit misses,
+`Cache-Control: no-store/private`, and `Vary: *` cannot upgrade a
+mutation-only result to firm. Exact marker persistence remains independent
+positive evidence.
 
 The poisoning matrix also tests a bounded `X-Forwarded-Host` plus
 `X-Forwarded-Scheme` pair. Supply additional two-to-four-header sets through
@@ -38,6 +42,13 @@ cache key before the poison request. Cloaking and fat-GET controls use the same
 isolation because cache parsers may ignore ordinary query busters. Full-query, cookie, cloaking, and fat-GET
 findings require the unique poison marker to persist; response-difference
 fallbacks are limited to header/query probes with comparable control URLs.
+Those comparable probes first request a separately cache-busted clean URL,
+then require the poison response and two clean requests to reproduce a change
+that was absent before poisoning. The pre-poison control never fills the key
+under test when the cache keys the buster as intended; if the cache ignores the
+buster, the control can prefill the entry and cause a false negative. Whole
+probe groups are capped to the manifest's 2,000-operation limit, so a scan is
+never truncated in the middle of a confirmation sequence.
 When merely saving the target request would fill a shared cache key, save any
 harmless request on the same origin and pass the untouched endpoint through
 `target_url`; cross-origin overrides are rejected.
