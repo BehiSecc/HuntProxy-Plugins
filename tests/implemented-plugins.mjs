@@ -141,6 +141,8 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
 
 {
   const plugin = await load("cache-analyzer");
+  const cacheManifest = JSON.parse(await readFile(new URL("cache-analyzer/plugin.json", root), "utf8"));
+  assert.equal(cacheManifest.limits.js_stage_timeout_ms, 10000, "broad CacheAnalyzer aggregation has a bounded QuickJS budget");
   const responseHeader = (name, value) => ({ name, value_base64: Buffer.from(value).toString("base64") });
   const input = { marker: "a1b2c3d4e5", allow_cache_side_effects: true, use_header_wordlist: false, max_header_candidates: 4, max_poison_variants: 4, max_deception_variants: 4 };
   const plan = plugin.plan(input, context("https://example.test/account"));
@@ -400,7 +402,7 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const stressResult = plugin.analyze(stressInput, JSON.parse(serializedStress), context("https://example.test/dynamic"));
   const stressElapsed = performance.now() - stressStarted;
   assert.equal(stressResult.findings.length, 0);
-  assert.ok(stressElapsed < 2000, `memoized 1,338-operation analysis stays within the 2s stage budget (${Math.round(stressElapsed)}ms)`);
+  assert.ok(stressElapsed < 2000, `memoized 1,338-operation Node analysis stays within its regression budget (${Math.round(stressElapsed)}ms)`);
 }
 
 function privilegedContext({ url = "https://example.test/admin", method = "GET", headers = [], body = "", related = [] } = {}) {

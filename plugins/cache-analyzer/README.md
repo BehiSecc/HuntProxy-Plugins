@@ -18,6 +18,12 @@ presence: positive `Age`, `X-Cache`, `CF-Cache-Status`, `X-Cache-Hits`, or
 mutation-only result to firm. Exact marker persistence remains independent
 positive evidence.
 
+Broad scans can produce more than a thousand observations. CacheAnalyzer uses
+a bounded 10-second JavaScript-stage budget because HuntProxy must parse the
+complete observation set before analysis; the global 2-second default is too
+short for broad supported scans. Network execution remains bounded by the
+separate action timeout and 2,000-operation limit.
+
 The poisoning matrix also tests a bounded `X-Forwarded-Host` plus
 `X-Forwarded-Scheme` pair. Supply additional two-to-four-header sets through
 `header_combinations`; every set receives its own isolated cache key.

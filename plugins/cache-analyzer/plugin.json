@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "cache-analyzer",
   "name": "CacheAnalyzer",
-  "version": "0.12.3",
+  "version": "0.12.4",
   "description": "Test cache-key discrepancies, cache poisoning, and web cache deception with cache-busted controls and confirmation.",
   "enabled": true,
   "entrypoint": "index.js",
@@ -12,7 +12,7 @@
     "cookies": { "path": "resources/cookies", "sha256": "dc1d66e40324e017c7020405f25376ccda9cdc6091c00d5e07720312e9ae585b" }
   },
   "capabilities": ["http.semantic", "http.raw"],
-  "limits": { "timeout_ms": 900000, "max_operations": 2000, "max_concurrency": 1, "memory_mb": 64 },
+  "limits": { "timeout_ms": 900000, "js_stage_timeout_ms": 10000, "max_operations": 2000, "max_concurrency": 1, "memory_mb": 64 },
   "actions": [{
     "name": "scan",
     "description": "Probe one saved request for poisoning and deception behaviors, requiring clean-control confirmation.",
