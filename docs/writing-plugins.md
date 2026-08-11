@@ -136,7 +136,6 @@ a title and at least one saved exchange from the same project:
   severity: "high",
   confidence: "firm",
   explanation: "What was reproduced and why it matters.",
-  remediation: "How to fix it.",
   evidence_exchange_ids: [observation.exchange_id],
   metadata: { variant: "example" }
 }

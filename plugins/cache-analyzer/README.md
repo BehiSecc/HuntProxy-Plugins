@@ -1,79 +1,118 @@
 # CacheAnalyzer
 
-`scan` tests common unkeyed headers/query inputs and cache-deception path
-variants. It uses a caller-generated marker, cache-busted URLs, clean follow-up
-requests, anonymous controls, and repeat confirmation. Operations must execute
-sequentially, so this manifest fixes concurrency at one.
+CacheAnalyzer profiles cache behavior, screens cache-key inputs, confirms only
+candidate-specific persistence, and tests web cache deception. Every scan
+requires `allow_cache_side_effects=true`.
 
-Cookie poisoning is opt-in through `cookie_names` or `use_cookie_wordlist`.
-Each candidate is poisoned once and then checked twice with a distinct clean
-value on the same cache key. Authentication, session, token, and CSRF cookie
-names additionally require `allow_sensitive_cookie_mutation=true`.
+## Scan modes and stages
 
-The action requires `allow_cache_side_effects=true`: even isolated tests can
-create cache entries. Cache confidence uses header values rather than header
-presence: positive `Age`, `X-Cache`, `CF-Cache-Status`, `X-Cache-Hits`, or
-`Cache-Status` evidence can establish a hit, while explicit misses,
-`Cache-Control: no-store/private`, and `Vary: *` cannot upgrade a
-mutation-only result to firm. Exact marker persistence remains independent
-positive evidence.
+`scan_mode` defaults to `full`.
 
-Broad scans can produce more than a thousand observations. CacheAnalyzer uses
-a bounded 10-second JavaScript-stage budget because HuntProxy must parse the
-complete observation set before analysis; the global 2-second default is too
-short for broad supported scans. Network execution remains bounded by the
-separate action timeout and 2,000-operation limit.
+- `light` directly confirms a short, high-yield set of forwarding, host,
+  rewrite, and method headers plus the common forwarded-host/scheme
+  combination. It does not load the long-tail header wordlist.
+- `full` screens every eligible entry from the
+  bundled header and parameter resources in bounded, independently marked
+  groups. Copy `result.follow_up` into the next scan. The returned sequence is
+  normally `discover -> screen -> confirm -> advanced`.
 
-The poisoning matrix also tests a bounded `X-Forwarded-Host` plus
-`X-Forwarded-Scheme` pair. Supply additional two-to-four-header sets through
-`header_combinations`; every set receives its own isolated cache key.
-Explicit header templates are evaluated before built-in and bundled candidates,
-matching the existing explicit-before-resource order for cookie candidates.
-For a fixed `Header~value` template, the exact supplied value becomes the
-persistence marker; `%s` templates continue to use the generated run marker.
+When the saved response references passive same-origin script or stylesheet
+resources, the bounded `discover` phase profiles the saved URL plus up to 12
+host-resolved targets. It requires a stable, nonempty 2xx response and an
+explicit cache HIT. Two distinct query keys establish isolation; exact-URL fallback is
+available only with `allow_shared_cache_key_tests=true`. Full carries at most
+three eligible targets through the staged queue, while Light selects one. This
+lets an uncacheable HTML shell lead the scan to a cacheable referenced
+endpoint without automatically GETting flat application routes such as logout
+or admin actions. Cross-origin and sensitive signed URLs are excluded by the
+host. Supplying `target_url` explicitly skips automatic discovery. When no
+cacheable target is proven, discovery returns `no_cacheable_target_found` and
+does not spend the broad probing budget.
 
-Advanced request-shape oracles are opt-in. `parameter_cloaking` describes a
-carrier, nested target, and delimiter; `fat_get_parameters` sends harmless form
-markers in GET bodies. `full_query_oracle` deliberately compares a marked query
-with the query-free URL and therefore additionally requires
-`allow_shared_cache_key_tests=true`.
-Literal cloaking delimiters remain literal on the wire; encoded delimiter
-choices remain encoded so callers can test both parser behaviors explicitly.
+A screen page that cannot fit under the 2,000-operation limit returns another
+screen follow-up with `screen_cursor` and accumulated candidates. Coverage is
+never implied: every result reports generated, tested, deferred, and skipped
+counts. Header values are type-aware (hostnames, IP addresses, schemes, ports,
+paths, and methods) instead of sending one malformed value everywhere.
 
-Use `oracle_families` to run only named poisoning families, such as
-`["full-query"]`; omit it to preserve the broad default scan. Confirmed
-full-query collisions are persisted with the `full-query` subtype.
-Its controls use a distinct path so they cannot pre-fill the shared query-free
-cache key before the poison request. Cloaking and fat-GET controls use the same
-isolation because cache parsers may ignore ordinary query busters. Full-query, cookie, cloaking, and fat-GET
-findings require the unique poison marker to persist; response-difference
-fallbacks are limited to header/query probes with comparable control URLs.
-Those comparable probes first request a separately cache-busted clean URL,
-then require the poison response and two clean requests to reproduce a change
-that was absent before poisoning. The pre-poison control never fills the key
-under test when the cache keys the buster as intended; if the cache ignores the
-buster, the control can prefill the entry and cause a false negative. Whole
-probe groups are capped to the manifest's 2,000-operation limit, so a scan is
-never truncated in the middle of a confirmation sequence.
-When merely saving the target request would fill a shared cache key, save any
-harmless request on the same origin and pass the untouched endpoint through
-`target_url`; cross-origin overrides are rejected.
-For targets that stay warm, opt into bounded `poison_attempts` and
-`poison_interval_ms`. Retries run sequentially before clean confirmation, and
-the finding cites the retry whose response carries the unique marker. Defaults
-remain one attempt and no extra delay.
-Strict caches may reject any added query buster. In that case,
-`shared_header_cache_key_oracle=true` preserves the exact target URL, isolates
-the controls on another path, requires `allow_shared_cache_key_tests=true`, and
-accepts only persisted-marker evidence.
+The confirm stage sends each attributed header or query parameter separately.
+The advanced follow-up covers header combinations, non-sensitive cookies,
+fat GET, parameter cloaking, full-query behavior, URL normalization, and
+deception. It does not repeat the direct query probes already completed by
+confirmation. Automatic cloaking uses bounded confirmed or screen-reflected
+parameters as carriers with common or endpoint-derived targets; exact marker
+persistence still gates findings. Fat-GET
+also tests bounded parameter names that screening observed as reflected,
+because a keyed query parameter can still be unkeyed in a GET body.
 
-Deception mode covers appended static suffixes plus both sides of encoded path
-normalization: static-prefix traversal toward the private path, and private
-path plus a delimiter/traversal toward a static directory or exact cached
-filename. Candidate directories, filenames, and delimiters stay bounded and
-caller-configurable.
+Full-query and URL-normalization probes can touch a shared cache key and remain
+disabled unless `allow_shared_cache_key_tests=true`. The same acknowledgement
+is required by `shared_header_cache_key_oracle=true`, which is intended for
+strict caches that reject query cache busters. Parameter-cloaking probes also
+use the profiled isolated `hp_cache_bust` key in addition to the candidate
+carrier, preventing them from warming or colliding with the original public
+entry. Their poison requests also request bounded `Cache-Control: no-cache`
+revalidation and still reject a pre-existing HIT as proof.
+The full-query poison request asks the cache to revalidate with
+`Cache-Control: no-cache`; a pre-existing HIT is still rejected as proof.
 
-`url_normalization_oracle` uses raw HTTP/1 to poison two unique paths containing
-harmless angle-bracket markers, then requests each browser-encoded equivalent
-twice. It requires `allow_shared_cache_key_tests=true` and reports only when
-both independent raw/encoded cache-key collisions reproduce exactly.
+## Evidence discipline
+
+Each stage starts with credentialed and credential-free baselines plus a
+two-key cache profile. The profile primes and repeats two distinct
+`hp_cache_bust` values. `isolation_verified=true` requires key A to repeat as
+a HIT, the first request for key B not to be a HIT, and key B to repeat as a
+HIT. Cache-profile namespaces include the stage and screen cursor, preventing
+earlier follow-ups from warming the later stage's profile keys.
+
+A cache-poisoning finding is created only when all applicable checks pass:
+
+1. The poison response contains the candidate-specific marker.
+2. The marker-bearing poison response is not itself a cache HIT.
+3. Two later clean requests to the exact same tested key contain that marker.
+4. At least one clean response has explicit cache-HIT evidence.
+5. An isolated probe also has a verified two-key cache profile. Explicitly
+   acknowledged shared-key probes use their shared-key proof instead.
+
+Response changes without the exact marker are returned only as bounded
+`inconclusive_mutation_only` diagnostics. Marker persistence without cache or
+isolation proof is also diagnostic and never becomes a persisted finding.
+Marker search covers the complete captured response body and response headers,
+not only the preview.
+Deception equality uses full captured-body hashes or normalized full bodies;
+matching previews alone cannot establish a private-response cache leak.
+
+Cache evidence recognizes positive `Age`, `X-Cache`,
+`CF-Cache-Status`, `X-Cache-Hits`, and `Cache-Status` values while
+distinguishing misses, bypasses, `private`, `no-store`, and `Vary: *`.
+All semantic operations declare either
+`with_project_credentials` or `without_project_credentials`; credential-free
+requests also tombstone Cookie and authorization headers. These labels express
+the requested credential policy, not a claim that credentials were present on
+the saved exchange.
+
+Findings with the same endpoint, proof class, and marker-normalized confirmed
+response fingerprint are merged. The retained finding includes
+`supporting_variants`, `variant_count`, and bounded combined evidence.
+The confirm follow-up also carries bounded root-cause identifiers into the
+advanced stage, so an equivalent combination or advanced probe is suppressed
+instead of being persisted as a second finding.
+
+Coverage counts use `coverage_unit=candidate_inputs`; they are intentionally
+different from network operation counts because screen requests batch multiple
+candidates. Bounded diagnostic arrays include total and truncation fields.
+
+## Operational notes
+
+Operations execute sequentially because each poison/clean/confirm sequence is
+order-sensitive. Network execution is capped at 2,000 operations and 15
+minutes. Aggregation has a separate bounded 10-second JavaScript budget for
+large captured bodies. Retry scheduling also caps cumulative planned delay at
+10 minutes and reduces the selected variant count when necessary. The saved
+base exchange must use GET or HEAD; the plugin does not replay state-changing
+methods as part of cache discovery.
+
+Use a harmless saved exchange on the same origin and pass `target_url` when
+saving the target itself would warm a shared key. Cross-origin overrides are
+rejected. Sensitive authentication/session cookie names still require an
+explicit name and `allow_sensitive_cookie_mutation=true`.

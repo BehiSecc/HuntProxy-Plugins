@@ -132,7 +132,6 @@
         if (anonymousAllowed) findings.push({
           title: "Possible unauthenticated authorization exposure", severity: "high", confidence: "firm",
           explanation: "The caller identified this request shape as expected to be protected, but two anonymous requests reproducibly received an allowed response. Any caller-supplied anonymous session context was preserved without inheriting base credentials.",
-          remediation: "Require authentication and authorize the requested object or action before returning protected content.",
           evidence_exchange_ids: [anonymous.exchange_id].filter(Boolean),
           metadata: { source_exchange_id: shape.exchange_id, method: shape.method, url: shape.url, mode: "anonymous_audit" }
         });
@@ -153,7 +152,6 @@
           title: "Authorization outcome changes between supplied identities",
           severity: "high", confidence: "firm",
           explanation: "The " + allowedIdentity + " identity received a reproducible allowed response while the other supplied identity was denied. This is a privilege or identity boundary that requires review and is exploitable when the allowed identity is lower-privileged or attacker-controlled.",
-          remediation: "Define the expected privilege of each test identity and enforce authorization for every object and action on the server.",
           evidence_exchange_ids: [primary.exchange_id, secondary.exchange_id].filter(Boolean),
           metadata: { source_exchange_id: shape.exchange_id, method: shape.method, url: shape.url, allowed_identity: allowedIdentity, primary_status: primary.status_code, secondary_status: secondary.status_code }
         });
@@ -163,7 +161,6 @@
           title: "Possible cross-user authorization exposure",
           severity: "high", confidence: anonymous ? "firm" : "tentative",
           explanation: "The request shape returned the same reproducible allowed response for two distinct identities while the anonymous control was denied or materially different.",
-          remediation: "Authorize every object and action against the authenticated principal, not only against possession of a valid session.",
           evidence_exchange_ids: [primary.exchange_id, secondary.exchange_id, anonymous && anonymous.exchange_id].filter(Boolean),
           metadata: { source_exchange_id: shape.exchange_id, method: shape.method, url: shape.url }
         });
@@ -173,7 +170,6 @@
           title: "Possible unauthenticated authorization exposure",
           severity: "high", confidence: "firm",
           explanation: "The anonymous control reproduced the authenticated response across repeated requests.",
-          remediation: "Require authentication and authorize the requested object or action before returning protected content.",
           evidence_exchange_ids: [primary.exchange_id, anonymous.exchange_id].filter(Boolean),
           metadata: { source_exchange_id: shape.exchange_id, method: shape.method, url: shape.url }
         });

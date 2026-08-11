@@ -199,7 +199,6 @@
               severity: "info",
               confidence: baselineUnstable ? "tentative" : "firm",
               explanation: "Adding the parameter produced a repeatable response change relative to two control requests.",
-              remediation: "Determine whether this unlinked input changes security-sensitive behavior or cache keys.",
               evidence_exchange_ids: [baseline.exchange_id, first.exchange_id, repeat.exchange_id].filter(Boolean),
               metadata: { location: location, parameter: word }
             });
@@ -218,7 +217,6 @@
               title: "Unkeyed cache " + location + " parameter: " + word,
               severity: "medium", confidence: "firm",
               explanation: "A unique value supplied through this parameter persisted into a clean request with the same isolated cache key in two independent trials.",
-              remediation: "Include security-relevant inputs in the cache key, strip unsupported inputs before caching, and avoid reflecting unkeyed values in cacheable responses.",
               evidence_exchange_ids: cacheEvidence,
               metadata: { location: location, parameter: word, signal: "poison_clean_persistence" }
             });

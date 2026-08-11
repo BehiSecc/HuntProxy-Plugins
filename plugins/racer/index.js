@@ -288,7 +288,6 @@
         severity: "high",
         confidence: "firm",
         explanation: "Multiple synchronized attempts satisfied a private post-race comparison between independently fetched artifacts. Extracted values remained inside the host and were not returned to the plugin.",
-        remediation: "Use cryptographically random per-operation values and avoid deriving security tokens solely from coarse timestamps or shared mutable state.",
         evidence_exchange_ids: evidence(timeSensitiveEvidence.filter(Boolean)),
         metadata: { pattern: "time_sensitive", technique: input.technique || "last_byte_sync", anomalous_attempts: timeSensitiveAttempts, private_validation: true }
       });
@@ -298,7 +297,6 @@
         severity: "medium",
         confidence: "tentative",
         explanation: "One synchronized attempt satisfied the private post-race artifact comparison, but it did not repeat enough times for firm confirmation.",
-        remediation: "Use cryptographically random per-operation values and repeat a bounded confirmation with fresh state.",
         evidence_exchange_ids: evidence(timeSensitiveEvidence.filter(Boolean)),
         metadata: { pattern: "time_sensitive", technique: input.technique || "last_byte_sync", anomalous_attempts: timeSensitiveAttempts, private_validation: true }
       });
@@ -308,7 +306,6 @@
         severity: "high",
         confidence: "firm",
         explanation: "More responses matched the declared semantic success condition than the allowed maximum in multiple synchronized attempts" + (input.validation_requests ? ", and post-race validation confirmed the resulting state." : "."),
-        remediation: "Make the state transition atomic and enforce the invariant in one transaction or serialized critical section.",
         evidence_exchange_ids: evidence((control ? [control] : []).concat(anomalous, supporting.filter(Boolean))),
         metadata: { pattern: input.pattern || "limit_overrun", technique: input.technique || "last_byte_sync", anomalous_attempts: anomalous.length, expected_max_successes: maximum, control_mode: controlMode }
       });
@@ -318,7 +315,6 @@
         severity: "medium",
         confidence: "tentative",
         explanation: "A synchronized attempt exceeded the declared semantic success maximum, but the result did not repeat enough times for firm confirmation.",
-        remediation: "Make the state transition atomic and rerun bounded confirmation with fresh per-attempt state.",
         evidence_exchange_ids: evidence(anomalous.concat(supporting.filter(Boolean))),
         metadata: { pattern: input.pattern || "limit_overrun", technique: input.technique || "last_byte_sync", anomalous_attempts: anomalous.length, expected_max_successes: maximum, control_mode: controlMode }
       });
@@ -328,7 +324,6 @@
         severity: "medium",
         confidence: "tentative",
         explanation: "Multiple synchronized attempts produced response states not observed in the sequential control. Manual state validation is required.",
-        remediation: "Review the affected state machine for non-atomic transitions, partial construction, and stale precondition checks.",
         evidence_exchange_ids: evidence([control].concat(novel)),
         metadata: { pattern: input.pattern || "multi_endpoint", technique: input.technique || "last_byte_sync", anomalous_attempts: novel.length, control_mode: controlMode }
       });

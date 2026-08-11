@@ -13,6 +13,7 @@ const CAPABILITIES = new Set([
   "http.raw",
   "http.race",
   "identity.use",
+  "page.discover",
   "aws.api_gateway",
 ]);
 const TOP_LEVEL_FIELDS = new Set([

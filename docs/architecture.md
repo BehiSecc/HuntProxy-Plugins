@@ -60,5 +60,5 @@ and use [Plugin API v1](plugin-api-v1.md) as the contract reference.
 
 Actions ultimately return a job ID. Completed jobs expose progress, errors,
 generated exchange IDs, and zero or more findings. A finding should contain a
-title, severity, confidence, explanation, remediation, and evidence exchange
-IDs. A negative result is not a finding.
+title, severity, confidence, explanation, and evidence exchange IDs. A
+negative result is not a finding.

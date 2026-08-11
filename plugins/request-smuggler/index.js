@@ -375,13 +375,11 @@
       if (confirmed) findings.push({
         title: "Confirmed " + (h2Mode ? "HTTP/2 downgrade/tunnelling" : "HTTP/1 request desynchronization") + ": " + technique.name, severity: technique.mode==="h2_header_injection"?"medium":"high", confidence: "firm",
         explanation: (technique.mode === "h2_tunnel" ? "A nested or directly routed canary response was reproducibly exposed by the HTTP/2 tunnelling probe" : technique.mode==="h2_header_injection"?"The malformed HTTP/2 header name reproducibly changed the downstream response":"A harmless marker request was reproducibly parsed out of the ambiguous pipeline") + " in " + contaminated + " of " + repeats + " attempts, while every standalone control remained clean.",
-        remediation: "Reject ambiguous framing at the first hop, normalize Transfer-Encoding and Content-Length consistently across every hop, and close connections after parser errors.",
         evidence_exchange_ids: evidence(baseDirect.concat(canaryDirect, controls, probes, victims, recoveries, observers)), metadata: { family: technique.family, polarity: technique.polarity, signal: "marker_contamination", confirmations: contaminated, attempts: repeats }
       });
       else if (unstableMarker) findings.push({
         title: (h2Mode ? "HTTP/2 downgrade" : "HTTP/1 framing") + " discrepancy candidate: " + technique.name, severity: "medium", confidence: "tentative",
         explanation: "The exact canary response appeared downstream after an ambiguous probe in " + contaminated + " of " + repeats + " attempts. This pool-dependent marker signal did not reach the configured firm quorum and is retained as unstable evidence.",
-        remediation: "Review every HTTP hop for inconsistent framing rules and validate on an isolated connection before treating this as exploitable.",
         evidence_exchange_ids: evidence(controls.concat(probes,victims,recoveries,observers)), metadata: { family: technique.family, polarity: technique.polarity, signal: "marker_contamination_unstable", confirmations: contaminated, attempts: repeats }
       });
     });

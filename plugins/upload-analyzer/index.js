@@ -178,7 +178,6 @@
         findings.push({
           title: "Upload filename restriction bypass using " + variant.name, severity: "high", confidence: score >= 0.9 ? "firm" : "tentative",
           explanation: "The direct prohibited-extension control was rejected, while this inert filename-normalization variant was accepted reproducibly with an outcome consistent with the allowed control.",
-          remediation: "Decode and normalize filenames once, generate server-side names, apply an extension allowlist after normalization, and store uploads outside the web root.",
           evidence_exchange_ids: [allowed.exchange_id, prohibited.exchange_id, result.exchange_id].filter(Boolean),
           metadata: { variant: variant.name, role: variant.role, marker: marker(input), prohibited_extension: extension(input, "prohibited_extension", "php"), allowed_similarity: Math.round(score * 1000) / 1000 }
         });
@@ -187,7 +186,6 @@
         findings.push({
           title: "Potential upload path traversal using " + variant.name, severity: "high", confidence: "tentative",
           explanation: "The upload response reproducibly reflected a decoded parent-directory filename. This is evidence of unsafe filename handling, but without read-back it does not prove that storage resolved outside the intended upload directory.",
-          remediation: "Discard client path components, decode once, generate server-side filenames, enforce the resolved storage root, and keep uploads outside the web root.",
           evidence_exchange_ids: [result.exchange_id].filter(Boolean),
           metadata: { variant: variant.name, role: variant.role, marker: marker(input), reflected_parent_path: true, storage_escape_unverified: true }
         });
@@ -196,7 +194,6 @@
         findings.push({
           title: "Upload content validation accepted " + variant.name, severity: "medium", confidence: score >= 0.9 ? "firm" : "tentative",
           explanation: "The caller asserted that content validation is expected, but this inert declared-type or signature mismatch was accepted reproducibly.",
-          remediation: "Validate decoded file bytes against the permitted format and serve stored objects with safe content headers.",
           evidence_exchange_ids: [allowed.exchange_id, result.exchange_id].filter(Boolean), metadata: { variant: variant.name, role: variant.role, marker: marker(input) }
         });
       }
@@ -204,7 +201,6 @@
     if (allowedAccepted && prohibitedAccepted) findings.push({
       title: "Direct prohibited upload extension accepted", severity: "medium", confidence: similarity(allowed, prohibited) >= 0.9 ? "firm" : "tentative",
       explanation: "The caller-designated prohibited extension was accepted directly with inert text content. This indicates a missing or ineffective filename-extension restriction, but does not prove executability or public retrieval.",
-      remediation: "Apply a normalized extension allowlist, generate server-side filenames, and store uploads outside the web root.",
       evidence_exchange_ids: [allowed.exchange_id, prohibited.exchange_id].filter(Boolean), metadata: { variant: "control-prohibited-extension", marker: marker(input), prohibited_extension: extension(input, "prohibited_extension", "php") }
     });
     var chainResult=null;
@@ -216,7 +212,6 @@
       if(configured&&payloadAccepted&&markerReturned&&mimeApplied) findings.push({
         title:"Upload server configuration chain applied to inert file",severity:"high",confidence:"firm",
         explanation:"The server accepted a directory configuration file, then served an inert alternate-extension upload twice with the unique configured MIME type. This proves the bounded configuration chain without uploading executable content.",
-        remediation:"Reject server configuration filenames, store uploads outside interpreted directories, disable per-directory overrides, and generate server-side filenames.",
         evidence_exchange_ids:[configPair.exchange_id,payloadPair.exchange_id,readbackPair.exchange_id].filter(Boolean),
         metadata:{variant:"server-config-chain",role:"multi-stage",marker:marker(input),extension:workflow.extension,executable_payload:false}
       });

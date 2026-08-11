@@ -244,7 +244,7 @@
   }
   function analyze(input, observations, context) {
     var jwt = parsed(input, context), map = byId(observations), findings = [], baseId = context.base_exchange.exchange_id, now = Math.floor(Date.now() / 1000);
-    function passive(title, severity, explanation) { findings.push({ title: title, severity: severity, confidence: "firm", explanation: explanation, remediation: "Issue short-lived tokens with explicit validation policy and verify algorithm, signature, claims, and trusted key sources server-side.", evidence_exchange_ids: [baseId] }); }
+    function passive(title, severity, explanation) { findings.push({ title: title, severity: severity, confidence: "firm", explanation: explanation, evidence_exchange_ids: [baseId] }); }
     if (String(jwt.header.alg || "").toLowerCase() === "none") passive("JWT uses the none algorithm", "high", "The captured token declares alg=none and therefore carries no cryptographic authentication.");
     if (jwt.payload.exp === undefined) passive("JWT has no expiration claim", "low", "The captured token does not contain an exp claim.");
     else if (Number(jwt.payload.exp) < now) passive("Captured JWT is expired", "informational", "The captured token expiration is in the past; acceptance would indicate missing claim validation.");
@@ -258,7 +258,6 @@
       if (accepted && ((explicitOracle && oracleAccepted && negativeControl) || (!explicitOracle && accepted.status_code >= 200 && accepted.status_code < 400 && same(baseline, accepted, input)))) findings.push({
         title: "JWT validation bypass using " + variant.name.replace(/_/g, " "), severity: "high", confidence: "firm",
         explanation: explicitOracle ? "A specialist JWT mutation matched the explicit success oracle twice while the repeated original-token controls did not." : "A deliberately invalid JWT mutation reproduced the authenticated baseline response twice.",
-        remediation: "Reject altered tokens and enforce an allowlisted algorithm, valid signature, expiration, and trusted key-selection metadata.",
         evidence_exchange_ids: [baseline.exchange_id, accepted.exchange_id].filter(Boolean), metadata: { variant: variant.name, explicit_success_oracle: explicitOracle }
       });
     });

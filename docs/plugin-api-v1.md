@@ -44,6 +44,7 @@ bounded, and safety-sensitive values inside `plan()` too.
 |---|---|
 | `http.semantic` | `http_request` and `http_workflow` |
 | `http.raw` | `raw_http1`, `raw_http1_group`, and `raw_http2`; also exposes bounded raw base-request context |
+| `page.discover` | Bounded static endpoint/URL discovery from the stored base response |
 | `http.race` | `race_group` |
 | `identity.use` | Bounded unredacted base request headers/body for identity-aware comparisons |
 | `aws.api_gateway` | Specialized host-managed IpRotate Gateway operations |
@@ -116,6 +117,12 @@ With `identity.use`, it also contains `identity.request_headers` as base64
 values and a bounded `identity.request_body_base64`. With `http.raw`, it gains
 `raw_request_base64` plus `raw_request_reconstructed`, or
 `raw_request_omitted: true` when unavailable.
+With `page.discover`, it also contains `page_discovery` with the saved source
+URL and a bounded `targets` list of host-resolved, same-origin passive resource
+URLs extracted from the decoded stored response, plus total/truncation fields.
+Emails, flat application routes, cross-origin references, userinfo, fragments,
+and sensitive signed-query candidates are excluded. Discovery is passive;
+plugins must still deliberately request each candidate.
 
 If `input.exchange_ids` is an integer array, the host loads bounded
 `related_exchanges` containing `exchange_id`, `method`, `url`, and
@@ -340,7 +347,7 @@ Return JSON such as:
 At most 1,000 findings may be returned. A persisted finding requires `title`
 and a nonempty `evidence_exchange_ids` array referencing exchanges saved in
 the same project. Recommended fields are `severity`, `confidence`,
-`explanation`, `remediation`, and bounded non-secret `metadata`.
+`explanation`, and bounded non-secret `metadata`.
 
 HuntProxy redacts known base-request secrets and sensitive output keys, but a
 plugin must still avoid copying secrets or private extracts into any output.

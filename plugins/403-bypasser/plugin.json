@@ -2,11 +2,11 @@
   "schema_version": 1,
   "id": "403-bypasser",
   "name": "403Bypasser",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Test denied endpoints with safe path, method, forwarding-header, host, and encoding variants.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "17b81e57a0097d9ca0a6fc324db1379768f854d31585aa9f63aa721ec2980dd8",
+  "entrypoint_sha256": "74e46871a01c4652adeabb4e6ab1a56ed997dcd1581026eb6362104e3e8ea8b6",
   "capabilities": ["http.semantic", "identity.use"],
   "limits": { "timeout_ms": 300000, "max_operations": 500, "max_concurrency": 6, "memory_mb": 32 },
   "actions": [{

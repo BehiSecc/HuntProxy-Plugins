@@ -167,7 +167,6 @@
           severity: stronglyConfirmed && firstBase.status_code !== 404 ? "high" : "medium",
           confidence: stronglyConfirmed && baselineStable ? "firm" : "tentative",
           explanation: rootCarrier ? "A denied control became a reproducible allowed response that differs from the ordinary benign carrier response." : pathOnly && !stronglyConfirmed ? "A path mutation became reproducibly allowed, but no success marker was supplied to prove it reached the protected resource." : "A denied control became an allowed response and the result was reproduced on the same protected path.",
-          remediation: "Normalize paths and forwarding headers before authorization, and enforce access control after routing.",
           evidence_exchange_ids: [firstBase.exchange_id, secondBase.exchange_id, first.exchange_id, repeat.exchange_id].filter(Boolean),
           metadata: { variant: variant.name, baseline_status: firstBase.status_code, bypass_status: first.status_code }
         });

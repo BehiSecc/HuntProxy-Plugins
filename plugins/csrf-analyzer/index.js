@@ -317,7 +317,6 @@
         severity: mutation.kind === "content-type" || mutation.kind === "method" ? "medium" : "high",
         confidence: score >= 0.9 ? "firm" : "tentative",
         explanation: "The state-changing request remained reproducibly successful after an isolated " + mutation.kind + " control, with a response semantically consistent with the successful baseline.",
-        remediation: "Require an unpredictable session-bound CSRF token and validate Origin and Referer independently for every state-changing request; reject alternate methods, duplicate tokens, and unsupported content types.",
         evidence_exchange_ids: [baseline.exchange_id, result.exchange_id].filter(Boolean),
         metadata: { mutation: mutation.name, kind: mutation.kind, baseline_similarity: Math.round(score * 1000) / 1000 }
       });

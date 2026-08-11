@@ -142,267 +142,320 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
 {
   const plugin = await load("cache-analyzer");
   const cacheManifest = JSON.parse(await readFile(new URL("cache-analyzer/plugin.json", root), "utf8"));
-  assert.equal(cacheManifest.limits.js_stage_timeout_ms, 10000, "broad CacheAnalyzer aggregation has a bounded QuickJS budget");
+  const headerResource = await readFile(new URL("cache-analyzer/resources/headers", root), "utf8");
+  const cookieResource = await readFile(new URL("cache-analyzer/resources/cookies", root), "utf8");
+  const parameterResource = await readFile(new URL("cache-analyzer/resources/parameters", root), "utf8");
   const responseHeader = (name, value) => ({ name, value_base64: Buffer.from(value).toString("base64") });
-  const input = { marker: "a1b2c3d4e5", allow_cache_side_effects: true, use_header_wordlist: false, max_header_candidates: 4, max_poison_variants: 4, max_deception_variants: 4 };
-  const plan = plugin.plan(input, context("https://example.test/account"));
-  assert.ok(plan.operations.length <= 50);
-  assert.notEqual(plan.operations.find((op) => op.id === "poison-0").url, plan.operations.find((op) => op.id === "poison-1").url, "each poison candidate gets an isolated cache key");
-  const observations = plan.operations.map((op) => {
-    const baseAnonymous = op.id === "baseline-anon";
-    const deceptive = op.id.startsWith("deception-");
-    return observation(op, 200, baseAnonymous ? "anon" : "private", baseAnonymous ? "anonymous" : deceptive ? "private account" : "normal");
+  const hitHeaders = [responseHeader("X-Cache", "HIT"), responseHeader("Age", "3")];
+  const cacheContext = context("https://example.test/account");
+  cacheContext.resources = { headers: headerResource, cookies: cookieResource, parameters: parameterResource };
+
+  assert.equal(cacheManifest.version, "0.14.0");
+  assert.equal(cacheManifest.limits.js_stage_timeout_ms, 10000);
+  assert.equal(cacheManifest.actions[0].input_schema.properties.scan_mode.default, "full");
+
+  const fullInput = { marker: "fullstage123", allow_cache_side_effects: true, modes: ["poisoning"], header_bucket_size: 8 };
+  const discoveryContext = context("https://example.test/");
+  discoveryContext.resources = cacheContext.resources;
+  discoveryContext.base_exchange.page_discovery = { targets: ["https://example.test/resources/js/geolocate.js"] };
+  const discoveryInput = { ...fullInput, allow_shared_cache_key_tests: true };
+  const discoveryPlan = plugin.plan(discoveryInput, discoveryContext);
+  assert.equal(discoveryPlan.result.phase, "discover");
+  assert.equal(discoveryPlan.operations.length, 12, "discovery verifies two isolated keys plus exact mode for the saved page and one same-origin asset");
+  assert.ok(discoveryPlan.operations.every((op) => op.credential_mode === "without_project_credentials"));
+  const discoveryObservations = discoveryPlan.operations.map((op) => {
+    const asset = /geolocate\.js/.test(op.url), repeat = /-repeat-/.test(op.id);
+    const item = observation(op, 200, asset ? "asset" : "page", asset ? "cacheable asset" : "uncacheable page");
+    item.response_headers = [responseHeader("X-Cache", asset && repeat ? "HIT" : "MISS")];
+    return item;
   });
-  for (const item of observations.filter((item) => ["poison-0", "poison-clean-0", "poison-confirm-0"].includes(item.id))) {
-    item.response_body_hash = "poisoned"; item.response_preview.text = "hpa1b2c3d4e5";
+  const discoveryResult = plugin.analyze(discoveryInput, discoveryObservations, discoveryContext);
+  assert.equal(discoveryResult.findings.length, 0);
+  assert.equal(discoveryResult.result.discovery_targets.find((target) => target.selected).url, "https://example.test/resources/js/geolocate.js");
+  assert.equal(discoveryResult.result.follow_up.phase, "screen");
+  assert.equal(discoveryResult.result.follow_up.target_url, "https://example.test/resources/js/geolocate.js");
+  assert.equal(plugin.plan(discoveryResult.result.follow_up, discoveryContext).result.phase, "screen");
+  const exactOnlyDiscovery = discoveryObservations.map((item) => ({ ...item, response_headers: item.response_headers.slice() }));
+  exactOnlyDiscovery.find((item) => item.id === "discover-isolated-b-prime-1").response_headers = hitHeaders;
+  const exactOnlyResult = plugin.analyze(discoveryInput, exactOnlyDiscovery, discoveryContext);
+  assert.equal(exactOnlyResult.result.follow_up.target_key_mode, "shared");
+  assert.equal(exactOnlyResult.result.follow_up.shared_header_cache_key_oracle, true, "exact-only targets propagate shared-key safety mode");
+  const noCacheDiscovery = discoveryObservations.map((item) => ({ ...item, response_headers: [responseHeader("X-Cache", "MISS")] }));
+  const noCacheResult = plugin.analyze(discoveryInput, noCacheDiscovery, discoveryContext);
+  assert.equal(noCacheResult.result.follow_up, null);
+  assert.equal(noCacheResult.result.selection_reason, "no_cacheable_target_found", "discovery stops before broad probing when no usable cacheable target is proven");
+  const lightDiscovery = plugin.analyze({ ...discoveryInput, scan_mode: "light" }, discoveryObservations, discoveryContext);
+  assert.equal(lightDiscovery.result.follow_up.phase, "confirm", "Light also switches to a discovered cacheable target before high-yield confirmation");
+
+  const screenPlan = plugin.plan(fullInput, cacheContext);
+  assert.equal(screenPlan.result.scan_mode, "full");
+  assert.equal(screenPlan.result.phase, "screen");
+  assert.equal(plugin.plan({ ...fullInput, marker: "hpfullstage123" }, cacheContext).result.marker, "hpfullstage123", "already namespaced markers are not double-prefixed");
+  assert.ok(screenPlan.operations.length < 2000);
+  assert.equal(screenPlan.result.coverage.headers.generated, screenPlan.result.coverage.headers.tested, "all eligible bundled headers are screened rather than silently truncated");
+  assert.ok(screenPlan.result.coverage.headers.generated > 2500, "Full consumes the complete bundled header source");
+  assert.deepEqual(Array.from(screenPlan.operations.slice(0, 8), (op) => op.id), [
+    "baseline-with-project-credentials-1", "baseline-with-project-credentials-2",
+    "baseline-without-project-credentials-1", "baseline-without-project-credentials-2",
+    "cache-profile-a-prime", "cache-profile-a-repeat", "cache-profile-b-prime", "cache-profile-b-repeat",
+  ]);
+  assert.ok(screenPlan.operations.find((op) => op.id === "baseline-without-project-credentials-1").header_tombstones.includes("Authorization"));
+
+  const firstScreen = screenPlan.operations.find((op) => op.id === "screen-headers-poison-0");
+  const forwardedFor = firstScreen.headers.find((header) => header.name.toLowerCase() === "x-forwarded-for");
+  const forwardedHost = firstScreen.headers.find((header) => header.name.toLowerCase() === "x-forwarded-host");
+  const forwardedProto = firstScreen.headers.find((header) => header.name.toLowerCase() === "x-forwarded-proto");
+  assert.match(forwardedFor.value, /^2001:db8::[0-9a-f]+$/i, "IP forwarding headers receive a typed documentation address");
+  assert.match(forwardedHost.value, /\.invalid$/, "host headers receive a syntactically valid harmless host");
+  assert.equal(forwardedProto.value, "http", "scheme headers receive a typed value");
+
+  const screenObservations = screenPlan.operations.map((op) => observation(op, 200, "stable", "ordinary preview"));
+  for (const id of ["cache-profile-a-prime", "cache-profile-a-repeat", "cache-profile-b-prime", "cache-profile-b-repeat"]) {
+    const item = screenObservations.find((entry) => entry.id === id);
+    item.response_preview.text = "stable profile";
+    if (id.endsWith("repeat")) item.response_headers = hitHeaders;
   }
-  const result = plugin.analyze(input, observations, context("https://example.test/account"));
-  assert.ok(result.findings.some((finding) => /cache poisoning/i.test(finding.title)));
-  assert.ok(result.findings.some((finding) => /cache deception/i.test(finding.title)));
-
-  const combinationInput = { marker: "multi12345", allow_cache_side_effects: true, modes: ["poisoning"], use_header_wordlist: false, max_header_candidates: 1, max_poison_variants: 1 };
-  const combinationPlan = plugin.plan(combinationInput, context());
-  const combinationPoison = combinationPlan.operations.find((op) => op.id === "poison-0");
-  assert.deepEqual(Array.from(combinationPoison.headers, (header) => header.name), ["X-Forwarded-Host", "X-Forwarded-Scheme"]);
-  assert.ok(combinationPoison.headers[0].value.includes("hpmulti12345m0"));
-  const customCombination = plugin.plan({ ...combinationInput, header_combinations: [["X-Host~%s.invalid", "X-Forwarded-Proto~http"]] }, context()).operations.find((op) => op.id === "poison-0");
-  assert.deepEqual(Array.from(customCombination.headers, (header) => header.name), ["X-Host", "X-Forwarded-Proto"]);
-
-  assert.throws(() => plugin.plan({ ...combinationInput, full_query_oracle: true }, context()), /allow_shared_cache_key_tests/);
-  assert.throws(() => plugin.plan({ ...combinationInput, shared_header_cache_key_oracle: true }, context()), /allow_shared_cache_key_tests/);
-  const strictHeaderInput = { ...combinationInput, oracle_families: ["headers"], shared_header_cache_key_oracle: true, allow_shared_cache_key_tests: true, max_poison_variants: 1 };
-  const strictHeaderPlan = plugin.plan(strictHeaderInput, context("https://example.test/js/geolocate.js?callback=clean"));
-  assert.equal(strictHeaderPlan.operations.find((op) => op.id === "poison-0").url, "https://example.test/js/geolocate.js?callback=clean", "strict header oracle preserves the target query exactly");
-  assert.ok(strictHeaderPlan.operations.find((op) => op.id === "baseline-auth").url.includes("/.huntproxy-control-"), "strict header controls cannot pre-fill the shared target key");
-  const strictNegative = strictHeaderPlan.operations.map((op) => observation(op, 200, op.id.startsWith("poison-") ? "shared-target" : "isolated-control", op.id.startsWith("poison-") ? "ordinary cached target" : "different control path"));
-  assert.equal(plugin.analyze(strictHeaderInput, strictNegative, context("https://example.test/js/geolocate.js?callback=clean")).findings.length, 0, "shared header-key proof cannot use incomparable mutation fallback");
-  const explicitHeaderPlan = plugin.plan({ ...strictHeaderInput, headers: ["X-Forwarded-Host~%s.example.com"] }, context("https://example.test/"));
-  assert.match(explicitHeaderPlan.operations.find((op) => op.id === "poison-0").headers[0].value, /^hpmulti12345h0\.example\.com$/, "explicit header templates take priority over built-in fallback values");
-  const fixedHeaderInput = { ...strictHeaderInput, headers: ["X-Forwarded-Host~unique.exploit-server.test"] };
-  const fixedHeaderPlan = plugin.plan(fixedHeaderInput, context("https://example.test/"));
-  const fixedHeaderObservations = fixedHeaderPlan.operations.map((op) => observation(op, 200, "fixed", op.id.startsWith("poison-") ? "data.host=unique.exploit-server.test" : "ordinary"));
-  assert.ok(plugin.analyze(fixedHeaderInput, fixedHeaderObservations, context("https://example.test/")).findings.some((finding) => finding.metadata.variant === "header:x-forwarded-host"), "fixed caller header value is used as the persistence marker");
-  const fullQueryOnlyInput = { ...combinationInput, oracle_families: ["full-query"], full_query_oracle: true, allow_shared_cache_key_tests: true, max_poison_variants: 1 };
-  const fullQueryOnlyPlan = plugin.plan(fullQueryOnlyInput, context());
-  assert.equal(fullQueryOnlyPlan.operations.length, 5, "full-query-only scan has two controls and one poison/clean/confirm triple");
-  assert.ok(fullQueryOnlyPlan.operations.find((op) => op.id === "baseline-auth").url.includes("/.huntproxy-control-"), "full-query controls cannot pre-fill the tested query-free cache key");
-  assert.equal(fullQueryOnlyPlan.operations.find((op) => op.id === "poison-0").url, "https://example.test/admin?hpmulti12345q0");
-  assert.ok(fullQueryOnlyPlan.operations.every((op) => !op.headers || !op.headers.some((header) => /^x-/i.test(header.name))), "family selection excludes default header probes");
-  const fullQueryOnlyObservations = fullQueryOnlyPlan.operations.map((op) => observation(op, 200, op.id.startsWith("poison-") ? "full-query-collision" : "ordinary-control", op.id.startsWith("poison-") ? "canonical hpmulti12345q0" : "ordinary page"));
-  const fullQueryFinding = plugin.analyze(fullQueryOnlyInput, fullQueryOnlyObservations, context()).findings.find((finding) => finding.metadata.subtype === "full-query");
-  assert.ok(fullQueryFinding, "confirmed full-query collision persists a dedicated finding subtype");
-  assert.doesNotMatch(fullQueryFinding.explanation, /pre-poison control/i, "marker-only families do not claim a control that was never planned");
-  assert.equal(Array.from(fullQueryFinding.evidence_exchange_ids).length, 3);
-  const shapeInput = { ...combinationInput, full_query_oracle: true, allow_shared_cache_key_tests: true, parameter_cloaking: [{ carrier: "utm_content", target: "callback", delimiter: ";" }], fat_get_parameters: ["callback"], max_poison_variants: 3 };
-  const shapePlan = plugin.plan(shapeInput, context());
-  assert.ok(shapePlan.operations.find((op) => op.id === "baseline-auth").url.includes("/.huntproxy-control-"), "cloaking and fat-GET controls cannot pre-fill their tested cache key");
-  const cloakingOnlyPlan = plugin.plan({ ...combinationInput, oracle_families: ["parameter-cloaking"], parameter_cloaking: [{ carrier: "utm_content", target: "callback", delimiter: ";" }], max_poison_variants: 1 }, context());
-  assert.equal(cloakingOnlyPlan.operations.length, 5, "cloaking-only planning does not require the full-query acknowledgement");
-  assert.ok(cloakingOnlyPlan.operations.find((op) => op.id === "baseline-auth").url.includes("/.huntproxy-control-"));
-  const overridePlan = plugin.plan({ ...combinationInput, target_url: "https://example.test/js/geolocate.js?callback=clean", oracle_families: ["parameter-cloaking"], parameter_cloaking: [{ carrier: "utm_content", target: "callback", delimiter: ";" }], max_poison_variants: 1 }, context("https://example.test/harmless-baseline"));
-  assert.ok(overridePlan.operations.find((op) => op.id === "poison-0").url.startsWith("https://example.test/js/geolocate.js?callback=clean&"), "same-origin target override leaves the target key untouched until plugin execution");
-  assert.throws(() => plugin.plan({ ...combinationInput, target_url: "https://other.test/" }, context()), /base exchange origin/);
-  const pacedInput = { ...combinationInput, oracle_families: ["parameter-cloaking"], parameter_cloaking: [{ carrier: "utm_content", target: "callback", delimiter: ";" }], max_poison_variants: 1, poison_attempts: 3, poison_interval_ms: 500 };
-  const pacedPlan = plugin.plan(pacedInput, context());
-  assert.equal(pacedPlan.execution, "sequential", "poison retries must finish before clean and confirm even if manifest concurrency changes");
-  assert.equal(pacedPlan.operations.length, 7, "three poison attempts precede clean and confirm after two isolated controls");
-  assert.equal(pacedPlan.operations.find((op) => op.id === "poison-0-retry-1").delay_before_ms, 500);
-  assert.equal(pacedPlan.operations.find((op) => op.id === "poison-0-retry-2").delay_before_ms, 500);
-  const pacedObservations = pacedPlan.operations.map((op) => observation(op, 200, "ordinary", "ordinary"));
-  for (const item of pacedObservations.filter((item) => ["poison-0-retry-1", "poison-clean-0", "poison-confirm-0"].includes(item.id))) item.response_preview.text = "hp multi hpmulti12345p0";
-  const pacedFinding = plugin.analyze(pacedInput, pacedObservations, context()).findings.find((finding) => finding.metadata.variant.startsWith("cloaking:"));
-  assert.equal(pacedFinding.metadata.poison_attempt, 1, "analysis attributes evidence to the marker-bearing poison retry");
-  const shapePoisons = shapePlan.operations.filter((op) => /^poison-\d+$/.test(op.id));
-  assert.ok(shapePoisons.some((op) => op.url === "https://example.test/admin?hpmulti12345q0"), "full-query oracle uses the query-free clean key");
-  assert.ok(shapePoisons.some((op) => /utm_content=hpmulti12345k0;callback=/.test(op.url)), "literal delimiter is preserved on the wire with a shared unique carrier prefix");
-  const cloakingPoison = shapePoisons.find((op) => /utm_content=/.test(op.url));
-  const cloakingIndex = cloakingPoison.id.slice("poison-".length);
-  const cloakingClean = shapePlan.operations.find((op) => op.id === `poison-clean-${cloakingIndex}`);
-  assert.match(cloakingClean.url, /utm_content=hpmulti12345k0$/, "cloaking clean control preserves the poison carrier prefix");
-  const fatGet = shapePoisons.find((op) => op.body_base64);
-  assert.equal(fatGet.method, "GET");
-  assert.match(Buffer.from(fatGet.body_base64, "base64").toString(), /^callback=hpmulti12345f0$/);
-
-  const normalizationPlan = plugin.plan({ marker: "norm12345", allow_cache_side_effects: true, modes: ["deception"], static_extensions: ["js"], path_delimiters: [";"], static_directories: ["resources"], exact_cache_files: ["robots.txt"], normalization_delimiters: ["%23"], max_deception_variants: 10 }, context("https://example.test/my-account"));
-  const normalizationUrls = normalizationPlan.operations.filter((op) => op.id.startsWith("deception-auth-")).map((op) => op.url);
-  assert.ok(normalizationUrls.includes("https://example.test/resources/..%2fmy-account"));
-  assert.ok(normalizationUrls.includes("https://example.test/my-account%23%2f%2e%2e%2fresources"));
-  assert.ok(normalizationUrls.includes("https://example.test/my-account%23%2f%2e%2e%2frobots.txt"));
-
-  const rawNormalizationInput = { marker: "rawnorm123", allow_cache_side_effects: true, allow_shared_cache_key_tests: true, url_normalization_oracle: true, modes: ["poisoning"], use_header_wordlist: false, max_header_candidates: 1, max_header_combinations: 0, max_poison_variants: 1 };
-  const rawNormalizationPlan = plugin.plan(rawNormalizationInput, context());
-  const rawNormalizationOps = rawNormalizationPlan.operations.filter((op) => op.type === "raw_http1");
-  assert.equal(rawNormalizationOps.length, 6);
-  assert.match(Buffer.from(rawNormalizationOps[0].request_base64, "base64").toString(), /^GET \/hp<hprawnorm123n0> HTTP\/1\.1\r\n/);
-  assert.match(Buffer.from(rawNormalizationOps[1].request_base64, "base64").toString(), /^GET \/hp%3Chprawnorm123n0%3E HTTP\/1\.1\r\n/);
-  assert.throws(() => plugin.plan({ ...rawNormalizationInput, allow_shared_cache_key_tests: undefined }, context()), /allow_shared_cache_key_tests/);
-  const rawResponse = (op, path) => ({ id: op.id, raw: { exchange_id: Math.floor(Math.random() * 100000) + 1, response_transcript_base64: Buffer.from(`HTTP/1.1 404 Not Found\r\nX-Cache: hit\r\n\r\nPath ${path}`).toString("base64"), responses: [{ offset: 0, length: 200 }] } });
-  const rawNormalizationObservations = rawNormalizationPlan.operations.map((op) => op.type === "raw_http1" ? rawResponse(op, `<hprawnorm123n${op.id.endsWith("-0") ? 0 : 1}>`) : observation(op, 200, "ordinary", "ordinary"));
-  assert.ok(plugin.analyze(rawNormalizationInput, rawNormalizationObservations, context()).findings.some((finding) => finding.metadata.variant === "url-normalization"));
-
-  const fullQueryFalsePositiveObservations = fullQueryOnlyPlan.operations.map((op) => observation(op, 200, op.id.startsWith("poison-") ? "already-cached" : "isolated-control", op.id.startsWith("poison-") ? "ordinary cached response" : "different control path"));
-  assert.equal(plugin.analyze(fullQueryOnlyInput, fullQueryFalsePositiveObservations, context()).findings.length, 0, "marker-free cache hits must not become full-query findings through cross-path mutation comparison");
-
-  const cookieContext = context("https://example.test/");
-  cookieContext.resources.cookies = "fehost\nsession\n";
-  const cookieInput = { marker: "cookie1234", allow_cache_side_effects: true, modes: ["poisoning"], cookie_names: ["fehost"], use_header_wordlist: false, max_header_candidates: 1 };
-  const cookiePlan = plugin.plan(cookieInput, cookieContext);
-  const cookiePoison = cookiePlan.operations.find((op) => op.cookie_params?.[0]?.name === "fehost" && op.id.startsWith("poison-"));
-  assert.ok(cookiePoison, "explicit cookie candidates generate a poison operation");
-  const cookieIndex = cookiePoison.id.slice("poison-".length);
-  const cleanCookie = cookiePlan.operations.find((op) => op.id === `poison-clean-${cookieIndex}`);
-  const confirmCookie = cookiePlan.operations.find((op) => op.id === `poison-confirm-${cookieIndex}`);
-  assert.equal(cookiePoison.url, cleanCookie.url, "cookie poison and clean control share one cache key");
-  assert.notEqual(cookiePoison.cookie_params[0].value, cleanCookie.cookie_params[0].value, "clean control uses a non-poison cookie value");
-  assert.deepEqual(cleanCookie.cookie_params, confirmCookie.cookie_params, "clean control is repeated stably");
-  const cookieObservations = cookiePlan.operations.map((op) => observation(op, 200, "ordinary", "ordinary"));
-  for (const item of cookieObservations.filter((item) => [cookiePoison.id, cleanCookie.id, confirmCookie.id].includes(item.id))) {
-    item.response_body_hash = "cookie-poisoned"; item.response_preview.text = cookiePoison.cookie_params[0].value;
-    item.response_headers = [{ name: "age", value_base64: Buffer.from(item.id === cookiePoison.id ? "0" : "3").toString("base64") }];
+  const hostMarker = forwardedHost.value.replace(/\.invalid$/, "");
+  for (const id of ["screen-headers-poison-0", "screen-headers-clean-0"]) {
+    const item = screenObservations.find((entry) => entry.id === id);
+    item.response_body_base64 = Buffer.from(`body beyond preview ${hostMarker}`).toString("base64");
+    if (id === "screen-headers-clean-0") item.response_headers = hitHeaders;
   }
-  assert.ok(plugin.analyze(cookieInput, cookieObservations, cookieContext).findings.some((finding) => finding.metadata.variant === "cookie:fehost"));
-  assert.throws(() => plugin.plan({ ...cookieInput, cookie_names: ["session"] }, cookieContext), /allow_sensitive_cookie_mutation/);
-  assert.doesNotThrow(() => plugin.plan({ ...cookieInput, cookie_names: ["session"], allow_sensitive_cookie_mutation: true }, cookieContext));
-
-  const privacyPlan = plugin.plan(input, context("https://example.test/account"));
-  const privacyObservations = privacyPlan.operations.map((op) => observation(op, 200, "same", "same body"));
-  privacyObservations.find((item) => item.id === "baseline-auth").response_headers = [{ name: "x-cache", value_base64: Buffer.from("miss").toString("base64") }];
-  privacyObservations.find((item) => item.id === "baseline-anon").response_headers = [{ name: "x-cache", value_base64: Buffer.from("hit").toString("base64") }, { name: "age", value_base64: Buffer.from("3").toString("base64") }];
-  assert.equal(plugin.analyze(input, privacyObservations, context("https://example.test/account")).result.base_appears_private, false, "volatile cache headers do not imply private content");
-
-  const proofInput = { marker: "cacheproof1", allow_cache_side_effects: true, modes: ["poisoning"], oracle_families: ["query-parameters"], use_header_wordlist: false, max_poison_variants: 1, poison_attempts: 1 };
-  const proofPlan = plugin.plan(proofInput, context());
-  assert.deepEqual(Array.from(proofPlan.operations, (op) => op.id), ["baseline-auth", "baseline-anon", "poison-preclean-0", "poison-0", "poison-clean-0", "poison-confirm-0"]);
-  const precleanUrl = new URL(proofPlan.operations.find((op) => op.id === "poison-preclean-0").url);
-  const cleanUrl = new URL(proofPlan.operations.find((op) => op.id === "poison-clean-0").url);
-  assert.notEqual(precleanUrl.href, cleanUrl.href, "preclean uses a separately cache-busted URL");
-  assert.equal(precleanUrl.origin + precleanUrl.pathname, cleanUrl.origin + cleanUrl.pathname, "preclean preserves the endpoint");
-  precleanUrl.searchParams.delete("hp_cache_bust"); cleanUrl.searchParams.delete("hp_cache_bust");
-  assert.equal(precleanUrl.href, cleanUrl.href, "preclean changes only the cache-buster value");
-
-  function proofObservations({ preclean = "ordinary", poison = "mutated", clean = "mutated", confirm = "mutated", headers = [] } = {}) {
-    const texts = { "poison-preclean-0": preclean, "poison-0": poison, "poison-clean-0": clean, "poison-confirm-0": confirm };
-    return proofPlan.operations.map((op) => {
-      const text = texts[op.id] || "ordinary";
-      const item = observation(op, 200, text, text);
-      if (["poison-preclean-0", "poison-0", "poison-clean-0", "poison-confirm-0"].includes(op.id)) item.response_headers = headers;
-      return item;
-    });
+  const firstQueryScreen = screenPlan.operations.find((op) => op.id === "screen-query-parameters-poison-0");
+  const queryMarker = firstQueryScreen.query_params[0].value;
+  for (const id of ["screen-query-parameters-poison-0", "screen-query-parameters-clean-0"]) {
+    const item = screenObservations.find((entry) => entry.id === id);
+    item.response_body_base64 = Buffer.from(`query body ${queryMarker}`).toString("base64");
+    if (id.endsWith("clean-0")) item.response_headers = hitHeaders;
   }
+  const screenResult = plugin.analyze(fullInput, screenObservations, cacheContext);
+  assert.deepEqual(Array.from(screenResult.result.candidate_headers), ["X-Forwarded-Host"], "full-body marker attribution narrows a bucket to the responsible header");
+  assert.deepEqual(Array.from(screenResult.result.candidate_parameters), ["utm_source"], "query screening attributes a reflected marker to one parameter");
+  assert.equal(screenResult.findings.length, 0, "screening never persists an overconfident finding");
+  assert.equal(screenResult.result.follow_up.phase, "confirm");
+  assert.equal(screenResult.result.follow_up.use_only_supplied_headers, true);
 
-  const hitHeaders = [responseHeader("X-Cache", "Hit from cloudfront"), responseHeader("Age", "4"), responseHeader("X-Cache-Hits", "0, 1")];
-  const mutationHit = plugin.analyze(proofInput, proofObservations({ headers: hitHeaders }), context()).findings.find((finding) => finding.metadata.variant === "query:utm_source");
-  assert.ok(mutationHit, "preclean-to-postclean mutation persistence is detected");
-  assert.equal(mutationHit.metadata.proof, "mutation_persistence");
-  assert.equal(mutationHit.metadata.cache_state, "hit");
-  assert.equal(mutationHit.confidence, "firm");
-  assert.equal(Array.from(mutationHit.evidence_exchange_ids).length, 4);
-
-  const missHeaders = [
-    responseHeader("Cache-Control", "max-age=0, no-cache, no-store"), responseHeader("X-Cache", "TCP_MISS"),
-    responseHeader("CF-Cache-Status", "BYPASS"), responseHeader("Cache-Status", "ExampleCache; fwd=uri-miss"),
-    responseHeader("Age", "0"), responseHeader("X-Cache-Hits", "0"),
-  ];
-  const mutationMiss = plugin.analyze(proofInput, proofObservations({ headers: missHeaders }), context()).findings.find((finding) => finding.metadata.variant === "query:utm_source");
-  assert.ok(mutationMiss, "negative cache headers do not erase independently observed mutation persistence");
-  assert.equal(mutationMiss.metadata.cache_state, "uncacheable");
-  assert.equal(mutationMiss.confidence, "tentative", "MISS/no-store evidence never upgrades mutation-only proof to firm");
-
-  function baselineCacheState(headers) {
-    const items = proofObservations();
-    items.find((item) => item.id === "baseline-auth").response_headers = headers;
-    return plugin.analyze(proofInput, items, context()).result.baseline_cache.authenticated.state;
+  const confirmInput = screenResult.result.follow_up;
+  const confirmPlan = plugin.plan(confirmInput, cacheContext);
+  assert.equal(confirmPlan.result.phase, "confirm");
+  assert.equal(confirmPlan.result.poison_variants, 2);
+  assert.notEqual(screenPlan.operations.find((op) => op.id === "cache-profile-a-prime").url, confirmPlan.operations.find((op) => op.id === "cache-profile-a-prime").url, "each stage gets a fresh cache-profile namespace");
+  const poisonOp = confirmPlan.operations.find((op) => op.id === "poison-0");
+  const exactMarker = poisonOp.headers[0].value.replace(/\.invalid$/, "");
+  const confirmedObservations = confirmPlan.operations.map((op) => observation(op, 200, "stable", "ordinary"));
+  for (const id of ["cache-profile-a-prime", "cache-profile-a-repeat", "cache-profile-b-prime", "cache-profile-b-repeat"]) {
+    const item = confirmedObservations.find((entry) => entry.id === id);
+    item.response_preview.text = "stable profile";
+    if (id.endsWith("repeat")) item.response_headers = hitHeaders;
   }
-  assert.equal(baselineCacheState([responseHeader("Age", "0")]), "unknown", "Age: 0 is not proof of either a hit or miss");
-  assert.equal(baselineCacheState([responseHeader("Age", "2")]), "hit");
-  assert.equal(baselineCacheState([responseHeader("Cache-Control", "no-cache")]), "unknown", "no-cache permits revalidation and is not an uncacheable signal");
-  assert.equal(baselineCacheState([responseHeader("X-Cache", "HIT-for-pass")]), "miss", "pass responses are not classified as cache hits");
-  assert.equal(baselineCacheState([responseHeader("X-Cache", "HIT, HIT-for-pass")]), "hit", "a real hit wins over a separate pass member");
-  assert.equal(baselineCacheState([responseHeader("X-Cache", "TCP_REFRESH_HIT")]), "hit", "common CDN hit variants are recognized");
-  assert.equal(baselineCacheState([responseHeader("X-Cache", "TCP_MISS")]), "miss");
-  assert.equal(baselineCacheState([responseHeader("CF-Cache-Status", "HIT")]), "hit");
-  assert.equal(baselineCacheState([responseHeader("CF-Cache-Status", "BYPASS")]), "miss");
-  assert.equal(baselineCacheState([responseHeader("Cache-Status", "Edge; hit, Origin; fwd=uri-miss")]), "hit", "a cache hit in a multi-layer Cache-Status list is recognized");
-  assert.equal(baselineCacheState([responseHeader("Cache-Status", "Edge; fwd=uri-miss")]), "miss");
-  assert.equal(baselineCacheState([responseHeader("Vary", "*")]), "uncacheable", "Vary: * is classified as uncacheable");
-  assert.equal(baselineCacheState([responseHeader("Cache-Control", "private")]), "uncacheable");
-  assert.equal(baselineCacheState([responseHeader("X-Cache-Hits", "")]), "unknown", "an empty hit-count header is not a cache miss");
-  assert.equal(baselineCacheState([responseHeader("X-Cache-Hits", "0")]), "miss");
-  assert.equal(baselineCacheState([responseHeader("X-Cache-Hits", "1")]), "hit");
-  assert.equal(baselineCacheState([responseHeader("X-Cache", "HIT, MISS")]), "hit", "a comma-list containing an observed hit is positive evidence");
-  assert.equal(baselineCacheState([responseHeader("Age", "2"), responseHeader("Cache-Control", "no-store")]), "hit", "an observed hit wins contradictory policy metadata");
-
-  assert.equal(plugin.analyze(proofInput, proofObservations({ preclean: "mutated" }), context()).findings.length, 0, "a mutation present before poisoning is not causal evidence");
-  for (const failure of [{ status_code: 408 }, { status_code: 425 }, { status_code: 429 }, { status_code: 499 }, { status_code: 500 }, { error: "connection failed" }]) {
-    const failedPreclean = proofObservations();
-    Object.assign(failedPreclean.find((item) => item.id === "poison-preclean-0"), failure);
-    assert.equal(plugin.analyze(proofInput, failedPreclean, context()).findings.length, 0, "a failed preclean control makes mutation proof inconclusive");
+  for (const id of ["poison-0", "poison-clean-0", "poison-confirm-0"]) {
+    const item = confirmedObservations.find((entry) => entry.id === id);
+    item.response_body_base64 = Buffer.from(`full response ${exactMarker}`).toString("base64");
+    item.response_headers = id === "poison-0" ? [responseHeader("X-Cache", "MISS")] : hitHeaders;
   }
-  const statusMutation = proofObservations({ preclean: "ordinary", poison: "ordinary", clean: "ordinary", confirm: "ordinary" });
-  for (const item of statusMutation.filter((entry) => entry.id === "poison-0" || entry.id === "poison-clean-0" || entry.id === "poison-confirm-0")) item.status_code = 301;
-  assert.equal(plugin.analyze(proofInput, statusMutation, context()).findings[0].metadata.proof, "mutation_persistence", "a stable post-poison status mutation remains detectable");
-  const markerBody = "hpcacheproof1";
-  const missingPrecleanMarker = proofObservations({ poison: markerBody, clean: markerBody, confirm: markerBody }).filter((item) => item.id !== "poison-preclean-0");
-  assert.equal(plugin.analyze(proofInput, missingPrecleanMarker, context()).findings.length, 0, "comparable marker proof requires its preclean control");
-  const escapedBuster = (value) => `ordinary <a href="/account?one=1&amp;hp_cache_bust=${value}">link</a>`;
-  assert.equal(plugin.analyze(proofInput, proofObservations({
-    preclean: escapedBuster("preclean"), poison: escapedBuster("poison"), clean: escapedBuster("clean"), confirm: escapedBuster("confirm"),
-  }), context()).findings.length, 0, "HTML-escaped cache-buster values do not look like a poisoned mutation");
-  assert.equal(plugin.analyze(proofInput, proofObservations({ preclean: markerBody, poison: markerBody, clean: markerBody, confirm: markerBody }), context()).findings.length, 0, "a preexisting marker cannot prove poisoning");
-
-  const markerPositive = proofObservations({ poison: markerBody, clean: markerBody, confirm: markerBody, headers: missHeaders });
-  const firstMarkerResult = plugin.analyze(proofInput, markerPositive, context());
-  const secondMarkerResult = plugin.analyze(proofInput, markerPositive, context());
-  assert.equal(JSON.stringify(firstMarkerResult), JSON.stringify(secondMarkerResult), "per-analysis memoization preserves deterministic output");
-  assert.equal(firstMarkerResult.findings[0].metadata.proof, "marker_persistence");
-  assert.equal(firstMarkerResult.findings[0].confidence, "tentative", "marker persistence without a positive cache HIT remains tentative");
-  for (const item of markerPositive.filter((item) => item.id === "poison-clean-0" || item.id === "poison-confirm-0")) {
-    item.response_preview.text = "ordinary"; item.response_body_hash = "ordinary";
+  const queryPoison = confirmPlan.operations.find((op) => op.id === "poison-1");
+  const confirmQueryMarker = new URL(queryPoison.url).searchParams.get("utm_source");
+  for (const id of ["poison-1", "poison-clean-1", "poison-confirm-1"]) {
+    const item = confirmedObservations.find((entry) => entry.id === id);
+    item.response_body_base64 = Buffer.from(`query full response ${confirmQueryMarker}`).toString("base64");
+    item.response_headers = id === "poison-1" ? [responseHeader("X-Cache", "MISS")] : hitHeaders;
   }
-  assert.equal(plugin.analyze(proofInput, markerPositive, context()).findings.length, 0, "memoized observations never leak across analysis calls");
+  const confirmed = plugin.analyze(confirmInput, confirmedObservations, cacheContext);
+  assert.equal(confirmed.findings.length, 2);
+  assert.equal(confirmed.findings[0].confidence, "firm");
+  assert.equal(confirmed.findings[0].metadata.proof, "same_key_marker_persistence_with_explicit_hit");
+  assert.equal(confirmed.findings[0].metadata.credential_policy, "with_project_credentials");
+  assert.equal(Object.hasOwn(confirmed.findings[0], "remediation"), false);
+  assert.deepEqual({ ...confirmed.result.credential_mode }, {
+    baseline_with_project_credentials: "with_project_credentials",
+    baseline_without_project_credentials: "without_project_credentials",
+  });
+  assert.equal(confirmed.result.follow_up.phase, "advanced");
+  assert.deepEqual(Array.from(confirmed.result.follow_up.confirmed_query_parameters), ["utm_source"]);
+  assert.deepEqual(Array.from(confirmed.result.follow_up.known_root_causes), Array.from(confirmed.findings, (finding) => finding.metadata.root_cause));
 
-  const headerInput = { ...proofInput, marker: "headerproof1", oracle_families: ["headers"], headers: ["X-Proof"], max_header_candidates: 1 };
-  const headerPlan = plugin.plan(headerInput, context());
-  const headerTexts = { "poison-preclean-0": "ordinary", "poison-0": "header mutation", "poison-clean-0": "header mutation", "poison-confirm-0": "header mutation" };
-  const headerObservations = headerPlan.operations.map((op) => observation(op, 200, headerTexts[op.id] || "ordinary", headerTexts[op.id] || "ordinary"));
-  assert.equal(plugin.analyze(headerInput, headerObservations, context()).findings[0].metadata.variant, "header:x-proof", "header mutations use the same preclean causality gate");
-
-  const capInput = {
-    marker: "operationcap1", allow_cache_side_effects: true, headers: Array.from({ length: 500 }, (_, index) => `X-Cap-${index}`),
-    use_header_wordlist: false, max_header_candidates: 500, max_header_combinations: 0, max_poison_variants: 504,
-    poison_attempts: 20, max_deception_variants: 100,
-  };
-  const capPlan = plugin.plan(capInput, context());
-  assert.ok(capPlan.operations.length <= 2000, "preclean controls never exceed the manifest operation budget");
-  assert.equal(capPlan.result.operation_count, capPlan.operations.length);
-  assert.equal(capPlan.result.poison_variant_limit_applied, true);
-  for (let index = 0; index < capPlan.result.poison_variants; index += 1) {
-    assert.ok(capPlan.operations.some((op) => op.id === `poison-preclean-${index}`));
-    assert.equal(capPlan.operations.filter((op) => op.id === `poison-${index}` || op.id.startsWith(`poison-${index}-retry-`)).length, 20);
-    assert.ok(capPlan.operations.some((op) => op.id === `poison-clean-${index}`));
-    assert.ok(capPlan.operations.some((op) => op.id === `poison-confirm-${index}`));
+  const mergedInputKinds = confirmedObservations.map((item) => ({ ...item }));
+  for (const [index, candidateMarker] of [[0, exactMarker], [1, confirmQueryMarker]]) {
+    for (const id of [`poison-${index}`, `poison-clean-${index}`, `poison-confirm-${index}`]) {
+      mergedInputKinds.find((entry) => entry.id === id).response_body_base64 = Buffer.from(`shared effect ${candidateMarker}`).toString("base64");
+    }
   }
-  const fractionalCapPlan = plugin.plan({ ...capInput, poison_attempts: 19.5 }, context());
-  assert.equal(fractionalCapPlan.result.poison_attempts, 19, "fractional host input is normalized to the exact integer used by planning");
-  assert.ok(fractionalCapPlan.operations.length <= 2000, "fractional input cannot bypass the operation budget");
+  const mergedInputKindsResult = plugin.analyze(confirmInput, mergedInputKinds, cacheContext);
+  assert.equal(mergedInputKindsResult.findings.length, 1, "equivalent header and query effects deduplicate to one root cause");
+  assert.equal(mergedInputKindsResult.findings[0].metadata.variant_count, 2);
+  assert.deepEqual(Array.from(mergedInputKindsResult.result.follow_up.confirmed_query_parameters), ["utm_source"], "dedup preserves confirmed query inputs for advanced follow-up generation");
 
-  const stressInput = {
-    marker: "performancetest1", allow_cache_side_effects: true,
-    headers: Array.from({ length: 300 }, (_, index) => `X-Perf-${index}`), use_header_wordlist: false,
-    max_header_candidates: 300, max_poison_variants: 304, max_deception_variants: 40,
-  };
-  const stressPlan = plugin.plan(stressInput, context("https://example.test/dynamic"));
-  assert.equal(stressPlan.operations.length, 1338, "stress fixture matches the previously timing-out operation count");
-  const largeBody = Buffer.from("x".repeat(9500)).toString("base64"), largePreview = "x".repeat(4096);
-  const serializedStress = JSON.stringify(stressPlan.operations.map((op, index) => ({
-    ...observation(op, 200, `body-${index}`, largePreview), response_body_base64: largeBody,
-  })));
-  assert.ok(Buffer.byteLength(serializedStress) > 20 * 1024 * 1024, "stress fixture includes the reported large analysis payload");
+  const mutationOnly = confirmedObservations.map((item) => ({ ...item, response_preview: { text: item.response_preview.text } }));
+  for (const item of mutationOnly.filter((entry) => /^poison-(?:clean-|confirm-)?[01]$/.test(entry.id))) {
+    delete item.response_body_base64; item.response_preview.text = "same changed representation";
+  }
+  const mutationResult = plugin.analyze(confirmInput, mutationOnly, cacheContext);
+  assert.equal(mutationResult.findings.length, 0, "marker-free response mutations never become findings");
+  assert.ok(mutationResult.result.mutation_diagnostics.some((item) => item.classification === "inconclusive_mutation_only"));
+
+  const noHit = confirmedObservations.map((item) => ({ ...item, response_headers: [] }));
+  const noHitResult = plugin.analyze(confirmInput, noHit, cacheContext);
+  assert.equal(noHitResult.findings.length, 0, "marker persistence without an explicit cache HIT remains diagnostic");
+  assert.ok(noHitResult.result.mutation_diagnostics.some((item) => item.classification === "marker_persisted_proof_incomplete"));
+  const noIsolation = confirmedObservations.map((item) => ({ ...item, response_headers: item.response_headers.slice() }));
+  noIsolation.find((item) => item.id === "cache-profile-b-repeat").response_headers = [];
+  assert.equal(plugin.analyze(confirmInput, noIsolation, cacheContext).findings.length, 0, "isolated-key findings require a two-key isolation profile");
+  const poisonAlreadyHit = confirmedObservations.map((item) => ({ ...item, response_headers: item.response_headers.slice() }));
+  poisonAlreadyHit.find((item) => item.id === "poison-0").response_headers = hitHeaders;
+  assert.ok(!plugin.analyze(confirmInput, poisonAlreadyHit, cacheContext).findings.some((finding) => finding.metadata.variant === "header:x-forwarded-host"), "a marker-bearing cache HIT cannot be credited as the seeding request");
+
+  const lightInput = { marker: "lightmode123", allow_cache_side_effects: true, scan_mode: "light", modes: ["poisoning"] };
+  const lightPlan = plugin.plan(lightInput, cacheContext);
+  assert.equal(lightPlan.result.phase, "confirm");
+  assert.ok(lightPlan.result.poison_variants <= 20);
+  assert.ok(lightPlan.operations.filter((op) => /^poison-\d+$/.test(op.id)).every((op) => op.headers.length <= 2));
+  assert.ok(lightPlan.operations.some((op) => op.headers?.some((header) => header.name === "X-Forwarded-Host")));
+  assert.ok(lightPlan.operations.some((op) => op.headers?.some((header) => header.name === "X-Forwarded-Host") && op.headers?.some((header) => header.name === "X-Forwarded-Scheme")), "Light includes the common forwarding-host plus scheme combination");
+  assert.ok(lightPlan.operations.every((op) => !op.headers?.some((header) => header.name === "AB-API-Company-ID")), "Light excludes the long-tail bundled wordlist");
+  const delayedPlan = plugin.plan({ ...lightInput, poison_attempts: 20, poison_interval_ms: 30000, max_poison_variants: 500 }, cacheContext);
+  assert.equal(delayedPlan.result.poison_variants, 1, "cumulative retry delays bound the number of selected variants");
+  assert.ok(delayedPlan.operations.filter((op) => op.delay_before_ms).reduce((total, op) => total + op.delay_before_ms, 0) <= delayedPlan.result.cumulative_delay_budget_ms);
+
+  const advancedInput = { ...confirmed.result.follow_up, allow_shared_cache_key_tests: true, confirmed_query_parameters: ["utm_source", "callback"] };
+  const advancedPlan = plugin.plan(advancedInput, cacheContext);
+  const advancedPoisons = advancedPlan.operations.filter((op) => /^poison-\d+$/.test(op.id));
+  assert.equal(advancedPlan.result.phase, "advanced");
+  assert.notEqual(confirmPlan.operations.find((op) => op.id === "cache-profile-a-prime").url, advancedPlan.operations.find((op) => op.id === "cache-profile-a-prime").url, "advanced profiling cannot reuse warmed confirmation keys");
+  assert.ok(advancedPoisons.some((op) => op.cookie_params), "Full advanced covers bundled cookie candidates");
+  assert.ok(advancedPoisons.some((op) => op.body_base64), "Full advanced covers fat GET candidates");
+  const reflectedFatGetPlan = plugin.plan({ ...advancedInput, confirmed_query_parameters: [], parameter_names: ["utm_content"], use_parameter_wordlist: false }, cacheContext);
+  assert.ok(reflectedFatGetPlan.operations.some((op) => op.body_base64), "Full advanced tests a reflected keyed-query name as a potential unkeyed GET-body input");
+  assert.equal(reflectedFatGetPlan.result.coverage["fat-get"].skipped, 0, "Fat GET coverage does not contradict generated and tested probes");
+  const combinedFatGetPlan = plugin.plan({ ...advancedInput, confirmed_query_parameters: [], parameter_names: ["utm_content"], fat_get_parameters: ["explicit_name"], use_parameter_wordlist: false }, cacheContext);
+  const fatGetBodies = combinedFatGetPlan.operations.filter((op) => op.body_base64).map((op) => Buffer.from(op.body_base64, "base64").toString());
+  assert.ok(fatGetBodies.some((body) => body.startsWith("explicit_name=")) && fatGetBodies.some((body) => body.startsWith("utm_content=")), "explicit Fat GET names augment rather than replace reflected candidates");
+  const singleCarrierCloaking = plugin.plan({ ...advancedInput, confirmed_query_parameters: ["utm_content"], parameter_names: ["utm_content"], use_parameter_wordlist: false }, cacheContext);
+  assert.ok(singleCarrierCloaking.operations.some((op) => /utm_content=.*;callback=/.test(op.url)), "one confirmed unkeyed carrier generates bounded cloaking probes for common target parameters");
+  const reflectedCarrierCloaking = plugin.plan({ ...advancedInput, confirmed_query_parameters: [], parameter_names: ["utm_content", "callback"], use_parameter_wordlist: false }, cacheContext);
+  const reflectedCloakingPoison = reflectedCarrierCloaking.operations.find((op) => /^poison-\d+$/.test(op.id) && /utm_content=.*;callback=/.test(op.url));
+  assert.ok(reflectedCloakingPoison, "screen-reflected carrier names remain eligible for exact-marker cloaking confirmation");
+  assert.ok(/[?&]hp_cache_bust=/.test(reflectedCloakingPoison.url), "cloaking uses a fresh isolated cache key instead of the public target key");
+  assert.ok(reflectedCloakingPoison.headers.some((header) => header.name === "Cache-Control" && header.value === "no-cache"), "cloaking poison requests force bounded revalidation");
+  assert.ok(advancedPoisons.some((op) => /;/.test(op.url)), "Full advanced covers parameter cloaking");
+  assert.ok(advancedPoisons.some((op) => /\?hpfullstage123q0$/.test(op.url)), "shared full-query testing is included only after acknowledgement");
+  const fullQueryPoison = advancedPoisons.find((op) => /\?hpfullstage123q0$/.test(op.url));
+  assert.ok(fullQueryPoison.headers.some((header) => header.name === "Cache-Control" && header.value === "no-cache"), "shared full-query poison requests ask the cache to revalidate instead of crediting a pre-existing HIT");
+  for (const family of ["header-combinations", "cookies", "full-query", "parameter-cloaking", "fat-get"]) {
+    assert.ok(advancedPlan.result.coverage[family].tested > 0, `fair selection gives ${family} coverage`);
+  }
+  assert.equal(advancedPlan.result.coverage["query-parameters"].tested, 0, "advanced does not repeat direct query probes already completed by confirmation");
+  const repeatedRootObservations = advancedPlan.operations.map((op) => observation(op, 200, "stable", "ordinary"));
+  for (const id of ["cache-profile-a-prime", "cache-profile-a-repeat", "cache-profile-b-prime", "cache-profile-b-repeat"]) {
+    const item = repeatedRootObservations.find((entry) => entry.id === id);
+    item.response_preview.text = "stable profile";
+    if (id.endsWith("repeat")) item.response_headers = hitHeaders;
+  }
+  const combinationPoison = advancedPoisons.find((op) => op.headers?.some((header) => header.name === "X-Forwarded-Host") && op.headers?.some((header) => header.name === "X-Forwarded-Scheme"));
+  assert.ok(combinationPoison, "advanced includes the default forwarding-header combination");
+  const combinationIndex = combinationPoison.id.match(/^poison-(\d+)$/)[1];
+  const combinationMarker = combinationPoison.headers.find((header) => header.name === "X-Forwarded-Host").value.replace(/\.invalid$/, "");
+  for (const id of [`poison-${combinationIndex}`, `poison-clean-${combinationIndex}`, `poison-confirm-${combinationIndex}`]) {
+    const item = repeatedRootObservations.find((entry) => entry.id === id);
+    item.response_body_base64 = Buffer.from(`full response ${combinationMarker}`).toString("base64");
+    item.response_headers = id === `poison-${combinationIndex}` ? [responseHeader("X-Cache", "MISS")] : hitHeaders;
+  }
+  const repeatedRootResult = plugin.analyze(advancedInput, repeatedRootObservations, cacheContext);
+  assert.equal(repeatedRootResult.findings.length, 0, "advanced aliases of a root cause persisted by confirmation are suppressed across stages");
+  assert.ok(repeatedRootResult.result.mutation_diagnostics.some((item) => item.classification === "duplicate_root_cause_suppressed"));
+  const queuedTargetResult = plugin.analyze({ ...advancedInput, target_queue: [{ url: "https://example.test/resources/js/next.js", cache_key_mode: "isolated" }] }, repeatedRootObservations, cacheContext);
+  assert.equal(queuedTargetResult.result.follow_up.phase, "screen");
+  assert.equal(queuedTargetResult.result.follow_up.target_url, "https://example.test/resources/js/next.js", "Full continues with the next bounded cacheable target after advanced analysis");
+  assert.ok(queuedTargetResult.result.follow_up.known_root_causes.length >= advancedInput.known_root_causes.length);
+
+  const separatedDeceptionPlan = plugin.plan({ marker: "separate123", allow_cache_side_effects: true, scan_mode: "full", phase: "advanced", modes: ["deception"], target_url: "https://example.test/resources/js/app.js", deception_base_url: "https://example.test/account" }, cacheContext);
+  assert.ok(separatedDeceptionPlan.operations.filter((op) => op.id.startsWith("deception-")).every((op) => !/\/resources\/js\/app\.js/.test(op.url)), "discovered poisoning targets do not redirect deception probes into resource paths");
+
+  const sharedDenied = { ...advancedInput };
+  delete sharedDenied.allow_shared_cache_key_tests;
+  const safeAdvanced = plugin.plan(sharedDenied, cacheContext);
+  assert.ok(!safeAdvanced.operations.some((op) => op.type === "raw_http1"), "shared-key normalization remains acknowledgement-gated");
+  assert.ok(!safeAdvanced.operations.some((op) => /\?hpfullstage123q0$/.test(op.url)), "full-query remains acknowledgement-gated");
+  assert.ok(safeAdvanced.operations.some((op) => /^poison-\d+$/.test(op.id) && /[?&]hp_cache_bust=/.test(op.url) && /;/.test(op.url)), "isolated parameter cloaking does not require shared-key acknowledgement");
+
+  const strictInput = { marker: "stricthead12", allow_cache_side_effects: true, scan_mode: "light", modes: ["poisoning"], shared_header_cache_key_oracle: true, allow_shared_cache_key_tests: true };
+  const strictPlan = plugin.plan(strictInput, context("https://example.test/js/app.js?callback=x"));
+  assert.equal(strictPlan.operations.find((op) => op.id === "poison-0").url, "https://example.test/js/app.js?callback=x");
+
+  const pagedContext = context();
+  pagedContext.resources = { headers: Array.from({ length: 5000 }, (_, index) => `X-Paged-${index}`).join("\n"), parameters: "", cookies: "" };
+  const pagedInput = { marker: "pagination12", allow_cache_side_effects: true, modes: ["poisoning"], header_bucket_size: 2, use_parameter_wordlist: false };
+  const firstPage = plugin.plan(pagedInput, pagedContext);
+  assert.ok(firstPage.result.screen_next_cursor > 0);
+  assert.ok(firstPage.result.coverage.headers.deferred > 0, "partial pages report deferred coverage honestly");
+  const firstPageObservations = firstPage.operations.map((op) => observation(op, 200, "stable", "stable"));
+  const firstPageResult = plugin.analyze(pagedInput, firstPageObservations, pagedContext);
+  assert.equal(firstPageResult.result.follow_up.phase, "screen");
+  assert.equal(firstPageResult.result.follow_up.screen_cursor, firstPage.result.screen_next_cursor);
+  const secondPage = plugin.plan(firstPageResult.result.follow_up, pagedContext);
+  assert.ok(secondPage.result.coverage.headers.tested > firstPage.result.coverage.headers.tested, "screen continuation coverage is cumulative");
+
+  const stressContext = context();
+  stressContext.resources = { headers: Array.from({ length: 5000 }, (_, index) => `X-Stress-${index}`).join("\n"), parameters: "", cookies: "" };
+  const stressInput = { marker: "stresscache12", allow_cache_side_effects: true, modes: ["poisoning"], header_bucket_size: 2, use_parameter_wordlist: false };
+  const stressPlan = plugin.plan(stressInput, stressContext);
+  assert.ok(stressPlan.operations.length >= 1900 && stressPlan.operations.length <= 2000);
+  const largeBody = Buffer.from("S".repeat(9500)).toString("base64");
+  const serializedStress = JSON.stringify(stressPlan.operations.map((op) => ({ ...observation(op, 200, "stress", "stable"), response_body_base64: largeBody })));
   const stressStarted = performance.now();
-  const stressResult = plugin.analyze(stressInput, JSON.parse(serializedStress), context("https://example.test/dynamic"));
+  const stressResult = plugin.analyze(stressInput, JSON.parse(serializedStress), stressContext);
   const stressElapsed = performance.now() - stressStarted;
   assert.equal(stressResult.findings.length, 0);
-  assert.ok(stressElapsed < 2000, `memoized 1,338-operation Node analysis stays within its regression budget (${Math.round(stressElapsed)}ms)`);
+  assert.ok(stressElapsed < 5000, `large captured-body aggregation took ${stressElapsed.toFixed(0)}ms`);
+
+  const normalizationInput = { marker: "rawnorm123", allow_cache_side_effects: true, scan_mode: "full", phase: "advanced", modes: ["poisoning"], oracle_families: ["url-normalization"], allow_shared_cache_key_tests: true, url_normalization_oracle: true };
+  const normalizationPlan = plugin.plan(normalizationInput, context());
+  assert.equal(normalizationPlan.operations.filter((op) => op.type === "raw_http1").length, 6);
+  const rawObservation = (op) => {
+    const repeat = op.id.endsWith("-0") ? 0 : 1;
+    const response = `HTTP/1.1 200 OK\r\nX-Cache: ${op.id.startsWith("normalization-poison-") ? "MISS" : "HIT"}\r\n\r\nPath <hprawnorm123n${repeat}>`;
+    return { id: op.id, raw: { exchange_id: Math.floor(Math.random() * 100000) + 1, response_transcript_base64: Buffer.from(response).toString("base64"), responses: [{ offset: 0, length: response.length }] } };
+  };
+  const normalizationObservations = normalizationPlan.operations.map((op) => op.type === "raw_http1" ? rawObservation(op) : observation(op, 200, "stable", "stable"));
+  assert.ok(plugin.analyze(normalizationInput, normalizationObservations, context()).findings.some((finding) => finding.metadata.variant === "url-normalization"));
+
+  const duplicateDeceptionInput = { marker: "dedupe1234", allow_cache_side_effects: true, scan_mode: "light", modes: ["deception"], static_extensions: ["js"], path_delimiters: [";", ";"], static_directories: ["assets"], normalization_delimiters: ["%23"], exact_cache_files: ["index.html"], max_deception_variants: 10 };
+  const fullDeceptionOnly = plugin.plan({ ...duplicateDeceptionInput, scan_mode: "full" }, context("https://example.test/account"));
+  assert.equal(fullDeceptionOnly.result.phase, "advanced", "deception-only Full scans do not require irrelevant poisoning screen follow-ups");
+  assert.ok(fullDeceptionOnly.operations.some((op) => op.id.startsWith("deception-with-project-credentials-")));
+  const duplicatePlan = plugin.plan(duplicateDeceptionInput, context("https://example.test/account"));
+  const duplicateObservations = duplicatePlan.operations.map((op) => {
+    const without = op.id.startsWith("baseline-without-project-credentials-");
+    const deceptive = op.id.startsWith("deception-");
+    const item = observation(op, 200, without ? "public" : "private", without ? "public" : deceptive ? "private" : "private");
+    if (op.id.startsWith("deception-without-project-credentials-") || op.id.startsWith("deception-confirm-")) item.response_headers = hitHeaders;
+    return item;
+  });
+  const deduped = plugin.analyze(duplicateDeceptionInput, duplicateObservations, context("https://example.test/account")).findings;
+  assert.equal(deduped.length, 1);
+  assert.ok(deduped[0].metadata.variant_count > 1);
+  assert.equal(deduped[0].metadata.seed_credential_policy, "with_project_credentials");
+  assert.equal(deduped[0].metadata.retrieval_credential_policy, "without_project_credentials");
+  assert.equal(new Set(deduped.map((finding) => finding.metadata.root_cause)).size, deduped.length, "findings are deduplicated by concrete root cause");
+  const genericFallback = duplicateObservations.map((item) => ({ ...item, response_preview: { text: item.id.startsWith("deception-") ? "generic SPA shell" : item.response_preview.text }, response_body_hash: item.id.startsWith("deception-") ? "generic-shell" : item.response_body_hash }));
+  assert.equal(plugin.analyze(duplicateDeceptionInput, genericFallback, context("https://example.test/account")).findings.length, 0, "a generic SPA fallback that does not match the stable private baseline is not deception");
+  const fullBodyCollision = duplicateObservations.map((item) => ({ ...item }));
+  for (const item of fullBodyCollision) {
+    const credentialFreeRetrieval = item.id.startsWith("deception-without-project-credentials-") || item.id.startsWith("deception-confirm-");
+    if (credentialFreeRetrieval) {
+      item.response_body_base64 = Buffer.from("different full anonymous body outside shared preview").toString("base64"); item.response_body_hash = "anonymous-full";
+    } else if (!item.id.startsWith("baseline-without-project-credentials-")) {
+      item.response_body_base64 = Buffer.from("credentialed private body").toString("base64"); item.response_body_hash = "private-full";
+    }
+  }
+  assert.equal(plugin.analyze(duplicateDeceptionInput, fullBodyCollision, context("https://example.test/account")).findings.length, 0, "matching previews cannot hide different full bodies in deception proof");
+  const preexistingDeception = duplicateObservations.map((item) => ({ ...item, response_headers: item.response_headers.slice() }));
+  for (const item of preexistingDeception.filter((entry) => entry.id.startsWith("deception-with-project-credentials-"))) item.response_headers = hitHeaders;
+  assert.equal(plugin.analyze(duplicateDeceptionInput, preexistingDeception, context("https://example.test/account")).findings.length, 0, "an already cached credentialed deception probe cannot prove a fresh private seed");
+
+  assert.throws(() => plugin.plan({ marker: "unsafe1234", scan_mode: "light" }, cacheContext), /allow_cache_side_effects/);
+  assert.throws(() => plugin.plan({ ...strictInput, allow_shared_cache_key_tests: undefined }, cacheContext), /allow_shared_cache_key_tests/);
+  const postContext = context(); postContext.base_exchange.method = "POST";
+  assert.throws(() => plugin.plan({ marker: "safemethod12", allow_cache_side_effects: true }, postContext), /GET or HEAD/);
 }
 
 function privilegedContext({ url = "https://example.test/admin", method = "GET", headers = [], body = "", related = [] } = {}) {
