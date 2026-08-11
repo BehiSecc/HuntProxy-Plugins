@@ -16,18 +16,33 @@
 
   function pathVariants(url) {
     var parsed = splitUrl(url), path = parsed.path, variants = [], seen = {};
-    function add(name, candidate) {
-      var full = parsed.origin + candidate + parsed.query;
+    function add(name, candidate, query) {
+      var full = parsed.origin + candidate + (query === undefined ? parsed.query : query);
       if (full !== url && !seen[full]) { seen[full] = true; variants.push({ name: name, url: full }); }
     }
     add("trailing-slash", path.replace(/\/$/, "") + "/");
+    add("trailing-dot-segment", path.replace(/\/$/, "") + "/.");
     add("double-slash", path.replace(/^\//, "//"));
+    add("double-slash-trailing", "//" + path.replace(/^\//, "") + "//");
+    add("triple-slash-trailing", "///" + path.replace(/^\//, "") + "///");
     add("dot-segment", "/./" + path.replace(/^\//, ""));
+    add("dot-segment-trailing", "/./" + path.replace(/^\//, "") + "/");
+    add("dot-segment-wrapped", "/./" + path.replace(/^\//, "") + "/./");
     add("encoded-dot-segment", "/%2e/" + path.replace(/^\//, ""));
     add("semicolon", path + ";");
     add("path-parameter", path + ";huntproxy=1");
+    add("dotdot-semicolon", path + "..;/");
+    add("leading-dotdot-semicolon", "/..;/" + path.replace(/^\//, ""));
+    add("semicolon-slash", path + ";/");
+    add("leading-semicolon", "/;/" + path.replace(/^\//, ""));
     add("encoded-trailing-slash", path.replace(/\/$/, "") + "%2f");
+    add("encoded-space", path + "%20");
+    add("encoded-tab", path + "%09");
+    add("html-extension", path.replace(/\/$/, "") + ".html");
     add("static-extension", path.replace(/\/$/, "") + ".json");
+    add("php-extension", path.replace(/\/$/, "") + ".php");
+    add("wildcard-suffix", path.replace(/\/$/, "") + "/*");
+    add("query-suffix", path.replace(/\/$/, "") + "/", "?anything");
     return variants;
   }
 
@@ -64,13 +79,19 @@
     });
     [
       ["x-forwarded-for", "X-Forwarded-For", "127.0.0.1"],
+      ["x-forwarded-for-url", "X-Forwarded-For", "http://127.0.0.1"],
       ["x-real-ip", "X-Real-IP", "127.0.0.1"],
       ["client-ip", "Client-IP", "127.0.0.1"],
       ["true-client-ip", "True-Client-IP", "127.0.0.1"],
+      ["x-custom-ip-authorization", "X-Custom-IP-Authorization", "127.0.0.1"],
+      ["x-forwarded-host", "X-Forwarded-Host", "127.0.0.1"],
       ["forwarded", "Forwarded", "for=127.0.0.1;host=" + parsed.origin.replace(/^https?:\/\//, "")]
     ].forEach(function (item) {
       values.push({ name: "header:" + item[0], method: baseExchange.method, headers: [{ name: item[1], value: item[2] }] });
     });
+    values.push({ name: "header:x-host", method: baseExchange.method, headers: [{ name: "X-Host", value: "127.0.0.1" }] });
+    values.push({ name: "header:host-localhost", method: baseExchange.method, header_tombstones: ["Host"], headers: [{ name: "Host", value: "localhost" }] });
+    values.push({ name: "header:host-localhost-x-forwarded-for", method: baseExchange.method, header_tombstones: ["Host"], headers: [{ name: "Host", value: "localhost" }, { name: "X-Forwarded-For", value: "127.0.0.1" }] });
     (input.referer_values || []).forEach(function (value, index) {
       values.push({ name: "header:referer:" + index, method: baseExchange.method, headers: [{ name: "Referer", value: String(value) }] });
     });
@@ -86,6 +107,7 @@
     });
     values.push({ name: "header:method-override-get", method: baseExchange.method, headers: [{ name: "X-HTTP-Method-Override", value: "GET" }] });
     if (input.allow_state_changes === true) {
+      values.push({ name: "method:post-empty-body", method: "POST", body_base64: "", header_tombstones: ["Content-Type"] });
       ["POST", "PUT", "PATCH"].forEach(function (method) {
         if (method !== String(baseExchange.method).toUpperCase()) values.push({ name: "unsafe-method:" + method.toLowerCase(), method: method });
       });

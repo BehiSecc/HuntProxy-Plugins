@@ -98,6 +98,42 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.ok(plan.operations.some((op) => op.id === "carrier-root-0"));
   const originalUrlCarrier = plan.operations.find((op) => op.headers?.some((header) => header.name === "X-Original-URL") && op.url === "https://example.test/");
   assert.ok(originalUrlCarrier, "forwarding-header bypasses are tested on a benign carrier path");
+  for (const name of [
+    "path:trailing-dot-segment", "path:double-slash-trailing", "path:triple-slash-trailing",
+    "path:dot-segment-trailing", "path:dot-segment-wrapped", "path:dotdot-semicolon",
+    "path:leading-dotdot-semicolon", "path:semicolon-slash", "path:leading-semicolon",
+    "path:encoded-space", "path:encoded-tab", "path:html-extension", "path:php-extension",
+    "path:wildcard-suffix", "path:query-suffix", "header:x-forwarded-for-url",
+    "header:x-custom-ip-authorization", "header:x-forwarded-host", "header:x-host",
+    "header:host-localhost", "header:host-localhost-x-forwarded-for"
+  ]) assert.ok(plan.result.variants.includes(name), `missing ${name}`);
+  assert.ok(!plan.result.variants.includes("method:post-empty-body"), "empty POST stays behind the state-change gate");
+  const exactPaths = {
+    "path:trailing-dot-segment": "https://example.test/admin/.",
+    "path:double-slash-trailing": "https://example.test//admin//",
+    "path:triple-slash-trailing": "https://example.test///admin///",
+    "path:dot-segment-trailing": "https://example.test/./admin/",
+    "path:dot-segment-wrapped": "https://example.test/./admin/./",
+    "path:dotdot-semicolon": "https://example.test/admin..;/",
+    "path:leading-dotdot-semicolon": "https://example.test/..;/admin",
+    "path:semicolon-slash": "https://example.test/admin;/",
+    "path:leading-semicolon": "https://example.test/;/admin",
+    "path:encoded-space": "https://example.test/admin%20",
+    "path:encoded-tab": "https://example.test/admin%09",
+    "path:html-extension": "https://example.test/admin.html",
+    "path:php-extension": "https://example.test/admin.php",
+    "path:wildcard-suffix": "https://example.test/admin/*",
+    "path:query-suffix": "https://example.test/admin/?anything"
+  };
+  for (const [name, url] of Object.entries(exactPaths)) {
+    const index = plan.result.variants.indexOf(name);
+    const operations = plan.operations.filter((op) => op.id.startsWith(`variant-${index}-`));
+    assert.equal(operations.length, 2, `${name} is repeated`);
+    assert.ok(operations.every((op) => op.url === url), `${name} preserves its exact path form`);
+  }
+  const localhostForwarded = plan.operations.find((op) => op.headers?.some((header) => header.name === "Host" && header.value === "localhost") && op.headers.some((header) => header.name === "X-Forwarded-For" && header.value === "127.0.0.1"));
+  assert.ok(localhostForwarded, "Host and loopback forwarding are tested together");
+  assert.ok(localhostForwarded.header_tombstones.includes("Host"), "Host is replaced rather than appended");
   const observations = plan.operations.map((op) => observation(op));
   for (const item of observations.filter((item) => item.id.startsWith("carrier-root-"))) {
     item.status_code = 200; item.response_body_hash = "ordinary-root"; item.response_preview.text = "ordinary root";
@@ -122,6 +158,12 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const methodContext = privilegedContext({ method: "POST", url: "https://example.test/admin-roles", headers: [["Content-Type", "application/x-www-form-urlencoded"]], body: "username=missing&action=upgrade" });
   const methodInput = { allow_state_changes: true, success_markers: ["could not change user role"] };
   const methodPlan = plugin.plan(methodInput, methodContext);
+  const emptyPostIndex = Array.from(methodPlan.result.variants).indexOf("method:post-empty-body");
+  assert.ok(emptyPostIndex >= 0);
+  const emptyPostOps = methodPlan.operations.filter((op) => op.id.startsWith(`variant-${emptyPostIndex}-`));
+  assert.equal(emptyPostOps.length, 2);
+  assert.ok(emptyPostOps.every((op) => op.method === "POST" && op.body_base64 === ""));
+  assert.ok(emptyPostOps.every((op) => op.header_tombstones.includes("Content-Type")));
   const getIndex = Array.from(methodPlan.result.variants).indexOf("method:get");
   const getOps = methodPlan.operations.filter((op) => op.id.startsWith(`variant-${getIndex}-`));
   assert.equal(getOps.length, 2);
