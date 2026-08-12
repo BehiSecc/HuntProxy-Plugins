@@ -124,6 +124,14 @@ Emails, flat application routes, cross-origin references, userinfo, fragments,
 and sensitive signed-query candidates are excluded. Discovery is passive;
 plugins must still deliberately request each candidate.
 
+`identity.use` also permits semantic HTTP operations to declare an opaque
+`identity` selector containing exactly one of `profile` or `cookie_file`.
+HuntProxy resolves selectors host-side once per job, applies cookie
+domain/path/expiry rules to each request URL, and suppresses the active project
+cookie jar. Cookie bytes are not exposed to plugin JavaScript or job output;
+the caller-supplied file path is used only as an opaque selector. Named profiles are project-scoped and managed through the `cookies`
+tool with `profile_name`.
+
 If `input.exchange_ids` is an integer array, the host loads bounded
 `related_exchanges` containing `exchange_id`, `method`, `url`, and
 `status_code`. Verified manifest resources appear as UTF-8 strings under their
@@ -332,6 +340,11 @@ A normal operation failure becomes:
 After a sequential stop-on-error failure, remaining observations contain
 `{"id":"...","skipped":{"reason":"previous operation failed"}}`.
 Cancellation and stage exceptions fail the whole job.
+
+Jobs retain `execution.evidence_exchange_ids` for all saved probe exchanges
+before analysis starts, so the IDs remain available if analysis fails.
+Generated exchanges also receive a `plugin-job:<uuid>` label for recovery after
+the in-memory job record expires.
 
 ## Analysis and findings
 

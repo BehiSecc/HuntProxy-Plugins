@@ -525,10 +525,55 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
   const plan = plugin.plan(input, ctx);
   assert.equal(plan.operations.length, 6, "unsafe related shape is skipped by default");
   assert.ok(plan.operations.every((op) => op.header_tombstones.includes("Cookie") && op.header_tombstones.includes("Authorization")));
+  assert.ok(plan.operations.every((op) => op.credential_mode === "without_project_credentials"));
+  const referencedPlan = plugin.plan({ primary: { profile: "sco" }, secondary: { cookie_file: "/private/second.json" }, domains: ["example.test"] }, ctx);
+  assert.equal(referencedPlan.operations.find((op) => op.id.includes("primary")).identity.profile, "sco");
+  assert.equal(referencedPlan.operations.find((op) => op.id.includes("secondary")).identity.cookie_file, "/private/second.json");
   const observations = plan.operations.map((op) => observation(op, op.id.includes("anonymous") ? 403 : 200, op.id.includes("anonymous") ? "denied" : "private", "response"));
   const result = plugin.analyze(input, observations, ctx);
   assert.equal(result.findings.length, 1);
   assert.match(result.findings[0].title, /cross-user/i);
+  assert.equal(result.result.classifications[0].evidence_exchange_ids.length, 6);
+  assert.equal(result.findings[0].evidence_exchange_ids.length, 6);
+
+  const volatile = plan.operations.map((op) => {
+    const anonymous = op.id.includes("anonymous");
+    const repeat = op.id.endsWith("1") ? "2" : "1";
+    return observation(op, anonymous ? 403 : 200, `volatile-${op.id}`, anonymous ? "denied" : JSON.stringify({ artists: [{ id: 7, name: "same", avatar: `https://cdn.test/a.jpg?sig=${repeat}&expires=170000000${repeat}` }], logid: `log-${repeat}`, timestamp: 1700000000 + Number(repeat) }));
+  });
+  const volatileResult = plugin.analyze(input, volatile, ctx);
+  assert.equal(volatileResult.result.classifications[0].primary_outcome, "allowed");
+  assert.equal(volatileResult.result.classifications[0].primary_allowed, true);
+  assert.equal(volatileResult.result.classifications[0].primary_stable, true, "known volatile fields are normalized conservatively");
+
+  const materiallyDifferent = volatile.map((item) => ({ ...item }));
+  materiallyDifferent.find((item) => item.id === "shape-0-primary-1").response_preview.text = JSON.stringify({ artists: [{ id: 99, name: "different" }] });
+  const materiallyDifferentResult = plugin.analyze(input, materiallyDifferent, ctx);
+  assert.equal(materiallyDifferentResult.result.classifications[0].primary_outcome, "allowed");
+  assert.equal(materiallyDifferentResult.result.classifications[0].primary_stable, false);
+  const semanticTokenDifference = volatile.map((item) => ({ ...item }));
+  semanticTokenDifference.find((item) => item.id === "shape-0-primary-0").response_preview.text = '{"avatar":"https://cdn.test/a?token=identity-one"}';
+  semanticTokenDifference.find((item) => item.id === "shape-0-primary-1").response_preview.text = '{"avatar":"https://cdn.test/a?token=identity-two"}';
+  assert.equal(plugin.analyze(input, semanticTokenDifference, ctx).result.classifications[0].primary_stable, false, "generic token query values remain semantic");
+
+  const unstableAnonymous = plan.operations.map((op) => observation(op, 200, op.id, op.id.includes("anonymous") ? `public-${op.id}` : "same private body"));
+  const unstableAnonymousResult = plugin.analyze(input, unstableAnonymous, ctx);
+  assert.equal(unstableAnonymousResult.result.classifications[0].anonymous_outcome, "allowed");
+  assert.equal(unstableAnonymousResult.result.classifications[0].protected_resource, null);
+  assert.ok(unstableAnonymousResult.findings.some((finding) => /cross-user/i.test(finding.title) && finding.confidence === "tentative"));
+  assert.ok(!unstableAnonymousResult.findings.some((finding) => /unauthenticated/i.test(finding.title)));
+
+  const noAnonymousInput = { ...input, include_anonymous: false };
+  const noAnonymousPlan = plugin.plan(noAnonymousInput, ctx);
+  const noAnonymousResult = plugin.analyze(noAnonymousInput, noAnonymousPlan.operations.map((op) => observation(op, 200, "same", "same private body")), ctx);
+  assert.equal(noAnonymousResult.result.classifications[0].anonymous_outcome, "not_tested");
+  assert.equal(noAnonymousResult.result.classifications[0].anonymous_allowed, null);
+  assert.equal(noAnonymousResult.result.classifications[0].protected_resource, null);
+
+  const mixed = plan.operations.map((op) => observation(op, op.id === "shape-0-primary-1" ? 403 : 200, op.id, op.id === "shape-0-primary-1" ? "denied" : "same"));
+  const mixedResult = plugin.analyze(input, mixed, ctx);
+  assert.equal(mixedResult.result.classifications[0].primary_outcome, "inconclusive");
+  assert.equal(mixedResult.result.classifications[0].primary_allowed, null);
 
   const differential = plan.operations.map((op) => {
     const secondary = op.id.includes("secondary");
@@ -550,6 +595,7 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
   const anonymousResult = plugin.analyze(anonymousInput, anonymousObservations, anonymousContext);
   assert.equal(anonymousResult.findings.length, 1);
   assert.equal(anonymousResult.result.classifications[0].mode, "anonymous_audit");
+  assert.equal(anonymousResult.result.classifications[0].evidence_exchange_ids.length, 2);
   assert.equal(Object.hasOwn(anonymousResult.result.classifications[0], "primary_allowed"), false);
   assert.throws(() => plugin.plan({ domains: ["example.test"], confirm_expected_protected: true, anonymous_context: {} }, anonymousContext), /anonymous_context/);
 
