@@ -1,9 +1,9 @@
 {
-  "schema_version": 1, "id": "csrf-analyzer", "name": "CSRFAnalyzer", "version": "1.4.1",
+  "schema_version": 1, "id": "csrf-analyzer", "name": "CSRFAnalyzer", "version": "1.4.2",
   "description": "Reproduce state-changing requests with token, duplicate-token, cross-session, Origin, Referer, method, and content-type controls.",
   "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "f9a82bc253ed0c81f636586669c78963293754a8ea0e06f0aa7887773d69020d",
   "capabilities": ["http.semantic", "identity.use"],
-  "limits": { "timeout_ms": 600000, "max_operations": 324, "max_concurrency": 2, "memory_mb": 32 },
+  "limits": { "timeout_ms": 600000, "max_operations": 324, "max_concurrency": 2, "memory_mb": 32, "js_stage_timeout_ms": 60000 },
   "actions": [{ "name": "scan", "description": "Run bounded, repeated CSRF mutations after explicit confirmation that the request changes server state.", "required_capabilities": ["http.semantic", "identity.use"],
     "input_schema": { "type": "object", "additionalProperties": false, "required": ["allow_state_change"], "properties": {
       "allow_state_change": { "const": true },

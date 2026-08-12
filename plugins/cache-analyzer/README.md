@@ -18,8 +18,9 @@ requires `allow_cache_side_effects=true`.
 
 When the saved response references passive same-origin script or stylesheet
 resources, the bounded `discover` phase profiles the saved URL plus up to 12
-host-resolved targets. It requires a stable, nonempty 2xx response and an
-explicit cache HIT. Two distinct query keys establish isolation; exact-URL fallback is
+host-resolved targets. It requires either a stable nonempty 2xx representation
+or a stable 301/302/307/308 response with `Location`, plus an explicit cache
+HIT. Two distinct query keys establish isolation; exact-URL fallback is
 available only with `allow_shared_cache_key_tests=true`. Full carries at most
 three eligible targets through the staged queue, while Light selects one. This
 lets an uncacheable HTML shell lead the scan to a cacheable referenced
@@ -79,6 +80,11 @@ Response changes without the exact marker are returned only as bounded
 isolation proof is also diagnostic and never becomes a persisted finding.
 Marker search covers the complete captured response body and response headers,
 not only the preview.
+Typed scheme/protocol headers are the narrow exception to marker-only proof:
+a deterministic HTTP redirect that is absent from clean baselines may be
+confirmed when it persists unchanged in two clean cache HIT responses with the
+same freshness and key-isolation gates. Generic status changes remain
+diagnostic-only.
 Deception equality uses full captured-body hashes or normalized full bodies;
 matching previews alone cannot establish a private-response cache leak.
 

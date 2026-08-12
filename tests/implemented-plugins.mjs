@@ -192,8 +192,8 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const cacheContext = context("https://example.test/account");
   cacheContext.resources = { headers: headerResource, cookies: cookieResource, parameters: parameterResource };
 
-  assert.equal(cacheManifest.version, "0.14.0");
-  assert.equal(cacheManifest.limits.js_stage_timeout_ms, 10000);
+  assert.equal(cacheManifest.version, "0.14.1");
+  assert.equal(cacheManifest.limits.js_stage_timeout_ms, 60000);
   assert.equal(cacheManifest.actions[0].input_schema.properties.scan_mode.default, "full");
 
   const fullInput = { marker: "fullstage123", allow_cache_side_effects: true, modes: ["poisoning"], header_bucket_size: 8 };
@@ -228,6 +228,11 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.equal(noCacheResult.result.selection_reason, "no_cacheable_target_found", "discovery stops before broad probing when no usable cacheable target is proven");
   const lightDiscovery = plugin.analyze({ ...discoveryInput, scan_mode: "light" }, discoveryObservations, discoveryContext);
   assert.equal(lightDiscovery.result.follow_up.phase, "confirm", "Light also switches to a discovered cacheable target before high-yield confirmation");
+  const redirectDiscovery = discoveryObservations.map((item) => ({ ...item, status_code: /geolocate\.js/.test(discoveryPlan.operations.find((op) => op.id === item.id).url) ? 302 : item.status_code, response_length: /geolocate\.js/.test(discoveryPlan.operations.find((op) => op.id === item.id).url) ? 0 : item.response_length, response_headers: item.response_headers.slice() }));
+  redirectDiscovery.filter((item) => /geolocate\.js/.test(discoveryPlan.operations.find((op) => op.id === item.id).url)).forEach((item) => item.response_headers.push(responseHeader("Location", "/login")));
+  assert.equal(plugin.analyze(discoveryInput, redirectDiscovery, discoveryContext).result.follow_up.target_url, "https://example.test/resources/js/geolocate.js", "stable cached 301/302-style redirects with Location remain eligible discovery targets");
+  const redirectWithoutLocation = redirectDiscovery.map((item) => ({ ...item, response_headers: item.response_headers.filter((header) => header.name.toLowerCase() !== "location") }));
+  assert.equal(plugin.analyze(discoveryInput, redirectWithoutLocation, discoveryContext).result.follow_up, null, "empty redirect responses without Location are not discovery targets");
 
   const screenPlan = plugin.plan(fullInput, cacheContext);
   assert.equal(screenPlan.result.scan_mode, "full");
@@ -250,6 +255,9 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.match(forwardedFor.value, /^2001:db8::[0-9a-f]+$/i, "IP forwarding headers receive a typed documentation address");
   assert.match(forwardedHost.value, /\.invalid$/, "host headers receive a syntactically valid harmless host");
   assert.equal(forwardedProto.value, "http", "scheme headers receive a typed value");
+  assert.equal(screenPlan.preview.scope, "current_stage");
+  assert.equal(screenPlan.preview.selected_mode, "full");
+  assert.ok(screenPlan.preview.candidate_count > 2500, "plan preview exposes stage-scoped candidate counts without exposing operations");
 
   const screenObservations = screenPlan.operations.map((op) => observation(op, 200, "stable", "ordinary preview"));
   for (const id of ["cache-profile-a-prime", "cache-profile-a-repeat", "cache-profile-b-prime", "cache-profile-b-repeat"]) {
@@ -308,6 +316,40 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.equal(confirmed.findings[0].metadata.proof, "same_key_marker_persistence_with_explicit_hit");
   assert.equal(confirmed.findings[0].metadata.credential_policy, "with_project_credentials");
   assert.equal(Object.hasOwn(confirmed.findings[0], "remediation"), false);
+  const redirectInput = { marker: "redirect123", allow_cache_side_effects: true, scan_mode: "light", phase: "confirm", modes: ["poisoning"], headers: ["X-Forwarded-Scheme"], use_only_supplied_headers: true, oracle_families: ["headers"] };
+  const redirectPlan = plugin.plan(redirectInput, cacheContext);
+  const redirectObservations = redirectPlan.operations.map((op) => observation(op, 200, "ordinary", "ordinary"));
+  for (const id of ["cache-profile-a-prime", "cache-profile-a-repeat", "cache-profile-b-prime", "cache-profile-b-repeat"]) {
+    const item = redirectObservations.find((entry) => entry.id === id); item.response_preview.text = "stable profile"; if (id.endsWith("repeat")) item.response_headers = hitHeaders;
+  }
+  for (const index of [0, 1]) for (const id of [`poison-${index}`, `poison-clean-${index}`, `poison-confirm-${index}`]) {
+    const item = redirectObservations.find((entry) => entry.id === id); item.status_code = 302; item.response_length = 0; item.response_body_hash = "empty"; item.response_headers = [responseHeader("Location", `http://example.test/login?hp_cache_bust=trial${index}`), responseHeader("X-Cache", id === `poison-${index}` ? "MISS" : "HIT")];
+  }
+  const redirectResult = plugin.analyze(redirectInput, redirectObservations, cacheContext);
+  assert.equal(redirectResult.findings.length, 1, "a fresh scheme-induced redirect persisting in two clean HIT responses is confirmed");
+  assert.equal(redirectResult.findings[0].metadata.proof, "same_key_redirect_persistence_with_explicit_hit");
+  const httpsBaselineRedirect = redirectObservations.map((item) => ({ ...item, response_headers: item.response_headers.slice() }));
+  for (const id of ["cache-profile-a-prime", "cache-profile-a-repeat", "cache-profile-b-prime", "cache-profile-b-repeat"]) {
+    const item = httpsBaselineRedirect.find((entry) => entry.id === id); item.status_code = 302; item.response_length = 0; item.response_body_hash = "empty"; item.response_headers = [responseHeader("Location", "/login"), responseHeader("X-Cache", id.endsWith("repeat") ? "HIT" : "MISS")];
+  }
+  const httpsBaselineResult = plugin.analyze(redirectInput, httpsBaselineRedirect, cacheContext);
+  assert.equal(httpsBaselineResult.findings.length, 1, "a stable HTTPS or relative baseline redirect can prove an otherwise identical HTTP scheme mutation");
+  assert.equal(httpsBaselineResult.findings[0].evidence_exchange_ids.length, 6, "both independent redirect trials are retained as finding evidence");
+  const changedRedirectTarget = httpsBaselineRedirect.map((item) => ({ ...item, response_headers: item.response_headers.slice() }));
+  for (const index of [0, 1]) for (const id of [`poison-${index}`, `poison-clean-${index}`, `poison-confirm-${index}`]) {
+    const item = changedRedirectTarget.find((entry) => entry.id === id); item.response_headers = [responseHeader("Location", `http://example.test/other?hp_cache_bust=trial${index}`), responseHeader("X-Cache", id === `poison-${index}` ? "MISS" : "HIT")];
+  }
+  assert.equal(plugin.analyze(redirectInput, changedRedirectTarget, cacheContext).findings.length, 0, "a markerless scheme oracle cannot claim a redirect whose host/path target also changed");
+  const preexistingRedirect = redirectObservations.map((item) => ({ ...item, response_headers: item.response_headers.slice() }));
+  for (const [index, id] of ["baseline-with-project-credentials-1", "baseline-with-project-credentials-2", "baseline-without-project-credentials-1", "baseline-without-project-credentials-2"].entries()) {
+    const item = preexistingRedirect.find((entry) => entry.id === id); item.status_code = 302; item.response_headers = [responseHeader("Location", `http://example.test/login?hp_cache_bust=existing${index}`)];
+  }
+  assert.equal(plugin.analyze(redirectInput, preexistingRedirect, cacheContext).findings.length, 0, "a redirect already present in clean baselines is not credited to the scheme header");
+  const ordinaryVaryingRedirect = redirectObservations.map((item) => ({ ...item, response_headers: item.response_headers.slice() }));
+  for (const [index, id] of ["baseline-with-project-credentials-1", "baseline-with-project-credentials-2", "baseline-without-project-credentials-1", "baseline-without-project-credentials-2"].entries()) {
+    const item = ordinaryVaryingRedirect.find((entry) => entry.id === id); item.status_code = 302; item.response_headers = [responseHeader("Location", `http://example.test/login?hp_cache_bust=baseline${index}`)];
+  }
+  assert.equal(plugin.analyze(redirectInput, ordinaryVaryingRedirect, cacheContext).findings.length, 0, "ordinary redirects that differ only by the cache buster cannot satisfy the markerless scheme oracle");
   assert.deepEqual({ ...confirmed.result.credential_mode }, {
     baseline_with_project_credentials: "with_project_credentials",
     baseline_without_project_credentials: "without_project_credentials",

@@ -158,7 +158,7 @@ function validateLimits(value) {
   requireInteger(limits.max_concurrency, "limits.max_concurrency", 1, 100);
   requireInteger(limits.memory_mb, "limits.memory_mb", 4, 64);
   if (limits.js_stage_timeout_ms !== undefined) {
-    requireInteger(limits.js_stage_timeout_ms, "limits.js_stage_timeout_ms", 250, 15_000);
+    requireInteger(limits.js_stage_timeout_ms, "limits.js_stage_timeout_ms", 250, 120_000);
   }
 }
 
@@ -300,7 +300,7 @@ export async function validatePluginDirectory(pluginDirectory) {
     }
   }
 
-  loadEntrypoint(entrypoint, manifest.entrypoint, manifest.limits.js_stage_timeout_ms ?? 2_000);
+  loadEntrypoint(entrypoint, manifest.entrypoint, Math.min(manifest.limits.js_stage_timeout_ms ?? 2_000, 2_000));
 
   return {
     directory,

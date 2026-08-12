@@ -62,7 +62,7 @@ operation against the manifest capabilities.
 | Planned requests | 100 | 1–10,000 |
 | Request concurrency | 4 | 1–100, then reduced to the project limit |
 | QuickJS memory | 16 MiB | 4–64 MiB |
-| Each `plan`/`analyze` stage | 2,000 ms | 250–15,000 ms |
+| Each `plan`/`analyze` stage | 2,000 ms legacy fallback; 60,000 ms first-party | 250–120,000 ms |
 | Entrypoint | — | 4 MiB |
 | Plugin input | — | 2 MiB |
 | Final result | — | 8 MiB |
@@ -72,6 +72,12 @@ operation against the manifest capabilities.
 workflow steps, raw-group members, HTTP/2 streams, race requests, and AWS
 regions all count. `max_concurrency` is also reduced to the project's request
 concurrency limit. At most four plugin jobs run at once across the host.
+`extension_describe` also returns host-resolved `effective_limits`, making an
+omitted or clamped value visible before execution. `extension_preview` runs the
+real planner without network traffic and reports stage-scoped request,
+candidate, runtime, and mode estimates. If execution completed but aggregation
+timed out, `job_resume_analysis` retries the retained analysis without replaying
+any probes.
 
 ## JavaScript lifecycle
 

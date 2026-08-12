@@ -158,7 +158,7 @@
       value = "2001:db8::" + derivedNumber(markerValue, 1, 65534).toString(16);
       return { value: value, marker: value };
     }
-    if (/(?:scheme|proto|protocol|front-end-https|forwarded-ssl)$/.test(key)) return { value: "http", marker: null };
+    if (/(?:scheme|proto|protocol|front-end-https|forwarded-ssl)$/.test(key)) return { value: "http", marker: null, redirect_oracle: "http_scheme" };
     if (/(?:method|method-override)$/.test(key)) return { value: "HEAD", marker: null };
     if (/(?:port)$/.test(key)) {
       value = String(derivedNumber(markerValue, 20000, 40000)); return { value: value, marker: value };
@@ -184,7 +184,7 @@
       if (!name || unsafe[key] || seen[key] || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) return false;
       seen[key] = true;
       var markerValue = token + "h" + output.length.toString(36), typed = typedHeaderValue(name, pieces.join("~"), markerValue);
-      output.push({ raw: String(entry), name: name, key: key, value: typed.value, marker: typed.marker });
+      output.push({ raw: String(entry), name: name, key: key, value: typed.value, marker: typed.marker, redirect_oracle: typed.redirect_oracle || null });
       return output.length >= maximum;
     });
     return output;
@@ -234,9 +234,12 @@
       return { name: name, value: typed.value, marker: typed.marker };
     }
     if (includeHeaders && familyEnabled(input, "headers")) headerCandidates(input, context, token).forEach(function (candidate) {
-      var shared = input.shared_header_cache_key_oracle === true, clean = shared ? baseUrl : addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":" + candidate.key));
-      var headers = [{ name: candidate.name, value: candidate.value }]; if (shared) headers.push({ name: "Cache-Control", value: "no-cache" });
-      variants.push({ family: "headers", name: "header:" + candidate.key, cache_key_mode: shared ? "shared" : "isolated", poison_url: clean, clean_url: clean, headers: headers, marker: candidate.marker, raw: candidate.raw });
+      var shared = input.shared_header_cache_key_oracle === true, trials = candidate.redirect_oracle && !shared ? 2 : 1;
+      for (var trial = 0; trial < trials; trial += 1) {
+        var clean = shared ? baseUrl : addQuery(baseUrl, "hp_cache_bust", cacheBuster(token + ":" + candidate.key + ":" + trial));
+        var headers = [{ name: candidate.name, value: candidate.value }]; if (shared) headers.push({ name: "Cache-Control", value: "no-cache" });
+        variants.push({ family: "headers", name: "header:" + candidate.key, cache_key_mode: shared ? "shared" : "isolated", poison_url: clean, clean_url: clean, headers: headers, marker: candidate.marker, redirect_oracle: candidate.redirect_oracle || null, redirect_trial: trial, raw: candidate.raw });
+      }
     });
     var combinations = input.header_combinations || [["X-Forwarded-Host~%s.invalid", "X-Forwarded-Scheme~http"]];
     (familyEnabled(input, "header-combinations") ? combinations : []).slice(0, Math.max(0, Math.min(Number(input.max_header_combinations == null ? 12 : input.max_header_combinations), 20))).forEach(function (combination, index) {
@@ -442,7 +445,7 @@
           discoveryOperations.push(request("discover-exact-repeat-" + index, exchange.exchange_id, "GET", url, [], true));
         }
       });
-      return { execution: "sequential", operations: discoveryOperations, result: { marker: token, scan_mode: scanMode, phase: phase, operation_count: discoveryOperations.length, discovery_targets: targets, discovery_target_count: targets.length, discovery_target_limit: boundedInteger(input.max_discovery_targets, 12, 1, 30), sequential_execution_required: true } };
+      return { execution: "sequential", operations: discoveryOperations, preview: { stage: phase, scope: "current_stage", follow_up_expected: true, candidate_count: targets.length, candidate_unit: "target_urls", candidate_breakdown: { discovery_targets: targets.length }, selected_mode: scanMode, supported_modes: ["light", "full"], recommended_mode: "full", recommendation: scanMode === "light" ? "Light profiles one cacheable target; Full can continue through up to three targets and complete advanced families." : "Full provides complete staged cache-key and advanced-family coverage." }, result: { marker: token, scan_mode: scanMode, phase: phase, operation_count: discoveryOperations.length, discovery_targets: targets, discovery_target_count: targets.length, discovery_target_limit: boundedInteger(input.max_discovery_targets, 12, 1, 30), sequential_execution_required: true } };
     }
     var poisonAttempts = boundedInteger(input.poison_attempts, 1, 1, 20);
     var poisonInterval = boundedInteger(input.poison_interval_ms, 0, 0, 30000);
@@ -563,7 +566,9 @@
       coverage.deception.generated = deceptionSet.length; coverage.deception.tested = deceptionSet.length;
       coverage["url-normalization"].generated = normalizationEnabled ? 1 : 0; coverage["url-normalization"].tested = normalizationEnabled && phase === "advanced" ? 1 : 0; coverage["url-normalization"].deferred = coverage["url-normalization"].generated - coverage["url-normalization"].tested;
     }
-    return { execution: "sequential", operations: operations, result: { marker: token, scan_mode: scanMode, phase: phase, operation_count: operations.length, poison_attempts: poisonAttempts, poison_interval_ms: poisonInterval, cumulative_delay_budget_ms: 600000, poison_variants: selectedPoisonVariants.length, screened_groups: selectedScreenGroups.length, screen_cursor: screenCursor, screen_next_cursor: phase === "screen" && screenCursor + selectedScreenGroups.length < screenGroups.length ? screenCursor + selectedScreenGroups.length : null, screen_total_groups: screenGroups.length, coverage: coverage, coverage_unit: "candidate_inputs", poison_variant_limit_applied: selectedPoisonVariants.length < Math.min(requestedPoisonLimit, generatedPoisonVariants.length), operation_budget: 2000, sequential_execution_required: true } };
+    var candidateBreakdown = {}, candidateTotal = 0; Object.keys(coverage).forEach(function (family) { var count = Number(coverage[family].generated || 0); if (count) { candidateBreakdown[family] = count; candidateTotal += count; } });
+    var followExpected = scanMode === "full" && phase !== "advanced";
+    return { execution: "sequential", operations: operations, preview: { stage: phase, scope: "current_stage", follow_up_expected: followExpected, candidate_count: candidateTotal, candidate_unit: "candidate_inputs", candidate_breakdown: candidateBreakdown, selected_mode: scanMode, supported_modes: ["light", "full"], recommended_mode: "full", recommendation: scanMode === "light" ? "Light is the quick high-yield option; Full adds complete wordlists, cookies, request-shape, and deception families." : "Full provides complete staged cache-key and advanced-family coverage." }, result: { marker: token, scan_mode: scanMode, phase: phase, operation_count: operations.length, poison_attempts: poisonAttempts, poison_interval_ms: poisonInterval, cumulative_delay_budget_ms: 600000, poison_variants: selectedPoisonVariants.length, screened_groups: selectedScreenGroups.length, screen_cursor: screenCursor, screen_next_cursor: phase === "screen" && screenCursor + selectedScreenGroups.length < screenGroups.length ? screenCursor + selectedScreenGroups.length : null, screen_total_groups: screenGroups.length, coverage: coverage, coverage_unit: "candidate_inputs", poison_variant_limit_applied: selectedPoisonVariants.length < Math.min(requestedPoisonLimit, generatedPoisonVariants.length), operation_budget: 2000, sequential_execution_required: true } };
   }
 
   function byId(observations) {
@@ -659,10 +664,13 @@
     if (!observation || !value) return false;
     var preparedObservation = prepared(observation), key = String(value || "").toLowerCase();
     if (Object.prototype.hasOwnProperty.call(preparedObservation.markerMatches, key)) return preparedObservation.markerMatches[key];
+    if (preparedObservation.headerSearchText.indexOf(key) !== -1) {
+      preparedObservation.markerMatches[key] = true; return true;
+    }
     if (preparedObservation.bodySearchText == null) {
       preparedObservation.bodySearchText = observation.response_body_base64 ? decodeBase64(observation.response_body_base64).toLowerCase() : preview(observation);
     }
-    var matched = preparedObservation.bodySearchText.indexOf(key) !== -1 || preparedObservation.headerSearchText.indexOf(key) !== -1;
+    var matched = preparedObservation.bodySearchText.indexOf(key) !== -1;
     preparedObservation.markerMatches[key] = matched;
     return matched;
   }
@@ -691,6 +699,34 @@
   }
 
   function cacheEvidence(observation) { return prepared(observation).cache; }
+
+  function responseHeader(observation, expectedName) {
+    var value = "";
+    (observation && observation.response_headers || []).some(function (header) {
+      if (String(header.name || "").toLowerCase() !== String(expectedName).toLowerCase()) return false;
+      value = decodeBase64(header.value_base64); return true;
+    });
+    return value;
+  }
+
+  function redirectOracle(observation, oracle) {
+    var status = Number(observation && observation.status_code || 0), location = responseHeader(observation, "location");
+    if (!oracle || [301, 302, 307, 308].indexOf(status) === -1 || !location) return null;
+    if (oracle === "http_scheme") {
+      return /^http:\/\//i.test(location) ? location : null;
+    }
+    return null;
+  }
+  function normalizedRedirectLocation(location) {
+    return String(location || "").replace(/([?&](?:amp;|#38;)?hp_cache_bust=)[^&#\s]*/gi, "$1<buster>");
+  }
+  function redirectTargetWithoutScheme(location, targetUrl) {
+    var normalized = normalizedRedirectLocation(location).replace(/([?&])(?:amp;|#38;)?hp_cache_bust=<buster>(?:&)?/gi, function (match, separator) { return separator === "?" && /&$/.test(match) ? "?" : ""; }).replace(/[?&]$/, ""), authority = String(targetUrl || "").match(/^https?:\/\/([^/]+)/i);
+    if (/^https?:\/\//i.test(normalized)) return normalized.replace(/^https?:\/\//i, "//");
+    if (/^\/\//.test(normalized)) return normalized;
+    if (/^\//.test(normalized) && authority) return "//" + authority[1].toLowerCase() + normalized;
+    return null;
+  }
   function pairedCacheEvidence(first, second) {
     var a = cacheEvidence(first), b = cacheEvidence(second), state = a.state === "hit" || b.state === "hit" ? "hit" : a.state === "uncacheable" || b.state === "uncacheable" ? "uncacheable" : a.state === "miss" || b.state === "miss" ? "miss" : "unknown";
     var seen = {}, evidence = [];
@@ -790,14 +826,16 @@
     function assessPair(prime, repeat, mode) {
       var stable = usableResponse(prime) && usableResponse(repeat) && same(prime, repeat);
       var status = Number(repeat && repeat.status_code || 0), nonempty = Number(repeat && repeat.response_length || 0) > 0;
-      var cache = pairedCacheEvidence(prime, repeat), accepted = stable && status >= 200 && status < 300 && status !== 204 && nonempty && cache.state === "hit";
-      return { mode: mode, stable: !!stable, usable_success: !!(status >= 200 && status < 300 && status !== 204 && nonempty), cache: cache, eligible: !!accepted };
+      var redirect = [301, 302, 307, 308].indexOf(status) !== -1 && !!responseHeader(repeat, "location");
+      var usableTarget = (status >= 200 && status < 300 && status !== 204 && nonempty) || redirect;
+      var cache = pairedCacheEvidence(prime, repeat), accepted = stable && usableTarget && cache.state === "hit";
+      return { mode: mode, stable: !!stable, usable_target_response: !!usableTarget, cache: cache, eligible: !!accepted };
     }
     targets.forEach(function (url, index) {
       var isolatedA = assessPair(map["discover-isolated-a-prime-" + index], map["discover-isolated-a-repeat-" + index], "isolated");
       var isolatedB = assessPair(map["discover-isolated-b-prime-" + index], map["discover-isolated-b-repeat-" + index], "isolated");
       var isolatedBPrime = cacheEvidence(map["discover-isolated-b-prime-" + index]);
-      var isolated = { mode: "isolated", stable: isolatedA.stable && isolatedB.stable, usable_success: isolatedA.usable_success && isolatedB.usable_success, cache: pairedCacheEvidence(map["discover-isolated-a-repeat-" + index], map["discover-isolated-b-repeat-" + index]), key_b_prime: isolatedBPrime, eligible: isolatedA.eligible && isolatedB.eligible && isolatedBPrime.state !== "hit" };
+      var isolated = { mode: "isolated", stable: isolatedA.stable && isolatedB.stable, usable_target_response: isolatedA.usable_target_response && isolatedB.usable_target_response, cache: pairedCacheEvidence(map["discover-isolated-a-repeat-" + index], map["discover-isolated-b-repeat-" + index]), key_b_prime: isolatedBPrime, eligible: isolatedA.eligible && isolatedB.eligible && isolatedBPrime.state !== "hit" };
       var exact = input.allow_shared_cache_key_tests === true ? assessPair(map["discover-exact-prime-" + index], map["discover-exact-repeat-" + index], "shared") : null;
       var selectedProfile = isolated.eligible ? isolated : exact && exact.eligible ? exact : null;
       var entry = { url: url, isolated: isolated, exact: exact, eligible: !!selectedProfile, cache_key_mode: selectedProfile && selectedProfile.mode, selected: false };
@@ -817,7 +855,7 @@
       else delete follow.shared_header_cache_key_oracle;
     }
     var discovery = base(context).page_discovery || {};
-    return { findings: [], result: { marker: token, scan_mode: scanMode, phase: "discover", tested_operations: observations.length, discovery_targets: examined, eligible_target_count: eligible.length, selected_target_count: selectedTargets.length, discovery_source_total: Number(discovery.total || targets.length - 1), discovery_source_truncated: !!discovery.truncated, selection_reason: selectedTargets.length ? "stable_2xx_nonempty_explicit_cache_hit" : "no_cacheable_target_found", follow_up: follow } };
+    return { findings: [], result: { marker: token, scan_mode: scanMode, phase: "discover", tested_operations: observations.length, discovery_targets: examined, eligible_target_count: eligible.length, selected_target_count: selectedTargets.length, discovery_source_total: Number(discovery.total || targets.length - 1), discovery_source_truncated: !!discovery.truncated, selection_reason: selectedTargets.length ? "stable_cacheable_http_response_explicit_hit" : "no_cacheable_target_found", follow_up: follow } };
   }
 
   function analyzeScreen(input, context, token, targetUrl, map, observations) {
@@ -896,6 +934,7 @@
     var withoutStable = usableResponse(withoutCredentials) && usableResponse(withoutCredentialsRepeat) && same(withoutCredentials, withoutCredentialsRepeat);
     var baseLooksPrivate = withStable && withoutStable && !same(withCredentials, withoutCredentials);
     var profile = cacheProfile(map);
+    var redirectTrials = {};
     if (modes.indexOf("poisoning") !== -1) {
       var poisonAttempts = boundedInteger(input.poison_attempts, 1, 1, 20);
       var poisonInterval = boundedInteger(input.poison_interval_ms, 0, 0, 30000);
@@ -924,23 +963,37 @@
         var usableAttempts = attempts.filter(function (item) { return usableResponse(item.observation); });
         var markerAttempt = expectedMarker && usableAttempts.find(function (item) { return containsMarker(item.observation, expectedMarker); });
         var persistedMarker = !!(markerAttempt && containsMarker(clean, expectedMarker) && containsMarker(confirm, expectedMarker));
+        var redirectAttempt = !expectedMarker && variant.redirect_oracle && usableAttempts.find(function (item) { return !!redirectOracle(item.observation, variant.redirect_oracle); });
+        var expectedCleanLocation = redirectAttempt && redirectOracle(redirectAttempt.observation, variant.redirect_oracle);
+        var baselineLocations = [withCredentials, withCredentialsRepeat, withoutCredentials, withoutCredentialsRepeat, map["cache-profile-a-prime"], map["cache-profile-a-repeat"], map["cache-profile-b-prime"], map["cache-profile-b-repeat"]].map(function (item) { return responseHeader(item, "location"); }).filter(Boolean);
+        var normalizedPoisonLocation = normalizedRedirectLocation(expectedCleanLocation), normalizedCleanLocation = normalizedRedirectLocation(responseHeader(clean, "location")), normalizedConfirmLocation = normalizedRedirectLocation(responseHeader(confirm, "location"));
+        var poisonTarget = redirectTargetWithoutScheme(expectedCleanLocation, targetUrl);
+        var sameRedirectTarget = !baselineLocations.length || baselineLocations.some(function (location) { return redirectTargetWithoutScheme(location, targetUrl) === poisonTarget; });
+        var persistedRedirect = !!(redirectAttempt && expectedCleanLocation && poisonTarget && sameRedirectTarget && baselineLocations.every(function (location) { return normalizedRedirectLocation(location) !== normalizedPoisonLocation; }) && normalizedCleanLocation === normalizedPoisonLocation && normalizedConfirmLocation === normalizedPoisonLocation && Number(clean && clean.status_code) === Number(redirectAttempt.observation.status_code) && Number(confirm && confirm.status_code) === Number(redirectAttempt.observation.status_code));
         var cache = pairedCacheEvidence(clean, confirm), exactHit = cache.state === "hit";
-        var poisonCache = markerAttempt ? cacheEvidence(markerAttempt.observation) : { state: "unknown", evidence: [] };
+        var proofAttempt = markerAttempt || redirectAttempt;
+        var poisonCache = proofAttempt ? cacheEvidence(proofAttempt.observation) : { state: "unknown", evidence: [] };
         var sharedAcknowledged = variant.cache_key_mode === "shared" && input.allow_shared_cache_key_tests === true;
         var isolationAccepted = sharedAcknowledged || profile.isolation_verified;
-        var poisonWasFresh = !!(markerAttempt && poisonCache.state !== "hit" && (sharedAcknowledged || poisonCache.state === "miss" || profile.isolation_verified));
-        if (persistedMarker && exactHit && isolationAccepted && poisonWasFresh) {
-          var evidenceItems = [markerAttempt.observation, clean, confirm].filter(Boolean);
-          var fingerprint = effectFingerprint(clean, expectedMarker), rootCause = "cache-poisoning:" + endpointRoot(targetUrl) + ":" + fingerprint;
+        var poisonWasFresh = !!(proofAttempt && poisonCache.state !== "hit" && (sharedAcknowledged || poisonCache.state === "miss" || profile.isolation_verified));
+        var redirectProofComplete = false, redirectProofEvidence = [];
+        if (persistedRedirect && exactHit && isolationAccepted && poisonWasFresh) {
+          var redirectKey = variant.name + ":" + normalizedPoisonLocation, redirectTrial = redirectTrials[redirectKey] || { count: 0, evidence: [] };
+          redirectTrial.count += 1; [proofAttempt.observation, clean, confirm].forEach(function (item) { if (item) redirectTrial.evidence.push(item); }); redirectTrials[redirectKey] = redirectTrial;
+          redirectProofComplete = redirectTrial.count >= 2; redirectProofEvidence = redirectTrial.evidence;
+        }
+        if ((persistedMarker || redirectProofComplete) && exactHit && isolationAccepted && poisonWasFresh) {
+          var evidenceItems = persistedRedirect ? redirectProofEvidence : [proofAttempt.observation, clean, confirm].filter(Boolean);
+          var proofValue = expectedMarker || expectedCleanLocation, fingerprint = effectFingerprint(clean, proofValue), rootCause = "cache-poisoning:" + endpointRoot(targetUrl) + ":" + fingerprint;
           findings.push({
             title: "Web cache poisoning via " + variant.name,
             severity: "high",
             confidence: "firm",
-            explanation: "A candidate-specific marker from the poisoning request was returned by two same-key clean requests, with an explicit cache HIT signal on the clean responses.",
+            explanation: persistedRedirect ? "A scheme header caused a deterministic HTTP redirect that was absent from clean baselines and persisted unchanged in two same-key clean cache HIT responses." : "A candidate-specific marker from the poisoning request was returned by two same-key clean requests, with an explicit cache HIT signal on the clean responses.",
             evidence_exchange_ids: evidenceItems.map(function (item) { return item.exchange_id; }).filter(Boolean),
-            metadata: { variant: variant.name, supporting_variants: [variant.name], variant_count: 1, root_cause: rootCause, response_fingerprint: fingerprint, finding_type: "cache_poisoning", subtype: variant.name === "full-query" ? "full-query" : variant.name, marker: expectedMarker, poison_attempt: markerAttempt.attempt, poison_cache_state: poisonCache.state, proof: "same_key_marker_persistence_with_explicit_hit", cache_state: cache.state, cache_evidence: cache.evidence, cache_key_mode: variant.cache_key_mode, cache_profile_isolation_verified: profile.isolation_verified, credential_policy: "with_project_credentials" }
+            metadata: { variant: variant.name, supporting_variants: [variant.name], variant_count: 1, root_cause: rootCause, response_fingerprint: fingerprint, finding_type: "cache_poisoning", subtype: variant.name === "full-query" ? "full-query" : variant.name, marker: expectedMarker, poison_attempt: proofAttempt.attempt, poison_cache_state: poisonCache.state, proof: persistedRedirect ? "same_key_redirect_persistence_with_explicit_hit" : "same_key_marker_persistence_with_explicit_hit", cache_state: cache.state, cache_evidence: cache.evidence, cache_key_mode: variant.cache_key_mode, cache_profile_isolation_verified: profile.isolation_verified, credential_policy: "with_project_credentials" }
           });
-        } else if (persistedMarker) {
+        } else if (persistedMarker || persistedRedirect) {
           addDiagnostic({ variant: variant.name, classification: "marker_persisted_proof_incomplete", reason: poisonCache.state === "hit" ? "The marker-bearing poison request was already a cache HIT, so it cannot prove that this request seeded the entry." : !exactHit ? "No explicit cache HIT signal was observed on clean confirmation." : !isolationAccepted ? "The cache profile did not verify that the cache buster isolates keys." : "The poison request lacked a fresh MISS signal or verified key isolation.", cache_state: cache.state, poison_cache_state: poisonCache.state, isolation_verified: profile.isolation_verified });
         } else if (usableAttempts.some(function (item) { return clean && confirm && same(item.observation, clean) && same(clean, confirm); })) {
           addDiagnostic({ variant: variant.name, classification: "inconclusive_mutation_only", reason: "A response mutation without a candidate-specific persisted marker cannot establish cache poisoning." });

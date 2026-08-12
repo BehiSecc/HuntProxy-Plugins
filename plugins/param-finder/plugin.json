@@ -2,7 +2,7 @@
   "schema_version": 1,
   "id": "param-finder",
   "name": "ParamFinder",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "description": "Discover hidden and unkeyed query, body, cookie, and header parameters using batched differential and cache-key probing.",
   "enabled": true,
   "entrypoint": "index.js",
@@ -18,7 +18,7 @@
     "words": { "path": "resources/words", "sha256": "4e4df85994746357d2ab239b85d83dedb3f3bcb504ad150964c8c7157f96acc4" }
   },
   "capabilities": ["http.semantic"],
-  "limits": { "timeout_ms": 900000, "max_operations": 5000, "max_concurrency": 8, "memory_mb": 64, "js_stage_timeout_ms": 5000 },
+  "limits": { "timeout_ms": 900000, "max_operations": 5000, "max_concurrency": 8, "memory_mb": 64, "js_stage_timeout_ms": 60000 },
   "actions": [{
     "name": "scan",
     "description": "Mine one saved request for hidden parameters, optionally supplementing the built-in words.",

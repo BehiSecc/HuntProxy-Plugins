@@ -36,6 +36,7 @@ assert.equal(limitSchema.timeout_ms.maximum, 900000);
 assert.equal(limitSchema.max_operations.maximum, 10000);
 assert.equal(limitSchema.memory_mb.maximum, 64);
 assert.equal(limitSchema.js_stage_timeout_ms.minimum, 250);
+assert.equal(limitSchema.js_stage_timeout_ms.maximum, 120000);
 const inputSchema = schema.properties.actions.items.properties.input_schema;
 assert.ok(inputSchema.required.includes("type"));
 assert.equal(inputSchema.properties.type.const, "object");

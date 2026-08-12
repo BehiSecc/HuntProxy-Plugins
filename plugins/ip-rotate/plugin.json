@@ -2,14 +2,14 @@
   "schema_version": 1,
   "id": "ip-rotate",
   "name": "IpRotate",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Enable and disable project-level AWS API Gateway IP rotation for an exact target origin.",
   "enabled": true,
   "entrypoint": "index.js",
   "entrypoint_sha256": "3721e998b5abb7fd3997b8ce6f67c7e744d436639ff6efda43dad5eeb2441f81",
   "resources": { "aws-control": { "path": "resources/aws-control.py", "sha256": "29d7457a58811fa0bd0d8b1b5dbeae751e307551edc7cc2891cf503d6ceef7e2" } },
   "capabilities": ["aws.api_gateway"],
-  "limits": { "timeout_ms": 900000, "max_operations": 30, "max_concurrency": 1, "memory_mb": 16 },
+  "limits": { "timeout_ms": 900000, "max_operations": 30, "max_concurrency": 1, "memory_mb": 16, "js_stage_timeout_ms": 60000 },
   "actions": [
     {
       "name": "enable",
