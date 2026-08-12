@@ -70,6 +70,8 @@
       { name: "encoded-dot", role: "filename-bypass", filename: value + "%2e" + prohibited, type: capturedType, content: text },
       { name: "double-encoded-dot", role: "filename-bypass", filename: value + "%252e" + prohibited, type: capturedType, content: text },
       { name: "encoded-null-suffix", role: "filename-bypass", filename: value + "." + prohibited + "%00." + allowed, type: capturedType, content: text },
+      { name: "encoded-null-png-suffix", role: "filename-bypass", filename: value + "." + prohibited + "%00.png", type: capturedType, content: text },
+      { name: "encoded-null-jpg-suffix", role: "filename-bypass", filename: value + "." + prohibited + "%00.jpg", type: capturedType, content: text },
       { name: "encoded-slash-suffix", role: "filename-bypass", filename: value + "." + prohibited + "%2f." + allowed, type: capturedType, content: text },
       { name: "windows-ads-suffix", role: "filename-bypass", filename: value + "." + prohibited + "::$DATA." + allowed, type: capturedType, content: text },
       { name: "parent-directory", role: "path-traversal", filename: "../" + value + "." + prohibited, type: capturedType, content: text },
