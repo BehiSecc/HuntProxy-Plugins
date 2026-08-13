@@ -156,7 +156,7 @@ function validateLimits(value) {
   requireInteger(limits.timeout_ms, "limits.timeout_ms", 1_000, 900_000);
   requireInteger(limits.max_operations, "limits.max_operations", 1, 10_000);
   requireInteger(limits.max_concurrency, "limits.max_concurrency", 1, 100);
-  requireInteger(limits.memory_mb, "limits.memory_mb", 4, 64);
+  requireInteger(limits.memory_mb, "limits.memory_mb", 4, 128);
   if (limits.js_stage_timeout_ms !== undefined) {
     requireInteger(limits.js_stage_timeout_ms, "limits.js_stage_timeout_ms", 250, 120_000);
   }

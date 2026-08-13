@@ -103,6 +103,7 @@
     if (item && item.response_body_base64) return decode64(item.response_body_base64);
     return String(item && item.response_preview && item.response_preview.text || "");
   }
+  function bodyUnavailable(item) { return !!(item && item.response_body_omitted_reason); }
   function normalize(value, input) {
     var output = String(value || "").toLowerCase();
     output = output
@@ -128,7 +129,7 @@
     return total ? common / total : 0;
   }
   function same(a, b, input) {
-    if (!a || !b || a.error || b.error || a.status_code !== b.status_code) return false;
+    if (!a || !b || a.error || b.error || bodyUnavailable(a) || bodyUnavailable(b) || a.status_code !== b.status_code) return false;
     var left = normalize(text(a), input), right = normalize(text(b), input);
     var threshold = Math.max(0.5, Math.min(Number(input.similarity_threshold == null ? 0.92 : input.similarity_threshold), 1));
     return similarity(left, right) >= threshold;
@@ -148,6 +149,7 @@
   }
   function outcome(pairValue, input) {
     if (!pairValue || pairValue.attempts.some(function (item) { return !item || item.error || item.skipped; })) return "inconclusive";
+    if (((input.success_markers || []).length || (input.failure_markers || []).length) && pairValue.attempts.some(bodyUnavailable)) return "inconclusive";
     var values = pairValue.attempts.map(function (item) { return allowed(item, input); });
     if (values[0] && values[1]) return "allowed";
     if (!values[0] && !values[1]) return "not_allowed";

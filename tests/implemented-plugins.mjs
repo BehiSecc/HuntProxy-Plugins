@@ -68,6 +68,8 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const observations = plan.operations.map((op) => observation(op, 200, op.id.startsWith("baseline") ? "a" : "b", op.id.startsWith("baseline") ? "base" : "changed"));
   const result = plugin.analyze(input, observations, context());
   assert.ok(result.findings.some((finding) => finding.metadata.parameter === "debug"));
+  const compactedParam = observations.map((item) => ({ ...item, response_body_base64: null, response_body_omitted_reason: "analysis_budget", response_preview: { text: "same truncated prefix" } }));
+  assert.equal(plugin.analyze(input, compactedParam, context()).findings.length, 0, "compacted bodies cannot create parameter-change proof from matching previews");
   assert.ok(plugin.plan({ phase: "screen", locations: ["cookie"], words: ["debug"], max_words: 10 }, context()).operations.some((op) => Array.isArray(op.cookie_params)));
   assert.ok(plugin.plan({ phase: "screen", locations: ["body"], words: ["debug"], max_words: 10 }, context()).operations.some((op) => Array.isArray(op.body_params)));
 
@@ -145,6 +147,8 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const result = plugin.analyze({}, observations, context());
   assert.equal(result.findings.length, 1);
   assert.match(result.findings[0].title, /Access-control bypass/);
+  const compacted403 = observations.map((item) => ({ ...item, response_body_hash: null, response_body_base64: null, response_body_omitted_reason: "analysis_budget", response_preview: { text: "same truncated prefix" } }));
+  assert.equal(plugin.analyze({}, compacted403, context()).findings.length, 0, "compacted previews cannot prove a 403 bypass");
 
   const falsePositive = plan.operations.map((op) => observation(op));
   for (const item of falsePositive.filter((item) => item.id.startsWith("carrier-root-") || /^variant-(?:[0-9]+)-(?:0|1)$/.test(item.id))) {
@@ -192,7 +196,8 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const cacheContext = context("https://example.test/account");
   cacheContext.resources = { headers: headerResource, cookies: cookieResource, parameters: parameterResource };
 
-  assert.equal(cacheManifest.version, "0.14.1");
+  assert.equal(cacheManifest.version, "0.15.0");
+  assert.equal(cacheManifest.limits.memory_mb, 96);
   assert.equal(cacheManifest.limits.js_stage_timeout_ms, 60000);
   assert.equal(cacheManifest.actions[0].input_schema.properties.scan_mode.default, "full");
 
@@ -235,6 +240,7 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.equal(plugin.analyze(discoveryInput, redirectWithoutLocation, discoveryContext).result.follow_up, null, "empty redirect responses without Location are not discovery targets");
 
   const screenPlan = plugin.plan(fullInput, cacheContext);
+  assert.ok(screenPlan.operations.filter((op) => op.id.startsWith("screen-")).every((op) => op.observe?.body_bytes === 0 && op.observe.body_contains.length > 0), "screening uses host-side full-body marker search without copying bodies into analysis");
   assert.equal(screenPlan.result.scan_mode, "full");
   assert.equal(screenPlan.result.phase, "screen");
   assert.equal(plugin.plan({ ...fullInput, marker: "hpfullstage123" }, cacheContext).result.marker, "hpfullstage123", "already namespaced markers are not double-prefixed");
@@ -508,14 +514,16 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.ok(fullDeceptionOnly.operations.some((op) => op.id.startsWith("deception-with-project-credentials-")));
   const duplicatePlan = plugin.plan(duplicateDeceptionInput, context("https://example.test/account"));
   const duplicateObservations = duplicatePlan.operations.map((op) => {
-    const without = op.id.startsWith("baseline-without-project-credentials-");
+    const without = op.id.startsWith("baseline-without-project-credentials-") || op.id.startsWith("deception-baseline-without-project-credentials-");
     const deceptive = op.id.startsWith("deception-");
     const item = observation(op, 200, without ? "public" : "private", without ? "public" : deceptive ? "private" : "private");
-    if (op.id.startsWith("deception-without-project-credentials-") || op.id.startsWith("deception-confirm-")) item.response_headers = hitHeaders;
+    if (op.id.startsWith("deception-with-project-credentials-") && !op.id.startsWith("deception-baseline-")) item.response_headers = [responseHeader("X-Cache", "MISS"), responseHeader("Cache-Control", "max-age=30")];
+    if (op.id.startsWith("deception-without-project-credentials-") || op.id.startsWith("deception-confirm-")) item.response_headers = hitHeaders.concat(responseHeader("Cache-Control", "max-age=30"));
     return item;
   });
   const deduped = plugin.analyze(duplicateDeceptionInput, duplicateObservations, context("https://example.test/account")).findings;
   assert.equal(deduped.length, 1);
+  assert.equal(deduped[0].metadata.proof, "private_miss_then_two_anonymous_hits");
   assert.ok(deduped[0].metadata.variant_count > 1);
   assert.equal(deduped[0].metadata.seed_credential_policy, "with_project_credentials");
   assert.equal(deduped[0].metadata.retrieval_credential_policy, "without_project_credentials");
@@ -535,6 +543,33 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const preexistingDeception = duplicateObservations.map((item) => ({ ...item, response_headers: item.response_headers.slice() }));
   for (const item of preexistingDeception.filter((entry) => entry.id.startsWith("deception-with-project-credentials-"))) item.response_headers = hitHeaders;
   assert.equal(plugin.analyze(duplicateDeceptionInput, preexistingDeception, context("https://example.test/account")).findings.length, 0, "an already cached credentialed deception probe cannot prove a fresh private seed");
+  const unknownSeed = duplicateObservations.map((item) => ({ ...item, response_headers: item.response_headers.slice() }));
+  for (const item of unknownSeed.filter((entry) => entry.id.startsWith("deception-with-project-credentials-"))) item.response_headers = [responseHeader("Cache-Control", "max-age=30")];
+  assert.equal(plugin.analyze(duplicateDeceptionInput, unknownSeed, context("https://example.test/account")).findings.length, 0, "an unclassified seed is not credited as a fresh cache fill");
+  const oneHitOnly = duplicateObservations.map((item) => ({ ...item, response_headers: item.response_headers.slice() }));
+  for (const item of oneHitOnly.filter((entry) => entry.id.startsWith("deception-without-project-credentials-"))) item.response_headers = [responseHeader("X-Cache", "MISS")];
+  assert.equal(plugin.analyze(duplicateDeceptionInput, oneHitOnly, context("https://example.test/account")).findings.length, 0, "both anonymous retrievals must independently report HIT");
+
+  const deceptionDiscoveryContext = context("https://example.test/account");
+  deceptionDiscoveryContext.resources = cacheContext.resources;
+  deceptionDiscoveryContext.base_exchange.page_discovery = { targets: ["https://example.test/app.js"] };
+  assert.equal(plugin.plan({ ...duplicateDeceptionInput, scan_mode: "full" }, deceptionDiscoveryContext).result.phase, "advanced", "deception-only scans do not require the private base URL to be cacheable before testing path variants");
+
+  const separatedInput = { ...duplicateDeceptionInput, scan_mode: "full", phase: "advanced", target_url: "https://example.test/resources/app.js", deception_base_url: "https://example.test/account" };
+  const separatedPlan = plugin.plan(separatedInput, cacheContext);
+  const separatedObservations = separatedPlan.operations.map((op) => {
+    const publicResource = op.id.startsWith("baseline-");
+    const publicAccount = op.id.startsWith("deception-baseline-without-");
+    const item = observation(op, 200, publicResource ? "resource" : publicAccount ? "public-account" : "private-account", publicResource ? "public resource" : publicAccount ? "login" : "private account data");
+    if (op.id.startsWith("deception-with-project-credentials-") && !op.id.startsWith("deception-baseline-")) item.response_headers = [responseHeader("X-Cache", "MISS"), responseHeader("Cache-Control", "max-age=30")];
+    if (op.id.startsWith("deception-without-project-credentials-") || op.id.startsWith("deception-confirm-")) item.response_headers = hitHeaders.concat(responseHeader("Cache-Control", "max-age=30"));
+    return item;
+  });
+  const separatedFinding = plugin.analyze(separatedInput, separatedObservations, cacheContext).findings.find((finding) => finding.metadata.variant === "delimiter:;:js");
+  assert.ok(separatedFinding, "PortSwigger-style path delimiter deception is proven without marker reflection even when poisoning uses a separate public resource target");
+  const conflictingCache = separatedObservations.map((item) => ({ ...item, response_headers: item.response_headers.slice() }));
+  for (const item of conflictingCache.filter((entry) => entry.id.startsWith("deception-without-project-credentials-") || entry.id.startsWith("deception-confirm-"))) item.response_headers.push(responseHeader("Cache-Control", "private"));
+  assert.equal(plugin.analyze(separatedInput, conflictingCache, cacheContext).findings.length, 0, "private/no-store evidence overrides apparent HIT headers");
 
   assert.throws(() => plugin.plan({ marker: "unsafe1234", scan_mode: "light" }, cacheContext), /allow_cache_side_effects/);
   assert.throws(() => plugin.plan({ ...strictInput, allow_shared_cache_key_tests: undefined }, cacheContext), /allow_shared_cache_key_tests/);
@@ -593,6 +628,8 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
   const materiallyDifferentResult = plugin.analyze(input, materiallyDifferent, ctx);
   assert.equal(materiallyDifferentResult.result.classifications[0].primary_outcome, "allowed");
   assert.equal(materiallyDifferentResult.result.classifications[0].primary_stable, false);
+  const compactedAuth = observations.map((item) => ({ ...item, response_body_base64: null, response_body_omitted_reason: "analysis_budget", response_preview: { text: "same truncated prefix" } }));
+  assert.equal(plugin.analyze(input, compactedAuth, ctx).result.classifications[0].primary_stable, false, "compacted bodies cannot establish authorization-response stability from previews");
   const semanticTokenDifference = volatile.map((item) => ({ ...item }));
   semanticTokenDifference.find((item) => item.id === "shape-0-primary-0").response_preview.text = '{"avatar":"https://cdn.test/a?token=identity-one"}';
   semanticTokenDifference.find((item) => item.id === "shape-0-primary-1").response_preview.text = '{"avatar":"https://cdn.test/a?token=identity-two"}';
@@ -663,6 +700,8 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
   const observations = plan.operations.map((op) => observation(op, 200, "authenticated", "account"));
   const result = plugin.analyze(input, observations, ctx);
   assert.equal(result.findings.filter((finding) => /bypass/i.test(finding.title)).length, 3);
+  const compactedJwt = observations.map((item) => ({ ...item, response_body_base64: null, response_body_omitted_reason: "analysis_budget", response_preview: { text: "same truncated prefix" } }));
+  assert.equal(plugin.analyze(input, compactedJwt, ctx).findings.filter((finding) => /bypass/i.test(finding.title)).length, 0, "compacted bodies cannot prove a JWT bypass from matching previews");
 
   const hsHeader = encode({ alg: "HS256", typ: "JWT" });
   const hsPayload = encode({ sub: "user", exp: 4102444800 });

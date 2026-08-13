@@ -6,7 +6,7 @@
   "description": "Replay saved request shapes under two distinct supplied identities, or explicitly audit an expected-protected shape anonymously.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "21778f5b81930f8a0e63beec910e18236551bf9e9978c960927ea6f51cff9af2",
+  "entrypoint_sha256": "aa7809193a09089c362371d4509af310e38a6368aace565b4bca1d8059db7700",
   "capabilities": ["http.semantic", "identity.use"],
   "limits": { "timeout_ms": 900000, "max_operations": 3000, "max_concurrency": 4, "memory_mb": 48, "js_stage_timeout_ms": 60000 },
   "actions": [{

@@ -30,6 +30,12 @@ host. Supplying `target_url` explicitly skips automatic discovery. When no
 cacheable target is proven, discovery returns `no_cacheable_target_found` and
 does not spend the broad probing budget.
 
+Deception-only scans skip poisoning discovery and test variants of the private
+base URL directly; that URL is not expected to be cacheable in its ordinary
+form. When poisoning discovery selects a separate static resource, deception
+uses dedicated private/public baselines on `deception_base_url` rather than the
+resource baselines.
+
 A screen page that cannot fit under the 2,000-operation limit returns another
 screen follow-up with `screen_cursor` and accumulated candidates. Coverage is
 never implied: every result reports generated, tested, deferred, and skipped
@@ -87,6 +93,11 @@ same freshness and key-isolation gates. Generic status changes remain
 diagnostic-only.
 Deception equality uses full captured-body hashes or normalized full bodies;
 matching previews alone cannot establish a private-response cache leak.
+Marker reflection is not required for deception. Firm proof requires an
+explicit authenticated MISS whose full representation matches the private
+baseline, followed by two credential-free HIT responses on the exact same
+unique path that reproduce that private representation. Conflicting
+`private`/`no-store`/`Vary: *` evidence overrides apparent HIT headers.
 
 Cache evidence recognizes positive `Age`, `X-Cache`,
 `CF-Cache-Status`, `X-Cache-Hits`, and `Cache-Status` values while
@@ -112,8 +123,12 @@ candidates. Bounded diagnostic arrays include total and truncation fields.
 
 Operations execute sequentially because each poison/clean/confirm sequence is
 order-sensitive. Network execution is capped at 2,000 operations and 15
-minutes. Aggregation has a separate bounded 10-second JavaScript budget for
-large captured bodies. Retry scheduling also caps cumulative planned delay at
+minutes. Broad screening uses host-side full-body exact-marker searches and
+does not copy response bodies into JavaScript. Confirmation retains only a
+bounded body prefix plus full hashes and marker-search results. The host also
+enforces an aggregate analysis payload budget, preserving exchanges, hashes,
+headers, previews, and proof booleans when bodies must be omitted. Aggregation
+has a separate bounded JavaScript budget. Retry scheduling also caps cumulative planned delay at
 10 minutes and reduces the selected variant count when necessary. The saved
 base exchange must use GET or HEAD; the plugin does not replay state-changing
 methods as part of cache discovery.

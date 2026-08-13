@@ -326,7 +326,18 @@ response_body_base64, response_body_truncated
 ```
 
 Response header values and bodies are base64. Bodies are decoded when safe and
-bounded to 256 KiB. Operation-specific wrappers are:
+bounded to 256 KiB. A semantic request may add
+`observe: {body_bytes, body_contains}`. `body_bytes` is capped at 256 KiB and
+defaults to zero when `observe` is present; up to 32 exact strings can be
+searched case-insensitively across the decoded saved body, returning
+`response_body_contains` without copying that body into JavaScript.
+`response_body_search_complete` is false when an unsupported or oversized
+encoded body could not be searched completely; plugins must treat that as
+inconclusive rather than as a negative match. The host
+also enforces a bounded aggregate analysis payload. If legacy captures exceed
+it, bodies/transcripts are omitted with an `*_omitted_reason` while hashes,
+previews, headers, evidence IDs, and host-side search results remain available.
+Operation-specific wrappers are:
 
 | Operation | Observation |
 |---|---|

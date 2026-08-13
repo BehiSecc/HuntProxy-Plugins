@@ -6,7 +6,7 @@
   "description": "Test denied endpoints with safe path, method, forwarding-header, host, and encoding variants.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "cad23973f7df7aac46517c34e9ffae15f735e73ded1b8275453ac8f4dcfc8371",
+  "entrypoint_sha256": "53c2e2d07e0396a19219d00155a0bb103913ed155131d617b7834a1dca279976",
   "capabilities": ["http.semantic", "identity.use"],
   "limits": { "timeout_ms": 300000, "max_operations": 500, "max_concurrency": 6, "memory_mb": 32, "js_stage_timeout_ms": 60000 },
   "actions": [{

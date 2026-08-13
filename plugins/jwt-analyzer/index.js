@@ -197,6 +197,7 @@
   }
   function byId(items) { var out = {}; items.forEach(function (item) { out[item.id] = item; }); return out; }
   function responseText(item) { return item && item.response_body_base64 ? decode64(item.response_body_base64) : String(item && item.response_preview && item.response_preview.text || ""); }
+  function bodyUnavailable(item) { return !!(item && item.response_body_omitted_reason); }
   function normalized(item, input) {
     var output=responseText(item).toLowerCase()
       .replace(/(<input\b[^>]*\bname=["']?(?:csrf|csrf_token|_csrf|xsrf|_token|authenticity_token)["']?[^>]*\bvalue=)["'][^"']*["']/gi,"$1\"<volatile>\"")
@@ -206,7 +207,7 @@
     (input.ignore_patterns||[]).forEach(function(pattern){try{output=output.replace(new RegExp(String(pattern),"gi"),"<ignored>");}catch(_){}}); return output;
   }
   function similarity(left,right){if(left===right)return 1;if(!left||!right)return 0;var a={},b={},u={},same=0,total=0;left.split(/[^a-z0-9_]+/).filter(Boolean).forEach(function(t){a[t]=1;u[t]=1;});right.split(/[^a-z0-9_]+/).filter(Boolean).forEach(function(t){b[t]=1;u[t]=1;});Object.keys(u).forEach(function(t){total+=1;if(a[t]&&b[t])same+=1;});return total?same/total:0;}
-  function same(a, b, input) { return !!(a && b && !a.error && !b.error && a.status_code === b.status_code && similarity(normalized(a,input),normalized(b,input)) >= Math.max(0.5,Math.min(Number(input.similarity_threshold==null?0.92:input.similarity_threshold),1))); }
+  function same(a, b, input) { return !!(a && b && !a.error && !b.error && !bodyUnavailable(a) && !bodyUnavailable(b) && a.status_code === b.status_code && similarity(normalized(a,input),normalized(b,input)) >= Math.max(0.5,Math.min(Number(input.similarity_threshold==null?0.92:input.similarity_threshold),1))); }
   function pair(map, prefix, input) { return same(map[prefix + "0"], map[prefix + "1"], input) ? map[prefix + "0"] : null; }
   function responseHeaders(item, name) {
     var output=[];

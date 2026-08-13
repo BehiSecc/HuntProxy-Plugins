@@ -341,6 +341,12 @@
     return op;
   }
 
+  function observeMarkers(operation, markers, bodyBytes) {
+    var seen = {};
+    operation.observe = { body_bytes: bodyBytes == null ? 0 : bodyBytes, body_contains: (markers || []).filter(function (value) { value = String(value || ""); if (!value || seen[value]) return false; seen[value] = true; return true; }).slice(0, 32) };
+    return operation;
+  }
+
   function poisonAttemptObservations(map, index, attempts) {
     var output = [];
     for (var attempt = 0; attempt < attempts; attempt += 1) {
@@ -370,6 +376,8 @@
 
   function requestedPhase(input, context) {
     if (["discover", "screen", "confirm", "advanced"].indexOf(input.phase) !== -1) return input.phase;
+    var modes = input.modes && input.modes.length ? input.modes : ["poisoning", "deception"];
+    if (modes.indexOf("deception") !== -1 && modes.indexOf("poisoning") === -1) return "advanced";
     if (!input.target_url && discoveryTargets(input, context).length > 1) return "discover";
     return input.scan_mode === "light" ? "confirm" : "screen";
   }
@@ -455,9 +463,15 @@
     var deceptionSet = runDeception ? deceptionVariants(deceptionBaseUrl, token, input) : [];
     var normalizationEnabled = modes.indexOf("poisoning") !== -1 && familyEnabled(input, "url-normalization") && (input.url_normalization_oracle === true || (scanMode === "full" && phase === "advanced" && input.allow_shared_cache_key_tests === true && input.url_normalization_oracle == null));
     if (normalizationEnabled && input.allow_shared_cache_key_tests !== true) throw new Error("URL-normalization testing requires allow_shared_cache_key_tests=true");
-    var reservedOperations = 8 + deceptionSet.length * 3 + (normalizationEnabled && phase === "advanced" ? 6 : 0);
+    var reservedOperations = 8 + (runDeception ? 4 : 0) + deceptionSet.length * 3 + (normalizationEnabled && phase === "advanced" ? 6 : 0);
     var generatedPoisonVariants = [], selectedPoisonVariants = [], headerSet = [], parameterSet = [], screenGroups = [], selectedScreenGroups = [], screenCursor = boundedInteger(input.screen_cursor, 0, 0, 100000);
     operations = profileOperations(exchange, targetUrl, token + ":" + phase + ":" + screenCursor);
+    if (runDeception) {
+      operations.push(request("deception-baseline-with-project-credentials-1", exchange.exchange_id, "GET", addQuery(deceptionBaseUrl, "hp_cache_bust", cacheBuster(token + ":deception:with")), [], false));
+      operations.push(request("deception-baseline-with-project-credentials-2", exchange.exchange_id, "GET", addQuery(deceptionBaseUrl, "hp_cache_bust", cacheBuster(token + ":deception:with")), [], false));
+      operations.push(request("deception-baseline-without-project-credentials-1", exchange.exchange_id, "GET", addQuery(deceptionBaseUrl, "hp_cache_bust", cacheBuster(token + ":deception:without")), [], true));
+      operations.push(request("deception-baseline-without-project-credentials-2", exchange.exchange_id, "GET", addQuery(deceptionBaseUrl, "hp_cache_bust", cacheBuster(token + ":deception:without")), [], true));
+    }
     if (modes.indexOf("poisoning") !== -1) {
       if (phase === "screen") {
         headerSet = familyEnabled(input, "headers") ? headerCandidates(input, context, token) : [];
@@ -479,10 +493,11 @@
           var screenHeaders = group.family === "headers" ? group.candidates.map(function (candidate) { return { name: candidate.name, value: candidate.value }; }) : [];
           if (group.family === "headers" && input.shared_header_cache_key_oracle === true) screenHeaders.push({ name: "Cache-Control", value: "no-cache" });
           var screenMethod = input.target_url ? "GET" : exchange.method;
-          var poisonScreen = request("screen-" + group.family + "-poison-" + group.index, exchange.exchange_id, screenMethod, screenUrl, screenHeaders, false);
+          var screenMarkers = group.candidates.map(function (candidate) { return candidate.marker; }).filter(Boolean);
+          var poisonScreen = observeMarkers(request("screen-" + group.family + "-poison-" + group.index, exchange.exchange_id, screenMethod, screenUrl, screenHeaders, false), screenMarkers, 0);
           if (group.family === "query-parameters") poisonScreen.query_params = group.candidates.map(function (candidate) { return { name: candidate.name, value: candidate.value }; });
           operations.push(poisonScreen);
-          operations.push(request("screen-" + group.family + "-clean-" + group.index, exchange.exchange_id, screenMethod, screenUrl, [], false));
+          operations.push(observeMarkers(request("screen-" + group.family + "-clean-" + group.index, exchange.exchange_id, screenMethod, screenUrl, [], false), screenMarkers, 0));
           selectedScreenGroups.push(group);
         }
       } else {
@@ -509,9 +524,12 @@
         var variantMethod = variant.family === "fat-get" || input.target_url ? "GET" : exchange.method;
         var clean = request("poison-clean-" + index, exchange.exchange_id, variantMethod, variant.clean_url, variant.clean_headers || [], false, variant.clean_cookies);
         var confirm = request("poison-confirm-" + index, exchange.exchange_id, variantMethod, variant.clean_url, variant.clean_headers || [], false, variant.clean_cookies);
+        var proofMarkers = variant.marker ? [variant.marker] : [];
+        if (proofMarkers.length) { observeMarkers(clean, proofMarkers, 65536); observeMarkers(confirm, proofMarkers, 65536); }
         for (var attempt = 0; attempt < poisonAttempts; attempt += 1) {
           var poisonId = attempt === 0 ? "poison-" + index : "poison-" + index + "-retry-" + attempt;
           var poison = request(poisonId, exchange.exchange_id, variantMethod, variant.poison_url, variant.headers, false, variant.poison_cookies);
+          if (proofMarkers.length) observeMarkers(poison, proofMarkers, 65536);
           if (variant.poison_body_base64 != null) poison.body_base64 = variant.poison_body_base64;
           if (attempt > 0 && poisonInterval > 0) poison.delay_before_ms = poisonInterval;
           operations.push(poison);
@@ -635,7 +653,7 @@
         if (/(?:^|,)\s*(?:no-store|private)(?:\s*(?:=|,|$))/i.test(value)) uncacheable.push("cache-control: " + value);
       } else if (name === "vary" && /(?:^|,)\s*\*(?:\s*(?:,|$))/i.test(value)) uncacheable.push("vary: " + value);
     });
-    var state = hit.length ? "hit" : uncacheable.length ? "uncacheable" : miss.length ? "miss" : "unknown";
+    var state = uncacheable.length ? "uncacheable" : hit.length ? "hit" : miss.length ? "miss" : "unknown";
     return { state: state, evidence: hit.concat(uncacheable, miss).slice(0, 8) };
   }
 
@@ -655,7 +673,7 @@
       headerSearchText += "\n" + name + ":" + value;
       if (!ignored[name]) { semanticHeaderText += "\n" + name + ":" + value; comparison += "\n" + name + ":" + value; }
     });
-    var result = { headerSearchText: headerSearchText, semanticHeaderText: semanticHeaderText, bodySearchText: null, normalizedBody: null, markerMatches: {}, normalizedComparison: normalizeText(comparison), cache: classifyCache(headers) };
+    var result = { headerSearchText: headerSearchText, semanticHeaderText: semanticHeaderText, markerMatches: {}, normalizedComparison: normalizeText(comparison), cache: classifyCache(headers) };
     if (key && preparedMemo) preparedMemo[key] = result;
     return result;
   }
@@ -663,14 +681,19 @@
   function containsMarker(observation, value) {
     if (!observation || !value) return false;
     var preparedObservation = prepared(observation), key = String(value || "").toLowerCase();
+    var hostMatches = observation.response_body_contains || {};
     if (Object.prototype.hasOwnProperty.call(preparedObservation.markerMatches, key)) return preparedObservation.markerMatches[key];
     if (preparedObservation.headerSearchText.indexOf(key) !== -1) {
       preparedObservation.markerMatches[key] = true; return true;
     }
-    if (preparedObservation.bodySearchText == null) {
-      preparedObservation.bodySearchText = observation.response_body_base64 ? decodeBase64(observation.response_body_base64).toLowerCase() : preview(observation);
-    }
-    var matched = preparedObservation.bodySearchText.indexOf(key) !== -1;
+    if (Object.prototype.hasOwnProperty.call(hostMatches, value)) return !!hostMatches[value];
+    if (Object.prototype.hasOwnProperty.call(hostMatches, key)) return !!hostMatches[key];
+    if (observation.response_body_search_complete === false && !observation.response_body_base64) return false;
+    // Do not retain decoded bodies in the memo. Large scans can contain
+    // hundreds of bounded bodies; keeping base64, decoded, lowercase, and
+    // normalized copies simultaneously caused analysis heap amplification.
+    var bodySearchText = observation.response_body_base64 ? decodeBase64(observation.response_body_base64).toLowerCase() : preview(observation);
+    var matched = bodySearchText.indexOf(key) !== -1;
     preparedObservation.markerMatches[key] = matched;
     return matched;
   }
@@ -688,17 +711,32 @@
     var hashA = String(a.response_body_hash || ""), hashB = String(b.response_body_hash || "");
     if (hashA && hashB && hashA === hashB) return true;
     if ((a.response_body_truncated || b.response_body_truncated) && hashA && hashB) return false;
-    function normalizedBody(observation, preparedObservation) {
-      if (preparedObservation.normalizedBody != null) return preparedObservation.normalizedBody;
-      preparedObservation.normalizedBody = normalizeText(observation.response_body_base64 ? decodeBase64(observation.response_body_base64) : preview(observation));
-      return preparedObservation.normalizedBody;
+    function normalizedBody(observation) {
+      return normalizeText(observation.response_body_base64 ? decodeBase64(observation.response_body_base64) : preview(observation));
     }
-    if (a.response_body_base64 || b.response_body_base64) return normalizedBody(a, preparedA) === normalizedBody(b, preparedB);
+    if (a.response_body_base64 || b.response_body_base64) return normalizedBody(a) === normalizedBody(b);
     if (hashA && hashB) return false;
     return preparedA.normalizedComparison === preparedB.normalizedComparison;
   }
 
   function cacheEvidence(observation) { return prepared(observation).cache; }
+
+  function sameRepresentation(a, b) {
+    if (!usableResponse(a) || !usableResponse(b) || Number(a.status_code) !== Number(b.status_code)) return false;
+    var hashA = String(a.response_body_hash || ""), hashB = String(b.response_body_hash || "");
+    if (hashA && hashB) return hashA === hashB;
+    if ((a.response_body_truncated || b.response_body_truncated) && (hashA || hashB)) return false;
+    if (a.response_body_base64 && b.response_body_base64) return a.response_body_base64 === b.response_body_base64;
+    if (a.response_body_base64 || b.response_body_base64 || hashA || hashB) return false;
+    return normalizeText(preview(a)) === normalizeText(preview(b));
+  }
+
+  function bodyFingerprint(observation) {
+    var hash = String(observation && observation.response_body_hash || "");
+    if (hash) return cacheBuster(String(observation.status_code) + ":" + hash);
+    if (observation && observation.response_body_base64 && !observation.response_body_truncated) return cacheBuster(String(observation.status_code) + ":" + observation.response_body_base64);
+    return null;
+  }
 
   function responseHeader(observation, expectedName) {
     var value = "";
@@ -728,7 +766,7 @@
     return null;
   }
   function pairedCacheEvidence(first, second) {
-    var a = cacheEvidence(first), b = cacheEvidence(second), state = a.state === "hit" || b.state === "hit" ? "hit" : a.state === "uncacheable" || b.state === "uncacheable" ? "uncacheable" : a.state === "miss" || b.state === "miss" ? "miss" : "unknown";
+    var a = cacheEvidence(first), b = cacheEvidence(second), state = a.state === "uncacheable" || b.state === "uncacheable" ? "uncacheable" : a.state === "hit" && b.state === "hit" ? "hit" : a.state === "miss" || b.state === "miss" ? "miss" : "unknown";
     var seen = {}, evidence = [];
     a.evidence.concat(b.evidence).forEach(function (value) { if (!seen[value]) { seen[value] = true; evidence.push(value); } });
     return { state: state, evidence: evidence.slice(0, 8) };
@@ -828,7 +866,7 @@
       var status = Number(repeat && repeat.status_code || 0), nonempty = Number(repeat && repeat.response_length || 0) > 0;
       var redirect = [301, 302, 307, 308].indexOf(status) !== -1 && !!responseHeader(repeat, "location");
       var usableTarget = (status >= 200 && status < 300 && status !== 204 && nonempty) || redirect;
-      var cache = pairedCacheEvidence(prime, repeat), accepted = stable && usableTarget && cache.state === "hit";
+      var cache = pairedCacheEvidence(prime, repeat), primeCache = cacheEvidence(prime), repeatCache = cacheEvidence(repeat), accepted = stable && usableTarget && primeCache.state !== "hit" && repeatCache.state === "hit";
       return { mode: mode, stable: !!stable, usable_target_response: !!usableTarget, cache: cache, eligible: !!accepted };
     }
     targets.forEach(function (url, index) {
@@ -861,7 +899,7 @@
   function analyzeScreen(input, context, token, targetUrl, map, observations) {
     var candidates = headerCandidates(input, context, token), parameters = parameterCandidates(input, context);
     var headerBucketSize = boundedInteger(input.header_bucket_size, 8, 2, 32), parameterBucketSize = boundedInteger(input.parameter_bucket_size, 6, 2, 12);
-    var selectedHeaders = (input.screen_candidate_headers || []).slice(), selectedParameters = (input.screen_candidate_parameters || []).slice(), selectedSeen = {}, parameterSeen = {}, mutations = [], mutationTotal = 0, reflected = [];
+    var selectedHeaders = (input.screen_candidate_headers || []).slice(), selectedParameters = (input.screen_candidate_parameters || []).slice(), selectedSeen = {}, parameterSeen = {}, mutations = [], mutationTotal = 0, reflected = [], bodySearchIncompleteTotal = 0;
     selectedHeaders.forEach(function (value) { selectedSeen[String(value).split("~")[0].toLowerCase()] = true; });
     selectedParameters.forEach(function (value) { parameterSeen[String(value).toLowerCase()] = true; });
     var profile = cacheProfile(map), profilePrime = map["cache-profile-a-prime"];
@@ -872,6 +910,11 @@
     function inspect(family, bucket, bucketIndex) {
       var poison = map["screen-" + family + "-poison-" + bucketIndex], clean = map["screen-" + family + "-clean-" + bucketIndex];
       if (!poison) return;
+      if (poison.response_body_search_complete === false || (clean && clean.response_body_search_complete === false)) {
+        bodySearchIncompleteTotal += 1;
+        if (mutations.length < 20) mutations.push({ family: family, bucket: bucketIndex, candidates: bucket.map(function (candidate) { return candidate.key; }), classification: "inconclusive_body_search", reason: "The saved response could not be completely decoded for host-side marker search." });
+        return;
+      }
       var attributed = [];
       bucket.forEach(function (candidate) {
         if (!candidate.marker || !containsMarker(poison, candidate.marker)) return;
@@ -906,7 +949,7 @@
         marker: token, scan_mode: "full", phase: "screen", tested_operations: observations.length,
         credential_mode: { baseline_with_project_credentials: "with_project_credentials", baseline_without_project_credentials: "without_project_credentials" },
         credential_baselines: { with_project_credentials: { stable: !!withStable, first: cacheEvidence(withCredentials), repeat: cacheEvidence(withCredentialsRepeat) }, without_project_credentials: { stable: !!withoutStable, first: cacheEvidence(withoutCredentials), repeat: cacheEvidence(withoutCredentialsRepeat) } },
-        cache_profile: profile, candidate_headers: selectedHeaders, candidate_parameters: selectedParameters, reflected_candidates: reflected, mutation_diagnostics: mutations, mutation_diagnostics_total: mutationTotal, mutation_diagnostics_truncated: mutationTotal > mutations.length,
+        cache_profile: profile, candidate_headers: selectedHeaders, candidate_parameters: selectedParameters, reflected_candidates: reflected, mutation_diagnostics: mutations, mutation_diagnostics_total: mutationTotal, mutation_diagnostics_truncated: mutationTotal > mutations.length, body_search_incomplete_total: bodySearchIncompleteTotal,
         follow_up: follow,
         screen_next_cursor: planSummary.screen_next_cursor, coverage: planSummary.coverage, coverage_unit: planSummary.coverage_unit
       }
@@ -932,7 +975,11 @@
     var withoutCredentials = map["baseline-without-project-credentials-1"], withoutCredentialsRepeat = map["baseline-without-project-credentials-2"];
     var withStable = usableResponse(withCredentials) && usableResponse(withCredentialsRepeat) && same(withCredentials, withCredentialsRepeat);
     var withoutStable = usableResponse(withoutCredentials) && usableResponse(withoutCredentialsRepeat) && same(withoutCredentials, withoutCredentialsRepeat);
-    var baseLooksPrivate = withStable && withoutStable && !same(withCredentials, withoutCredentials);
+    var deceptionWith = map["deception-baseline-with-project-credentials-1"] || withCredentials, deceptionWithRepeat = map["deception-baseline-with-project-credentials-2"] || withCredentialsRepeat;
+    var deceptionWithout = map["deception-baseline-without-project-credentials-1"] || withoutCredentials, deceptionWithoutRepeat = map["deception-baseline-without-project-credentials-2"] || withoutCredentialsRepeat;
+    var deceptionWithStable = usableResponse(deceptionWith) && usableResponse(deceptionWithRepeat) && sameRepresentation(deceptionWith, deceptionWithRepeat);
+    var deceptionWithoutStable = usableResponse(deceptionWithout) && usableResponse(deceptionWithoutRepeat) && sameRepresentation(deceptionWithout, deceptionWithoutRepeat);
+    var baseLooksPrivate = deceptionWithStable && deceptionWithoutStable && !sameRepresentation(deceptionWith, deceptionWithout);
     var profile = cacheProfile(map);
     var redirectTrials = {};
     if (modes.indexOf("poisoning") !== -1) {
@@ -1024,15 +1071,17 @@
         var authenticated = map["deception-with-project-credentials-" + index], anonymous = map["deception-without-project-credentials-" + index], confirm = map["deception-confirm-" + index];
         var deceptionCache = pairedCacheEvidence(anonymous, confirm);
         var authenticatedCache = cacheEvidence(authenticated);
-        if (authenticated && anonymous && confirm && authenticated.status_code >= 200 && authenticated.status_code < 300 && authenticatedCache.state !== "hit" && same(authenticated, withCredentials) && !same(authenticated, withoutCredentials) && same(authenticated, anonymous) && same(anonymous, confirm) && deceptionCache.state === "hit") {
-          var deceptionFingerprint = effectFingerprint(anonymous, null);
+        var anonymousCache = cacheEvidence(anonymous), confirmCache = cacheEvidence(confirm);
+        if (authenticated && anonymous && confirm && authenticated.status_code >= 200 && authenticated.status_code < 300 && authenticatedCache.state === "miss" && bodyFingerprint(deceptionWith) && bodyFingerprint(deceptionWithout) && bodyFingerprint(authenticated) && bodyFingerprint(anonymous) && bodyFingerprint(confirm) && sameRepresentation(authenticated, deceptionWith) && !sameRepresentation(authenticated, deceptionWithout) && sameRepresentation(authenticated, anonymous) && sameRepresentation(anonymous, confirm) && anonymousCache.state === "hit" && confirmCache.state === "hit") {
+          var deceptionFingerprint = bodyFingerprint(anonymous);
+          if (!deceptionFingerprint) return;
           findings.push({
             title: "Web cache deception via " + variant.name,
             severity: "high",
             confidence: "firm",
-            explanation: "A response that differs between credentialed and credential-free controls was reproduced without project credentials at a cacheable-looking path with an explicit cache HIT signal.",
-            evidence_exchange_ids: [withCredentials.exchange_id, withCredentialsRepeat.exchange_id, withoutCredentials.exchange_id, withoutCredentialsRepeat.exchange_id, authenticated.exchange_id, anonymous.exchange_id, confirm.exchange_id].filter(Boolean),
-            metadata: { variant: variant.name, supporting_variants: [variant.name], variant_count: 1, root_cause: "cache-deception:" + endpointRoot(targetUrl) + ":" + deceptionFingerprint, response_fingerprint: deceptionFingerprint, finding_type: "cache_deception", cache_state: deceptionCache.state, cache_evidence: deceptionCache.evidence, seed_credential_policy: "with_project_credentials", retrieval_credential_policy: "without_project_credentials" }
+            explanation: "A fresh authenticated MISS at a cacheable-looking path returned the private baseline representation, then two credential-free HIT requests to that exact path reproduced the same private representation.",
+            evidence_exchange_ids: [deceptionWith.exchange_id, deceptionWithRepeat.exchange_id, deceptionWithout.exchange_id, deceptionWithoutRepeat.exchange_id, authenticated.exchange_id, anonymous.exchange_id, confirm.exchange_id].filter(Boolean),
+            metadata: { variant: variant.name, supporting_variants: [variant.name], variant_count: 1, root_cause: "cache-deception:" + endpointRoot(deceptionBaseUrl) + ":" + deceptionFingerprint, response_fingerprint: deceptionFingerprint, finding_type: "cache_deception", proof: "private_miss_then_two_anonymous_hits", seed_cache_state: authenticatedCache.state, cache_state: deceptionCache.state, cache_evidence: deceptionCache.evidence, seed_credential_policy: "with_project_credentials", retrieval_credential_policy: "without_project_credentials" }
           });
         }
       });

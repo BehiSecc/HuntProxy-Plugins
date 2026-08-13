@@ -154,6 +154,7 @@
   function sameResponse(a, b) {
     if (!a || !b || a.error || b.error || a.status_code !== b.status_code) return false;
     if (a.response_body_hash && b.response_body_hash) return a.response_body_hash === b.response_body_hash;
+    if (a.response_body_omitted_reason || b.response_body_omitted_reason) return false;
     return a.response_length === b.response_length;
   }
 
@@ -164,6 +165,7 @@
     String(value||"").replace(/=+$/,"").split("").forEach(function(character){var index=alphabet.indexOf(character);if(index<0)return;buffer=(buffer<<6)|index;bits+=6;if(bits>=8){bits-=8;output+=String.fromCharCode((buffer>>bits)&255);}});return output;
   }
   function markersMatch(item, input) {
+    if (item && item.response_body_omitted_reason && ((input.success_markers||[]).length || (input.failure_markers||[]).length)) return false;
     var text=body(item), success=input.success_markers||[], failure=input.failure_markers||[];
     return (!success.length || success.some(function(marker){return text.indexOf(String(marker).toLowerCase())!==-1;})) && !failure.some(function(marker){return text.indexOf(String(marker).toLowerCase())!==-1;});
   }

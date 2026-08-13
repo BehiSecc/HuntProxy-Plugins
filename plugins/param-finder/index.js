@@ -144,6 +144,7 @@
     if (item && item.response_body_base64) return decode64(item.response_body_base64);
     return String(item && item.response_preview && item.response_preview.text || "");
   }
+  function bodyUnavailable(item) { return !!(item && item.response_body_omitted_reason); }
 
   function normalized(item, input) {
     var output = responseText(item).toLowerCase();
@@ -168,7 +169,7 @@
   }
 
   function equivalent(a, b, input) {
-    if (!a || !b || a.error || b.error || a.status_code !== b.status_code) return false;
+    if (!a || !b || a.error || b.error || bodyUnavailable(a) || bodyUnavailable(b) || a.status_code !== b.status_code) return false;
     var threshold = Math.max(0.5, Math.min(Number(input.similarity_threshold == null ? 0.96 : input.similarity_threshold), 1));
     return similarity(normalized(a, input), normalized(b, input)) >= threshold;
   }
@@ -180,7 +181,7 @@
     return !equivalent(a, b, input);
   }
 
-  function contains(item, value) { return !!(item && !item.error && responseText(item).indexOf(value) !== -1); }
+  function contains(item, value) { return !!(item && !item.error && !bodyUnavailable(item) && responseText(item).indexOf(value) !== -1); }
 
   function analyze(input, observations, context) {
     var map = byId(observations), baseline = map["baseline-0"], second = map["baseline-1"];
