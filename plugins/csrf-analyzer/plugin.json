@@ -1,9 +1,9 @@
 {
-  "schema_version": 1, "id": "csrf-analyzer", "name": "CSRFAnalyzer", "version": "1.4.2",
-  "description": "Reproduce state-changing requests with token, duplicate-token, cross-session, Origin, Referer, method, and content-type controls.",
-  "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "f9a82bc253ed0c81f636586669c78963293754a8ea0e06f0aa7887773d69020d",
-  "capabilities": ["http.semantic", "identity.use"],
-  "limits": { "timeout_ms": 600000, "max_operations": 324, "max_concurrency": 2, "memory_mb": 32, "js_stage_timeout_ms": 60000 },
+  "schema_version": 1, "id": "csrf-analyzer", "name": "CSRFAnalyzer", "version": "1.5.0",
+  "description": "Reproduce state-changing requests with redirect-aware differential controls and optional independent state read-back.",
+  "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "c9f5ef46b07ccd57f4deb48b36c90cbeb992e3d9ba91695824498066fd306d61",
+  "capabilities": ["http.semantic", "identity.use", "browser.csrf"],
+  "limits": { "timeout_ms": 600000, "max_operations": 500, "max_concurrency": 2, "memory_mb": 32, "js_stage_timeout_ms": 60000 },
   "actions": [{ "name": "scan", "description": "Run bounded, repeated CSRF mutations after explicit confirmation that the request changes server state.", "required_capabilities": ["http.semantic", "identity.use"],
     "input_schema": { "type": "object", "additionalProperties": false, "required": ["allow_state_change"], "properties": {
       "allow_state_change": { "const": true },
@@ -25,14 +25,44 @@
         "value_template": { "type": "string", "minLength": 9, "maxLength": 512, "pattern": "\\{counter\\}", "description": "A caller-owned safe value template; every logical replay replaces {counter} with a unique integer." }
       } }, "description": "Typed non-token fields that need a unique value for every repeated state-changing request." },
       "cross_site_origin": { "type": "string", "pattern": "^https?://[^/]+$", "default": "https://csrf.invalid" },
-      "success_markers": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 200 } },
-      "failure_markers": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 200 } },
+      "success_markers": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 200 }, "description": "Legacy accepted-response strings matched across the body and decoded response headers, including Location." },
+      "failure_markers": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 200 }, "description": "Legacy rejected-response strings matched across the body and decoded response headers, including Location." },
+      "success_predicate": { "$ref": "#/$defs/response_predicate", "description": "Optional structured predicate for an accepted submit response." },
+      "readback": { "type": "object", "additionalProperties": false, "required": ["url", "predicate"], "properties": {
+        "url": { "type": "string", "pattern": "^https?://", "maxLength": 4096, "description": "Safe same-origin GET endpoint that exposes the changed state." },
+        "predicate": { "$ref": "#/$defs/response_predicate", "description": "Predicate proving the expected state. String values may contain {counter}, matching per_request_values." },
+        "identity": { "$ref": "#/$defs/identity", "description": "Optional read-back identity; omit to inherit the captured primary identity." }
+      }, "description": "After each submit, perform a same-origin GET and require its predicate before reporting firm confirmation." },
       "max_mutations": { "type": "integer", "minimum": 1, "maximum": 80, "default": 50 }
     }, "$defs": {
+      "text_predicate": { "type": "object", "additionalProperties": false, "minProperties": 1, "properties": {
+        "equals": { "type": "string", "maxLength": 4096 }, "contains": { "type": "string", "maxLength": 4096 }, "regex": { "type": "string", "maxLength": 2048 }
+      } },
+      "response_predicate": { "type": "object", "additionalProperties": false, "minProperties": 1, "properties": {
+        "status_codes": { "type": "array", "maxItems": 20, "uniqueItems": true, "items": { "type": "integer", "minimum": 100, "maximum": 599 } },
+        "headers": { "type": "array", "maxItems": 20, "items": { "type": "object", "additionalProperties": false, "required": ["name"], "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 256 }, "equals": { "type": "string", "maxLength": 4096 }, "contains": { "type": "string", "maxLength": 4096 }, "regex": { "type": "string", "maxLength": 2048 }
+        }, "anyOf": [{ "required": ["equals"] }, { "required": ["contains"] }, { "required": ["regex"] }] } },
+        "body_contains": { "type": "string", "maxLength": 4096 }, "body_regex": { "type": "string", "maxLength": 2048 },
+        "json": { "type": "array", "maxItems": 20, "items": { "type": "object", "additionalProperties": false, "required": ["pointer"], "properties": {
+          "pointer": { "type": "string", "pattern": "^($|/)", "maxLength": 1024 }, "equals": {}, "exists": { "type": "boolean" }
+        }, "anyOf": [{ "required": ["equals"] }, { "required": ["exists"] }] } },
+        "redirect_location": { "$ref": "#/$defs/text_predicate" }
+      } },
       "identity": { "type": "object", "additionalProperties": false, "properties": {
         "cookie": { "type": "string" },
         "headers": { "type": "array", "maxItems": 50, "items": { "type": "object", "additionalProperties": false, "required": ["name", "value"], "properties": { "name": { "type": "string", "minLength": 1 }, "value": { "type": "string" } } } }
       } }
+    } }
+  }, {
+    "name": "browser_scan",
+    "description": "Reproduce a token-removal request from an isolated real cross-site browser context using a named managed cookie profile.",
+    "required_capabilities": ["browser.csrf", "identity.use"],
+    "input_schema": { "type": "object", "additionalProperties": false, "required": ["allow_state_change", "identity_profile"], "properties": {
+      "allow_state_change": { "const": true },
+      "identity_profile": { "type": "string", "minLength": 1, "maxLength": 120, "description": "Named managed cookie profile used only in an isolated ephemeral Chromium context." },
+      "token_names": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1 }, "default": ["csrf", "csrf_token", "_csrf", "xsrf", "_token", "authenticity_token"] },
+      "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 30000, "default": 15000 }
     } }
   }]
 }

@@ -43,11 +43,20 @@ bounded, and safety-sensitive values inside `plan()` too.
 | Capability | Permits |
 |---|---|
 | `http.semantic` | `http_request` and `http_workflow` |
+| `browser.csrf` | Isolated real-browser CSRF delivery probes |
 | `http.raw` | `raw_http1`, `raw_http1_group`, and `raw_http2`; also exposes bounded raw base-request context |
 | `page.discover` | Bounded static endpoint/URL discovery from the stored base response |
 | `http.race` | `race_group` |
 | `identity.use` | Bounded unredacted base request headers/body for identity-aware comparisons |
 | `aws.api_gateway` | Specialized host-managed IpRotate Gateway operations |
+
+`browser.csrf` plans a bounded `browser_csrf` operation using a captured GET or
+form-urlencoded POST plus an explicit named cookie-profile identity. HuntProxy
+clones managed cookies into a fresh non-persistent Chromium context, submits from
+an opaque cross-site document, captures the exchanges, reports only whether a
+matching managed cookie was delivered, and discards the context. Custom attacker
+origins, arbitrary scripts or headers, non-form bodies, sibling origins, and
+WebSocket flows are intentionally unsupported.
 
 Capabilities are granted to the whole manifest. An action's
 `required_capabilities` must be a subset, but it is discovery metadata rather

@@ -26,6 +26,7 @@ function context() {
 function observation(operation, { status = 200, hash = "success", text = "profile updated", error = null } = {}) {
   return { id: operation.id, exchange_id: 1000 + Math.floor(Math.random() * 100000), status_code: status, response_length: text.length, response_body_hash: hash, response_preview: { text }, response_headers: [], error };
 }
+const responseHeader = (name, value) => ({ name, value_base64: b64(value) });
 
 assert.throws(() => plugin.plan({}, context()), /allow_state_change/);
 const input = {
@@ -131,5 +132,64 @@ const freshObservations=freshPlan.operations.map((op)=>{const final=observation(
 const freshAnalysis=plugin.analyze(freshInput,freshObservations,context());
 assert.equal(freshAnalysis.result.baseline_successful,true);
 assert.equal(freshAnalysis.result.fresh_token_workflows,true);
+
+const redirectInput={allow_state_change:true,token_names:["csrf_token"],max_mutations:80};
+const redirectPlan=plugin.plan(redirectInput,context());
+const redirectMutations=Array.from(redirectPlan.result.mutations,(item)=>item.name);
+const redirectObservations=redirectPlan.operations.map((op)=>{
+  const item=observation(op,{status:302,hash:"empty",text:""});
+  item.response_headers=[responseHeader("Location","%2Fmy-account")];
+  return item;
+});
+for(const name of ["body-invalid:csrf_token","control-invalid-all-tokens"]){
+  const index=redirectMutations.indexOf(name);assert.ok(index>=0);
+  for(const item of redirectObservations.filter((entry)=>entry.id.startsWith(`mutation-${index}-`)))item.response_headers=[responseHeader("Location","/login")];
+}
+const redirectAnalysis=plugin.analyze(redirectInput,redirectObservations,context());
+assert.equal(redirectAnalysis.result.baseline_successful,true,"empty redirect baselines are accepted and stable");
+const redirectRemoval=redirectAnalysis.findings.find((finding)=>finding.metadata.mutation==="body-remove:csrf_token");
+assert.ok(redirectRemoval,"a matching accepted redirect with a distinct invalid-token redirect is reported");
+assert.equal(redirectRemoval.confidence,"tentative","redirect differential alone does not claim durable state");
+assert.equal(redirectRemoval.evidence_exchange_ids.length,6,"both accepted baseline, mutation, and negative-control repeats are retained as evidence");
+
+const readbackInput={allow_state_change:true,token_names:["csrf_token"],max_mutations:80,per_request_values:[{location:"body",name:"email",value_template:"hp-{counter}@invalid.example"}],readback:{url:"https://example.test/profile",predicate:{status_codes:[200],body_contains:"hp-{counter}@invalid.example"}}};
+const readbackPlan=plugin.plan(readbackInput,context());
+assert.equal(readbackPlan.execution,"sequential");
+assert.equal(readbackPlan.result.readback_workflows,true);
+assert.equal(readbackPlan.result.planned_requests,readbackPlan.operations.length*2);
+assert.ok(readbackPlan.operations.every((op)=>op.type==="http_workflow"&&op.steps.length===2&&op.steps[1].id==="readback"));
+const counterForOperation=(id)=>id.startsWith("baseline-")?Number(id.slice("baseline-".length)):2+Number(id.split("-")[1])*2+Number(id.split("-")[2]);
+const readbackObservations=readbackPlan.operations.map((op)=>{
+  const submit=observation({id:"submit"});
+  const counter=counterForOperation(op.id),read=observation({id:"readback"},{text:`account email hp-${counter}@invalid.example`,hash:`read-${counter}`});
+  return {id:op.id,steps:[submit,read],terminal:read,error:null};
+});
+const readbackAnalysis=plugin.analyze(readbackInput,readbackObservations,context());
+assert.equal(readbackAnalysis.result.baseline_successful,true,"both baseline read-backs use their own bound counter");
+const bodyRemovalIndex=Array.from(readbackPlan.result.mutations,(item)=>item.name).indexOf("body-remove:csrf_token");
+const invalidControlIndex=Array.from(readbackPlan.result.mutations,(item)=>item.name).indexOf("body-invalid:csrf_token");
+for(const item of readbackObservations.filter((entry)=>entry.id.startsWith(`mutation-${invalidControlIndex}-`))){item.steps[0].status_code=403;item.steps[0].response_preview.text="request rejected";item.steps[0].response_body_hash="rejected";}
+const confirmed=plugin.analyze(readbackInput,readbackObservations,context()).findings.find((finding)=>finding.metadata.mutation==="body-remove:csrf_token");
+assert.ok(confirmed);
+assert.equal(confirmed.confidence,"firm");
+assert.equal(confirmed.evidence_exchange_ids.length,10,"both submit/read-back confirmations and both negative controls are retained as evidence");
+const secondReadback=readbackObservations.find((entry)=>entry.id===`mutation-${bodyRemovalIndex}-1`).steps[1];secondReadback.response_preview.text="old account value";secondReadback.response_body_hash="old";
+const failedReadback=plugin.analyze(readbackInput,readbackObservations,context()).result.outcomes.find((outcome)=>outcome.mutation==="body-remove:csrf_token");
+assert.equal(failedReadback.error,"readback_predicate_not_met","failure of either repeated read-back prevents confirmation");
+
+assert.throws(()=>plugin.plan({...readbackInput,readback:{...readbackInput.readback,url:"https://other.test/profile"}},context()),/same-origin/);
+
+const browserContext=context();browserContext.action="browser_scan";
+const browserPlan=plugin.plan({allow_state_change:true,identity_profile:"portswigger-victim",token_names:["csrf_token"]},browserContext);
+assert.equal(browserPlan.execution,"sequential");
+assert.equal(browserPlan.operations.length,2);
+assert.ok(browserPlan.operations.every((op)=>op.type==="browser_csrf"&&op.mode==="cross_site_form_post"&&op.identity.profile==="portswigger-victim"));
+assert.ok(browserPlan.operations[0].body_params.some((part)=>part.name==="csrf_token"&&part.value===null));
+const browserAnalysis=plugin.analyze({},browserPlan.operations.map((op,index)=>({id:op.id,tested:true,status:"completed",exchanges:[{exchange_id:9000+index}],cookie_delivery:{managed_cookie_delivered:true,sent_matched_count:1},browser:{isolated:true,initiator:"opaque_cross_site_document"}})),browserContext);
+assert.equal(browserAnalysis.findings.length,0,"browser delivery alone never becomes a confirmed finding");
+assert.equal(browserAnalysis.result.browser_managed_cookie_delivery_reproducible,true);
+assert.equal(browserAnalysis.result.acceptance_candidates[0].status,"awaiting_state_confirmation");
+const unauthenticatedBrowserAnalysis=plugin.analyze({},browserPlan.operations.map((op)=>({id:op.id,tested:true,status:"completed",exchanges:[],cookie_delivery:{managed_cookie_delivered:false,sent_matched_count:0}})),browserContext);
+assert.equal(unauthenticatedBrowserAnalysis.result.acceptance_candidates.length,0,"navigation without an applicable managed cookie is not a delivery candidate");
 
 console.log("CSRFAnalyzer hardening tests passed.");

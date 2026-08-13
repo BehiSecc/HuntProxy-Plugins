@@ -15,6 +15,7 @@ const CAPABILITIES = new Set([
   "identity.use",
   "page.discover",
   "aws.api_gateway",
+  "browser.csrf",
 ]);
 const TOP_LEVEL_FIELDS = new Set([
   "schema_version",
