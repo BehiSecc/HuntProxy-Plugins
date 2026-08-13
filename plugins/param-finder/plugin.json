@@ -6,7 +6,7 @@
   "description": "Discover hidden and unkeyed query, body, cookie, and header parameters using batched differential and cache-key probing.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "c92dff6b14a4aae7b1714bf0f0104ce53998ad57fe2a68a7835580e83acde63e",
+  "entrypoint_sha256": "f3cbef2f6108057ef578829b588c46fab3b24831c30b6a24ca17ecfd92a447f7",
   "resources": {
     "assetnote-params": { "path": "resources/assetnote-params", "sha256": "9cf95d2dbd129cc51df9c88f31b5514578ac052357c4ef3d010b2883fd40850b" },
     "boring_headers": { "path": "resources/boring_headers", "sha256": "c96c9b29315bd9afb4c1bad40fc26d95f8bebab16f8409ef72f69bc90d73f01a" },

@@ -90,7 +90,7 @@
     return output;
   }
 
-  function candidateSignature(input, all) {
+  function candidateSignature(input, all, base) {
     var hash = 2166136261;
     function add(value) {
       var text = String(value);
@@ -101,6 +101,7 @@
       hash ^= 255; hash = Math.imul(hash, 16777619);
     }
     add(input.phase === "confirm" ? "confirm" : "screen");
+    add(base.exchange_id); add(base.method); add(base.url);
     add(Math.max(2, Math.min(Number(input.bucket_size || 64), 64)));
     add(input.cache_key_tests !== false);
     add(input.cache_bust !== false);
@@ -158,8 +159,9 @@
     var groups = operationGroups(base, input, all, phase);
     var cursor = Number(input.cursor || 0);
     if (!Number.isInteger(cursor) || cursor < 0 || cursor > groups.length) throw new Error("ParamFinder cursor is invalid for this candidate set");
-    var signature = candidateSignature(input, all);
-    if (input.candidate_signature && input.candidate_signature !== signature) throw new Error("ParamFinder continuation no longer matches the candidate set");
+    var signature = candidateSignature(input, all, base);
+    if (cursor > 0 && !input.candidate_signature) throw new Error("ParamFinder continuation requires candidate_signature");
+    if (input.candidate_signature && input.candidate_signature !== signature) throw new Error("ParamFinder continuation no longer matches the saved request, detection settings, or candidate set");
     var operationLimit = Math.max(4, Math.min(Number(input.max_requests || 500), 5000));
     var operations = [operation(base, input, null, [], "baseline-0"), operation(base, input, null, [], "baseline-1")];
     var end = cursor;

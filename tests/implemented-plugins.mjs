@@ -125,6 +125,7 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
 
   assert.throws(() => plugin.plan({ ...pagedInput, max_requests: 4 }, context()), /at least 5 requests/);
   const guarded = plugin.plan(pagedInput, context()).result;
+  assert.throws(() => plugin.plan({ ...pagedInput, cursor: guarded.next_cursor }, context()), /requires candidate_signature/);
   assert.throws(() => plugin.plan({ ...pagedInput, cursor: guarded.next_cursor, candidate_signature: guarded.candidate_signature || "deadbeef", words: ["changed"] }, context()), /candidate set/);
 
   const confirmPagedInput = { phase: "confirm", locations: ["query"], words_by_location: { query: ["first", "second"] }, use_only_supplied_words: true, max_requests: 8 };
