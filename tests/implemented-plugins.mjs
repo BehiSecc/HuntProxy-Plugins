@@ -91,6 +91,62 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   });
   const cacheConfirmed = plugin.analyze(cacheConfirmInput, cacheConfirmObservations, context());
   assert.ok(cacheConfirmed.findings.some((finding) => /Unkeyed cache query parameter: utm_content/.test(finding.title)));
+
+  const pagedInput = { locations: ["query"], words: ["one", "two", "three", "four", "five"], use_only_supplied_words: true, bucket_size: 2, max_requests: 5, cache_key_tests: true };
+  let paged = pagedInput, screenedNames = [], screenPages = 0;
+  do {
+    const pagePlan = plugin.plan(paged, context());
+    screenPages += 1;
+    assert.equal(pagePlan.execution, "sequential");
+    assert.equal(pagePlan.operations.length, 5, "screen pages contain controls plus one complete cache group");
+    assert.deepEqual(Array.from(pagePlan.operations, (op) => op.id.replace(/^(?:cache-screen-)?(?:poison-|clean-)?/, "")).slice(0, 2), ["baseline-0", "baseline-1"]);
+    const screen = pagePlan.operations.find((op) => op.id.startsWith("screen-"));
+    screenedNames.push(...screen.query_params.filter((item) => item.name !== "hp_pf_cb").map((item) => item.name));
+    const poisonIndex = pagePlan.operations.findIndex((op) => op.id.startsWith("cache-screen-poison-"));
+    assert.ok(poisonIndex > 0 && pagePlan.operations[poisonIndex + 1].id.startsWith("cache-screen-clean-"));
+    const analyzedPage = plugin.analyze(paged, pagePlan.operations.map((op) => observation(op, 200, "stable", "stable response")), context());
+    assert.equal(analyzedPage.result.coverage.tested, screenedNames.length);
+    paged = analyzedPage.result.follow_up;
+  } while (paged);
+  assert.equal(screenPages, 3);
+  assert.deepEqual(screenedNames, ["one", "two", "three", "four", "five"]);
+
+  const hitPagePlan = plugin.plan(pagedInput, context());
+  const hitPageAnalysis = plugin.analyze(pagedInput, hitPagePlan.operations.map((op) => observation(op, 200, op.id.startsWith("screen-") ? "changed" : "base", op.id.startsWith("screen-") ? "changed response" : "base response")), context());
+  assert.equal(hitPageAnalysis.result.follow_up.phase, "confirm");
+  assert.equal(hitPageAnalysis.result.follow_up.max_requests, 8, "generated confirmation has enough budget for one atomic query group");
+  assert.equal(hitPageAnalysis.result.follow_up.resume_screen.phase, "screen");
+  const hitConfirmPlan = plugin.plan(hitPageAnalysis.result.follow_up, context());
+  const hitConfirmAnalysis = plugin.analyze(hitPageAnalysis.result.follow_up, hitConfirmPlan.operations.map((op) => observation(op, 200, op.id.startsWith("baseline") ? "base" : "changed", op.id.startsWith("baseline") ? "base" : "changed")), context());
+  assert.equal(hitConfirmAnalysis.result.follow_up.phase, "confirm", "confirmation pagination remains inside the chain");
+  const finalHitConfirmPlan = plugin.plan(hitConfirmAnalysis.result.follow_up, context());
+  const finalHitConfirmAnalysis = plugin.analyze(hitConfirmAnalysis.result.follow_up, finalHitConfirmPlan.operations.map((op) => observation(op, 200, op.id.startsWith("baseline") ? "base" : "changed", op.id.startsWith("baseline") ? "base" : "changed")), context());
+  assert.equal(finalHitConfirmAnalysis.result.follow_up.phase, "screen", "confirmation resumes the deferred screen page");
+
+  assert.throws(() => plugin.plan({ ...pagedInput, max_requests: 4 }, context()), /at least 5 requests/);
+  const guarded = plugin.plan(pagedInput, context()).result;
+  assert.throws(() => plugin.plan({ ...pagedInput, cursor: guarded.next_cursor, candidate_signature: guarded.candidate_signature || "deadbeef", words: ["changed"] }, context()), /candidate set/);
+
+  const confirmPagedInput = { phase: "confirm", locations: ["query"], words_by_location: { query: ["first", "second"] }, use_only_supplied_words: true, max_requests: 8 };
+  const firstConfirmPage = plugin.plan(confirmPagedInput, context());
+  assert.equal(firstConfirmPage.operations.length, 8);
+  assert.equal(firstConfirmPage.operations.filter((op) => op.id.startsWith("confirm-")).length, 2);
+  assert.equal(firstConfirmPage.operations.filter((op) => op.id.startsWith("cache-poison-")).length, 2);
+  assert.equal(firstConfirmPage.operations.filter((op) => op.id.startsWith("cache-clean-")).length, 2);
+  const firstConfirmAnalysis = plugin.analyze(confirmPagedInput, firstConfirmPage.operations.map((op) => observation(op, 200, op.id.startsWith("baseline") ? "base" : "changed", op.id.startsWith("baseline") ? "base" : "changed")), context());
+  assert.equal(firstConfirmAnalysis.result.coverage.tested, 1);
+  assert.equal(firstConfirmAnalysis.result.follow_up.cursor, 1);
+  const secondConfirmPlan = plugin.plan(firstConfirmAnalysis.result.follow_up, context());
+  assert.ok(secondConfirmPlan.operations.some((op) => op.id === "confirm-query-1-0"), "later pages retain absolute candidate indexes");
+
+  const defaultBudgetWords = Array.from({ length: 10000 }, (_, index) => `candidate_${index}`);
+  const defaultBudgetPlan = plugin.plan({ locations: ["query", "header"], words: defaultBudgetWords, use_only_supplied_words: true }, context());
+  assert.ok(defaultBudgetPlan.operations.length <= 500, "runtime default matches the manifest's 500-request default");
+  assert.equal(defaultBudgetPlan.result.request_budget_exhausted, true);
+
+  const wordLimited = plugin.plan({ locations: ["query"], words: ["a", "b", "c", "d"], use_only_supplied_words: true, max_words: 3, cache_key_tests: false }, context());
+  assert.equal(wordLimited.result.candidate_word_limit_reached, true);
+  assert.equal(wordLimited.result.coverage.source_complete, false);
 }
 
 {
