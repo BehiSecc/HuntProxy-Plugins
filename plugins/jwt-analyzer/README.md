@@ -5,6 +5,11 @@ performs passive claim/header checks, and can send repeated active validation
 probes. It covers unsigned, missing/invalid signature, expiry, empty-HMAC, KID
 path, bounded weak-HMAC, and explicitly configured algorithm-confusion tests.
 
+A saved `base_exchange_id` is required for every scan. It supplies the request
+shape, captured identity, and finding evidence. `token` only overrides the JWT
+inside that saved request, and `target_url` only overrides the in-scope replay
+destination; neither makes the plugin runnable without a saved exchange.
+
 Network probes are off by default. Set `active=true` only after confirming that
 replaying the captured request and its JWT variants is safe for the target; an
 omitted or false value performs passive/offline analysis without sending requests.

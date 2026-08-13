@@ -66,6 +66,18 @@ try {
   await saveManifest(undeclared, undeclaredManifest);
   await assert.rejects(() => validatePluginDirectory(undeclared), /requires undeclared capability/);
 
+  const baseRequired = await fixture("base-exchange-required");
+  const baseRequiredManifest = await manifest(baseRequired);
+  baseRequiredManifest.actions[0].requires_base_exchange = true;
+  await saveManifest(baseRequired, baseRequiredManifest);
+  await validatePluginDirectory(baseRequired);
+
+  const invalidBaseRequired = await fixture("invalid-base-exchange-required");
+  const invalidBaseRequiredManifest = await manifest(invalidBaseRequired);
+  invalidBaseRequiredManifest.actions[0].requires_base_exchange = "yes";
+  await saveManifest(invalidBaseRequired, invalidBaseRequiredManifest);
+  await assert.rejects(() => validatePluginDirectory(invalidBaseRequired), /requires_base_exchange must be a boolean/);
+
   const invalidLimit = await fixture("invalid-limit");
   const limitManifest = await manifest(invalidLimit);
   limitManifest.limits.timeout_ms = 900001;

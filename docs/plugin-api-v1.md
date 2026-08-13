@@ -32,11 +32,17 @@ the host accepts a broader defaulted form.
 | `resources` | Named safe relative UTF-8 files, each at most 1 MiB and 4 MiB total |
 | `capabilities` | Unique values from the table below |
 | `limits` | Explicit conservative ceilings |
-| `actions` | Unique names, descriptions, input schemas, and capability hints |
+| `actions` | Unique names, descriptions, input schemas, capability hints, and optional saved-exchange requirements |
 
 `input_schema` is shown to agents for discovery. The host does not currently
 validate action input against it before calling `plan()`. Validate required,
 bounded, and safety-sensitive values inside `plan()` too.
+
+Set an action's `requires_base_exchange` to `true` when planning or evidence
+always depends on a saved request. HuntProxy exposes the requirement through
+`extension_describe` and rejects preview/run calls without `base_exchange_id`
+before starting the JavaScript runtime. It defaults to `false` for existing
+packages.
 
 ## Capabilities
 

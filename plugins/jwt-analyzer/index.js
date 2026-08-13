@@ -51,7 +51,7 @@
   function sign256(headerPart, payloadPart, secret) { return bytes64url(hmac256(secret, headerPart + "." + payloadPart)); }
   function headerValues(context) {
     var values = [];
-    if (!context.base_exchange || !context.base_exchange.identity) throw new Error("JWTAnalyzer requires identity.use access to a saved request");
+    if (!context.base_exchange || !context.base_exchange.identity) throw new Error("JWTAnalyzer requires base_exchange_id. Capture a request containing the JWT, then preview the scan again.");
     (context.base_exchange.identity.request_headers || []).forEach(function (entry) {
       values.push({ name: String(entry.name), value: decode64(entry.value_base64) });
     });

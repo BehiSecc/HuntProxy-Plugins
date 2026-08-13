@@ -49,6 +49,7 @@ const ACTION_FIELDS = new Set([
   "description",
   "input_schema",
   "required_capabilities",
+  "requires_base_exchange",
 ]);
 const LIMIT_FIELDS = new Set([
   "timeout_ms",
@@ -180,6 +181,9 @@ function validateActions(actions, manifestCapabilities) {
     const schema = requireObject(action.input_schema, `actions[${index}].input_schema`);
     if (schema.type !== "object") fail(`actions[${index}].input_schema.type must be object`);
     const required = validateCapabilities(action.required_capabilities ?? [], `actions[${index}].required_capabilities`);
+    if (action.requires_base_exchange !== undefined && typeof action.requires_base_exchange !== "boolean") {
+      fail(`actions[${index}].requires_base_exchange must be a boolean`);
+    }
     for (const capability of required) {
       if (!manifestCapabilities.has(capability)) {
         fail(`action ${action.name} requires undeclared capability ${capability}`);

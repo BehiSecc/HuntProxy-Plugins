@@ -67,6 +67,9 @@ The important manifest fields are:
 Use an action's `input_schema` to help agents form valid calls. HuntProxy does
 not currently apply that schema before `plan()`, so `plan()` must also validate
 required and safety-sensitive input and throw a short, useful `Error`.
+When an action cannot work without a saved request, set
+`requires_base_exchange: true`; HuntProxy will advertise it and reject missing
+`base_exchange_id` calls before JavaScript starts.
 
 ## JavaScript entrypoint
 

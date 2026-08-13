@@ -40,5 +40,6 @@ assert.equal(limitSchema.js_stage_timeout_ms.maximum, 120000);
 const inputSchema = schema.properties.actions.items.properties.input_schema;
 assert.ok(inputSchema.required.includes("type"));
 assert.equal(inputSchema.properties.type.const, "object");
+assert.equal(schema.properties.actions.items.properties.requires_base_exchange.type, "boolean");
 assert.equal(schema.properties.resources.propertyNames.maxLength, 64);
 console.log(`Validated ${seen.size} HuntProxy plugin manifests.`);

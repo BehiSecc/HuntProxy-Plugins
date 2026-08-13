@@ -64,6 +64,11 @@
             "type": "array",
             "uniqueItems": true,
             "items": { "enum": ["http.semantic", "http.raw", "http.race", "identity.use", "page.discover", "browser.csrf", "aws.api_gateway"] }
+          },
+          "requires_base_exchange": {
+            "type": "boolean",
+            "default": false,
+            "description": "Whether HuntProxy must reject preview/run calls without base_exchange_id before invoking plugin JavaScript."
           }
         }
       }
