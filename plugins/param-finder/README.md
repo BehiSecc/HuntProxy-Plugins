@@ -9,6 +9,15 @@ supports query, header, cookie, and top-level JSON/form body parameters. Cookie
 and body changes are applied host-side to the saved request, so authentication
 values never enter plugin input or output.
 
+A scan may target either a saved `base_exchange_id` or an explicit `input.url`,
+never both. URL mode sends anonymous GET requests and supports query/header
+locations only. Use a saved exchange when method, body, cookies, authorization,
+or the exact captured request shape must be preserved.
+
+Every initial plan receives a random host-generated namespace. ParamFinder
+carries it through the follow-up chain so cache keys and proof markers cannot
+collide with earlier or concurrent scans.
+
 Query and header screening also uses an isolated poison-clean cache-key oracle.
 Each bucket receives its own keyed cache buster and unique value; the clean
 request reuses only that cache buster. A parameter is reported as unkeyed only

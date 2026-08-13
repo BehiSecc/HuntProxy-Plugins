@@ -48,20 +48,42 @@
     return out;
   }
 
-  function baseExchange(context) {
-    if (!context.base_exchange || !context.base_exchange.exchange_id || !context.base_exchange.url) {
-      throw new Error("ParamFinder requires a saved base exchange");
-    }
-    return context.base_exchange;
+  function target(input, context) {
+    var base = context.base_exchange && context.base_exchange.exchange_id && context.base_exchange.url ? context.base_exchange : null;
+    var inline = input.url == null ? "" : String(input.url).trim();
+    if (base && inline) throw new Error("ParamFinder target is ambiguous: provide either base_exchange_id or input.url, not both");
+    if (!base && !inline) throw new Error("ParamFinder requires either base_exchange_id or input.url");
+    if (base) return { mode: "exchange", exchange_id: base.exchange_id, method: base.method, url: base.url };
+    if (inline.length > 4096) throw new Error("ParamFinder input.url exceeds 4096 characters");
+    if (!/^https?:\/\/[^\s/]+(?:[/?#]|$)/i.test(inline)) throw new Error("ParamFinder input.url must be an absolute HTTP(S) URL");
+    if (/^https?:\/\/[^/]*@/i.test(inline)) throw new Error("ParamFinder input.url must not contain embedded credentials");
+    if (inline.indexOf("#") !== -1) throw new Error("ParamFinder input.url must not contain a fragment");
+    var locations = requestedLocations(input);
+    var unsupported = locations.filter(function (location) { return location === "body" || location === "cookie"; });
+    if (unsupported.length) throw new Error("ParamFinder URL mode supports only query and header locations; " + unsupported.join(", ") + " requires a saved base exchange");
+    return { mode: "url", exchange_id: null, method: "GET", url: inline };
   }
 
   function marker(input, suffix) {
-    return String(input.marker || "hp-param-7f31") + "-" + suffix;
+    return String(input.marker || "hp-param-7f31") + "-" + String(input.scan_namespace || "legacy") + "-" + suffix;
+  }
+
+  function scopedInput(input, context) {
+    var output = {};
+    Object.keys(input).forEach(function (key) { output[key] = input[key]; });
+    if (input.scan_namespace && !input.target_signature && !input.candidate_signature) {
+      throw new Error("ParamFinder scan_namespace is host-generated and may only be supplied by a returned follow_up");
+    }
+    output.scan_namespace = String(input.scan_namespace || context.execution_nonce || "legacy");
+    if (output.url !== undefined) output.url = String(output.url).trim();
+    return output;
   }
 
   function operation(base, input, location, words, id, cacheKey, probeValue) {
     var value = probeValue || marker(input, id);
-    var op = { id: id, type: "http_request", base_exchange_id: base.exchange_id, method: base.method, protocol: "auto" };
+    var op = { id: id, type: "http_request", method: base.method, protocol: "auto" };
+    if (base.mode === "exchange") op.base_exchange_id = base.exchange_id;
+    else { op.url = base.url; op.credential_mode = "without_project_credentials"; }
     var query = [];
     if (input.cache_bust !== false) query.push({ name: String(input.cache_buster_name || "hp_pf_cb"), value: cacheKey || marker(input, "cache-" + id) });
     if (location === "query") query = query.concat(words.map(function (word) { return { name: word, value: value }; }));
@@ -86,8 +108,26 @@
       Object.keys(input).forEach(function (key) { scoped[key] = input[key]; });
       if (input.words_by_location && Array.isArray(input.words_by_location[location])) scoped.words = input.words_by_location[location];
       output[location] = uniqueWords(scoped, context, location);
+      if (input.url && location === "header") {
+        output[location] = output[location].filter(function (word) {
+          return ["authorization", "cookie", "proxy-authorization", "host"].indexOf(String(word).toLowerCase()) === -1;
+        });
+        output[location].word_limit_reached = false;
+      }
     });
     return output;
+  }
+
+  function validatePhaseInput(input) {
+    var phase = input.phase === "confirm" ? "confirm" : "screen";
+    if (phase === "confirm") {
+      if (!input.words_by_location || typeof input.words_by_location !== "object" || Array.isArray(input.words_by_location)) {
+        throw new Error("ParamFinder confirm phase requires words_by_location from the returned follow_up");
+      }
+      if (input.use_only_supplied_words !== true) {
+        throw new Error("ParamFinder confirm phase requires use_only_supplied_words=true from the returned follow_up");
+      }
+    }
   }
 
   function candidateSignature(input, all, base) {
@@ -101,7 +141,8 @@
       hash ^= 255; hash = Math.imul(hash, 16777619);
     }
     add(input.phase === "confirm" ? "confirm" : "screen");
-    add(base.exchange_id); add(base.method); add(base.url);
+    add(input.scan_namespace || "legacy");
+    add(base.mode); add(base.exchange_id || ""); add(base.method); add(base.url);
     add(Math.max(2, Math.min(Number(input.bucket_size || 64), 64)));
     add(input.cache_key_tests !== false);
     add(input.cache_bust !== false);
@@ -112,6 +153,12 @@
     requestedLocations(input).forEach(function (location) {
       add(location); (all[location] || []).forEach(add);
     });
+    return (hash >>> 0).toString(16).padStart(8, "0");
+  }
+
+  function targetSignature(input, base) {
+    var hash = 2166136261, text = [input.scan_namespace || "legacy", base.mode, base.exchange_id || "", base.method, base.url].join("\u0000");
+    for (var index = 0; index < text.length; index += 1) { hash ^= text.charCodeAt(index); hash = Math.imul(hash, 16777619); }
     return (hash >>> 0).toString(16).padStart(8, "0");
   }
 
@@ -154,12 +201,15 @@
   }
 
   function selectedPage(input, context) {
-    var base = baseExchange(context), all = candidates(input, context);
+    validatePhaseInput(input);
+    var base = target(input, context), all = candidates(input, context);
     var phase = input.phase === "confirm" ? "confirm" : "screen";
     var groups = operationGroups(base, input, all, phase);
     var cursor = Number(input.cursor || 0);
     if (!Number.isInteger(cursor) || cursor < 0 || cursor > groups.length) throw new Error("ParamFinder cursor is invalid for this candidate set");
     var signature = candidateSignature(input, all, base);
+    var targetGuard = targetSignature(input, base);
+    if (input.target_signature && input.target_signature !== targetGuard) throw new Error("ParamFinder continuation target no longer matches the original saved request or URL");
     if (cursor > 0 && !input.candidate_signature) throw new Error("ParamFinder continuation requires candidate_signature");
     if (input.candidate_signature && input.candidate_signature !== signature) throw new Error("ParamFinder continuation no longer matches the saved request, detection settings, or candidate set");
     var operationLimit = Math.max(4, Math.min(Number(input.max_requests || 500), 5000));
@@ -171,7 +221,7 @@
     if (cursor < groups.length && end === cursor) {
       throw new Error("max_requests is too small for two baselines and one complete " + phase + " test group; at least " + (2 + groups[cursor].operations.length) + " requests are required");
     }
-    return { base: base, all: all, phase: phase, groups: groups, cursor: cursor, end: end, signature: signature, operations: operations, operation_limit: operationLimit };
+    return { base: base, all: all, phase: phase, groups: groups, cursor: cursor, end: end, signature: signature, target_signature: targetGuard, operations: operations, operation_limit: operationLimit };
   }
 
   function coverage(page) {
@@ -188,7 +238,7 @@
 
   function continuationInput(input, phase, cursor, signature) {
     var output = {};
-    ["locations", "bucket_size", "max_words", "words", "harvested_words", "words_by_location", "use_only_supplied_words", "marker", "cache_bust", "cache_key_tests", "cache_buster_name", "similarity_threshold", "ignore_patterns", "max_requests"].forEach(function (key) {
+    ["url", "scan_namespace", "target_signature", "locations", "bucket_size", "max_words", "words", "harvested_words", "words_by_location", "use_only_supplied_words", "marker", "cache_bust", "cache_key_tests", "cache_buster_name", "similarity_threshold", "ignore_patterns", "max_requests"].forEach(function (key) {
       if (input[key] !== undefined) output[key] = input[key];
     });
     output.phase = phase; output.cursor = cursor; output.candidate_signature = signature;
@@ -196,6 +246,7 @@
   }
 
   function plan(input, context) {
+    input = scopedInput(input, context);
     var page = selectedPage(input, context), all = page.all, candidateCoverage = coverage(page);
     var candidateCounts = {}, candidateSample = {};
     Object.keys(all).forEach(function (location) { candidateCounts[location] = all[location].length; candidateSample[location] = all[location].slice(0, 20); });
@@ -253,8 +304,10 @@
   function contains(item, value) { return !!(item && !item.error && !bodyUnavailable(item) && responseText(item).indexOf(value) !== -1); }
 
   function analyze(input, observations, context) {
+    input = scopedInput(input, context);
     var map = byId(observations), baseline = map["baseline-0"], second = map["baseline-1"];
     if (!baseline || !second) return { findings: [], result: { error: "baseline observations missing" } };
+    if (baseline.error || second.error) throw new Error("ParamFinder baseline request failed: " + String((baseline.error || second.error).message || (baseline.error || second.error).code || "unknown request error"));
     var baselineUnstable = changed(baseline, second, false, input);
     var page = selectedPage(input, context), all = page.all, findings = [], candidateCoverage = coverage(page);
     if (page.phase === "confirm") {
@@ -318,12 +371,14 @@
     });
     var followUpMaxWords = Math.max(Number(input.max_words || 100000), Object.keys(narrowed).reduce(function (largest, location) { return Math.max(largest, narrowed[location].length); }, 0));
     var nextScreen = page.end < page.groups.length ? continuationInput(input, "screen", page.end, page.signature) : null;
+    if (nextScreen) nextScreen.target_signature = page.target_signature;
     var hasCandidates = Object.keys(narrowed).some(function (location) { return narrowed[location].length > 0; });
     var followUp = nextScreen;
     if (hasCandidates) {
       var confirmLocations = Object.keys(narrowed).filter(function (location) { return narrowed[location].length > 0; });
       var confirmMinimum = input.cache_key_tests !== false && confirmLocations.some(function (location) { return location === "query" || location === "header"; }) ? 8 : 4;
-      followUp = { phase: "confirm", locations: confirmLocations, words_by_location: narrowed, use_only_supplied_words: true, max_words: Math.min(followUpMaxWords, 100000), max_requests: Math.max(Number(input.max_requests || 500), confirmMinimum), marker: input.marker, cache_bust: input.cache_bust !== false, cache_key_tests: input.cache_key_tests !== false, cache_buster_name: input.cache_buster_name, similarity_threshold: input.similarity_threshold, ignore_patterns: input.ignore_patterns };
+      followUp = { phase: "confirm", scan_namespace: input.scan_namespace, target_signature: page.target_signature, locations: confirmLocations, words_by_location: narrowed, use_only_supplied_words: true, max_words: Math.min(followUpMaxWords, 100000), max_requests: Math.max(Number(input.max_requests || 500), confirmMinimum), marker: input.marker, cache_bust: input.cache_bust !== false, cache_key_tests: input.cache_key_tests !== false, cache_buster_name: input.cache_buster_name, similarity_threshold: input.similarity_threshold, ignore_patterns: input.ignore_patterns };
+      if (input.url !== undefined) followUp.url = input.url;
       if (nextScreen) followUp.resume_screen = nextScreen;
     }
     return {

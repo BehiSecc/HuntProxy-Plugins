@@ -11,7 +11,7 @@ async function load(id) {
   return sandbox.globalThis.HuntProxyPlugin;
 }
 function context(url = "https://example.test/admin") {
-  return { api_version: 1, action: "scan", base_exchange: { exchange_id: 42, method: "GET", url, headers: [] }, resources: {} };
+  return { api_version: 1, execution_nonce: "0123456789abcdef0123456789abcdef", action: "scan", base_exchange: { exchange_id: 42, method: "GET", url, headers: [] }, resources: {} };
 }
 function observation(operation, status = 403, hash = "base", text = "denied") {
   return { id: operation.id, exchange_id: Math.floor(Math.random() * 100000) + 1, status_code: status, response_length: text.length, response_body_hash: hash, response_preview: { text }, response_headers: [] };
@@ -60,7 +60,7 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   assert.ok(lateScreen.result.follow_up.max_words >= lateScreen.result.candidate_buckets.query.length);
   const lateConfirmPlan = plugin.plan(lateScreen.result.follow_up, lateContext);
   assert.equal(lateConfirmPlan.result.candidate_counts.query, lateScreen.result.candidate_buckets.query.length);
-  const input = { phase: "confirm", locations: ["query"], words_by_location: { query: ["debug"] }, max_words: 20 };
+  const input = { phase: "confirm", locations: ["query"], words_by_location: { query: ["debug"] }, use_only_supplied_words: true, max_words: 20 };
   const plan = plugin.plan(input, context());
   assert.ok(plan.operations.length >= 4);
   assert.ok(plan.operations.every((op) => op.type === "http_request" && op.base_exchange_id === 42));
@@ -75,10 +75,11 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
 
   const cacheInput = { phase: "screen", locations: ["query"], words: ["utm_content"], use_only_supplied_words: true, marker: "cache-oracle", max_words: 10 };
   const cachePlan = plugin.plan(cacheInput, context());
+  const screenProbe = cachePlan.operations.find((op) => op.id === "cache-screen-poison-query-0").query_params.find((item) => item.name === "utm_content").value;
   const cacheObservations = cachePlan.operations.map((op) => {
     const poison = op.id === "cache-screen-poison-query-0";
     const clean = op.id === "cache-screen-clean-query-0";
-    return observation(op, 200, op.id, poison || clean ? "canonical cache-oracle-cache-probe-screen-query-0" : "ordinary page");
+    return observation(op, 200, op.id, poison || clean ? `canonical ${screenProbe}` : "ordinary page");
   });
   const cacheScreen = plugin.analyze(cacheInput, cacheObservations, context());
   assert.deepEqual(Array.from(cacheScreen.result.candidate_buckets.query), ["utm_content"]);
@@ -87,7 +88,8 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const cacheConfirmPlan = plugin.plan(cacheConfirmInput, context());
   const cacheConfirmObservations = cacheConfirmPlan.operations.map((op) => {
     const match = op.id.match(/^cache-(?:poison|clean)-query-0-(\d)$/);
-    return observation(op, 200, op.id, match ? `canonical cache-oracle-cache-probe-query-0-${match[1]}` : "ordinary page");
+    const repeatProbe = match ? cacheConfirmPlan.operations.find((candidate) => candidate.id === `cache-poison-query-0-${match[1]}`).query_params.find((item) => item.name === "utm_content").value : null;
+    return observation(op, 200, op.id, match ? `canonical ${repeatProbe}` : "ordinary page");
   });
   const cacheConfirmed = plugin.analyze(cacheConfirmInput, cacheConfirmObservations, context());
   assert.ok(cacheConfirmed.findings.some((finding) => /Unkeyed cache query parameter: utm_content/.test(finding.title)));
@@ -148,6 +150,41 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const wordLimited = plugin.plan({ locations: ["query"], words: ["a", "b", "c", "d"], use_only_supplied_words: true, max_words: 3, cache_key_tests: false }, context());
   assert.equal(wordLimited.result.candidate_word_limit_reached, true);
   assert.equal(wordLimited.result.coverage.source_complete, false);
+
+  const urlContext = context(); delete urlContext.base_exchange;
+  const urlInput = { url: "http://127.0.0.1:18081/hidden", locations: ["query"], words: ["debug", "boring"], use_only_supplied_words: true, cache_key_tests: false };
+  const urlPlan = plugin.plan(urlInput, urlContext);
+  assert.ok(urlPlan.operations.every((op) => op.url === urlInput.url && op.method === "GET"));
+  assert.ok(urlPlan.operations.every((op) => op.base_exchange_id == null && op.credential_mode === "without_project_credentials"));
+  const urlScreen = plugin.analyze(urlInput, urlPlan.operations.map((op) => observation(op, op.id.startsWith("screen-") ? 202 : 200, op.id, op.id.startsWith("screen-") ? "debug enabled" : "normal")), urlContext);
+  assert.equal(urlScreen.result.follow_up.url, urlInput.url);
+  const urlConfirmPlan = plugin.plan(urlScreen.result.follow_up, urlContext);
+  assert.ok(urlConfirmPlan.operations.every((op) => op.url === urlInput.url && op.credential_mode === "without_project_credentials"));
+  assert.throws(() => plugin.plan({ ...urlInput, locations: ["body"] }, urlContext), /supports only query and header/);
+  assert.throws(() => plugin.plan({ ...urlInput, locations: ["cookie"] }, urlContext), /supports only query and header/);
+  assert.throws(() => plugin.plan({ locations: ["query"] }, urlContext), /requires either base_exchange_id or input.url/);
+  assert.throws(() => plugin.plan(urlInput, context()), /either base_exchange_id or input.url/);
+  assert.throws(() => plugin.plan({ ...urlInput, url: "ftp://example.test/" }, urlContext), /absolute HTTP\(S\) URL/);
+  assert.throws(() => plugin.plan({ ...urlInput, url: "http://user:pass@example.test/" }, urlContext), /embedded credentials/);
+  assert.throws(() => plugin.plan({ ...urlInput, url: "http://example.test/path#fragment" }, urlContext), /fragment/);
+  assert.throws(() => plugin.plan({ phase: "confirm", url: urlInput.url, locations: ["query"] }, urlContext), /requires words_by_location/);
+  assert.throws(() => plugin.plan({ phase: "confirm", url: urlInput.url, locations: ["query"], words_by_location: { query: ["debug"] } }, urlContext), /requires use_only_supplied_words=true/);
+  const unsafeHeaderPlan = plugin.plan({ url: urlInput.url, locations: ["header"], words: ["Authorization", "Cookie", "Proxy-Authorization", "Host", "X-Safe-Test"], use_only_supplied_words: true, cache_key_tests: false }, urlContext);
+  const testedHeaders = unsafeHeaderPlan.operations.flatMap((op) => op.headers || []).map((header) => header.name.toLowerCase());
+  assert.deepEqual(Array.from(new Set(testedHeaders)), ["x-safe-test"]);
+  assert.throws(() => plugin.plan({ ...urlInput, scan_namespace: "a".repeat(32) }, urlContext), /host-generated/);
+  const driftedUrl = { ...urlScreen.result.follow_up, url: "http://127.0.0.1:18081/cache" };
+  assert.throws(() => plugin.plan(driftedUrl, urlContext), /target no longer matches/);
+
+  const nonceContextA = context(); nonceContextA.execution_nonce = "a".repeat(32);
+  const nonceContextB = context(); nonceContextB.execution_nonce = "b".repeat(32);
+  const noncePlanA = plugin.plan(cacheInput, nonceContextA);
+  const noncePlanB = plugin.plan(cacheInput, nonceContextB);
+  const poisonA = noncePlanA.operations.find((op) => op.id === "cache-screen-poison-query-0").query_params.find((item) => item.name === "utm_content").value;
+  const poisonB = noncePlanB.operations.find((op) => op.id === "cache-screen-poison-query-0").query_params.find((item) => item.name === "utm_content").value;
+  assert.notEqual(poisonA, poisonB, "independent workflows use disjoint cache proof values");
+  const staleObservations = noncePlanB.operations.map((op) => observation(op, 200, op.id, op.id === "cache-screen-clean-query-0" ? `stale ${poisonA}` : "ordinary page"));
+  assert.deepEqual(Array.from(plugin.analyze(cacheInput, staleObservations, nonceContextB).result.candidate_buckets.query), [], "stale proof from another workflow cannot narrow a bucket");
 }
 
 {

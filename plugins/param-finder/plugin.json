@@ -2,11 +2,11 @@
   "schema_version": 1,
   "id": "param-finder",
   "name": "ParamFinder",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Discover hidden and unkeyed query, body, cookie, and header parameters using batched differential and cache-key probing.",
   "enabled": true,
   "entrypoint": "index.js",
-  "entrypoint_sha256": "f3cbef2f6108057ef578829b588c46fab3b24831c30b6a24ca17ecfd92a447f7",
+  "entrypoint_sha256": "945be80abb374ccd8b86ec03ac1c1c9d10f00c9c98c502df257642c8bff1b945",
   "resources": {
     "assetnote-params": { "path": "resources/assetnote-params", "sha256": "9cf95d2dbd129cc51df9c88f31b5514578ac052357c4ef3d010b2883fd40850b" },
     "boring_headers": { "path": "resources/boring_headers", "sha256": "c96c9b29315bd9afb4c1bad40fc26d95f8bebab16f8409ef72f69bc90d73f01a" },
@@ -21,13 +21,16 @@
   "limits": { "timeout_ms": 900000, "max_operations": 5000, "max_concurrency": 8, "memory_mb": 64, "js_stage_timeout_ms": 60000 },
   "actions": [{
     "name": "scan",
-    "description": "Mine one saved request for hidden parameters, optionally supplementing the built-in words.",
+    "description": "Mine a saved request or an explicit public URL for hidden parameters, optionally supplementing the built-in words.",
     "required_capabilities": ["http.semantic"],
     "input_schema": {
       "type": "object",
       "additionalProperties": false,
       "required": [],
       "properties": {
+        "url": { "type": "string", "format": "uri", "pattern": "^https?://", "maxLength": 4096, "description": "Explicit anonymous GET target. Mutually exclusive with base_exchange_id; supports query/header locations only." },
+        "scan_namespace": { "type": "string", "pattern": "^[0-9a-f]{32}$", "description": "Host-generated workflow namespace. Preserve it unchanged in continuations." },
+        "target_signature": { "type": "string", "pattern": "^[0-9a-f]{8}$", "description": "Host-generated follow-up guard binding confirmation to the original target." },
         "locations": { "type": "array", "items": { "enum": ["query", "body", "cookie", "header"] }, "uniqueItems": true },
         "phase": { "enum": ["screen", "confirm"], "default": "screen" },
         "bucket_size": { "type": "integer", "minimum": 2, "maximum": 64, "default": 64 },
@@ -45,6 +48,9 @@
           "required": ["phase", "cursor", "candidate_signature"],
           "properties": {
             "phase": { "const": "screen" },
+            "url": { "type": "string", "format": "uri", "pattern": "^https?://", "maxLength": 4096 },
+            "scan_namespace": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
+            "target_signature": { "type": "string", "pattern": "^[0-9a-f]{8}$" },
             "locations": { "type": "array", "items": { "enum": ["query", "body", "cookie", "header"] }, "uniqueItems": true },
             "bucket_size": { "type": "integer", "minimum": 2, "maximum": 64 },
             "max_words": { "type": "integer", "minimum": 1, "maximum": 100000 },
@@ -70,7 +76,11 @@
         "similarity_threshold": { "type": "number", "minimum": 0.5, "maximum": 1, "default": 0.96 },
         "ignore_patterns": { "type": "array", "maxItems": 20, "items": { "type": "string", "maxLength": 200 } },
         "max_requests": { "type": "integer", "minimum": 4, "maximum": 5000, "default": 500 }
-      }
+      },
+      "allOf": [{
+        "if": { "properties": { "phase": { "const": "confirm" } }, "required": ["phase"] },
+        "then": { "required": ["words_by_location", "use_only_supplied_words"], "properties": { "use_only_supplied_words": { "const": true } } }
+      }]
     }
   }]
 }
