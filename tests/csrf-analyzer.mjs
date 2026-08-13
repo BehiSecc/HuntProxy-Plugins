@@ -96,6 +96,10 @@ assert.ok(result.result.outcomes.some((outcome) => outcome.kind === "session-bin
 const failed = plan.operations.map((operation) => observation(operation));
 failed.find((item) => item.id === "baseline-0").error = "transport failed";
 assert.equal(plugin.analyze(input, failed, context()).result.baseline_stable, false);
+assert.equal(plugin.analyze(input, failed, context()).result.baseline_error,"operation_failed");
+const scopeFailed=plan.operations.map((operation)=>observation(operation));
+scopeFailed.find((item)=>item.id==="baseline-0").error={code:"scope_denied",message:"outside scope"};
+assert.equal(plugin.analyze(input,scopeFailed,context()).result.baseline_error,"scope_denied","host scope failures are not mislabeled as transport errors");
 
 const nestedContext=context();
 nestedContext.base_exchange.identity.request_headers[0].value_base64=b64("application/json");

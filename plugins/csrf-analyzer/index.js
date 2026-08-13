@@ -414,7 +414,10 @@
   function pairFailure(map,prefix){
     var first=map[prefix+"0"],second=map[prefix+"1"];
     if(!first||!second)return "observation_missing";
-    if(first.error||second.error)return "transport_failed";
+    if(first.error||second.error){
+      var errors=[first.error,second.error].filter(Boolean),codes=errors.map(function(error){return error&&typeof error==="object"?String(error.code||""):"";}).filter(Boolean);
+      return codes.length===errors.length&&codes.every(function(code){return code===codes[0];})?codes[0]:"operation_failed";
+    }
     if(similarity(first,second)<0.9)return "responses_differed";
     return null;
   }
