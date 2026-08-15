@@ -28,6 +28,14 @@ function observation(operation, { status = 200, hash = "success", text = "profil
 }
 const responseHeader = (name, value) => ({ name, value_base64: b64(value) });
 
+const manifest = JSON.parse(await readFile(new URL("csrf-analyzer/plugin.json", root), "utf8"));
+const expectedTokenNames = ["csrf", "csrf_token", "_csrf", "xsrf", "_token", "authenticity_token", "x-csrf-token", "x-xsrf-token"];
+for (const action of manifest.actions) assert.deepEqual(action.input_schema.properties.token_names.default, expectedTokenNames, `${action.name} token defaults must match runtime discovery`);
+const browserAction = manifest.actions.find((action) => action.name === "browser_scan");
+assert.deepEqual(browserAction.input_schema.required, ["allow_state_change", "identity"]);
+assert.equal(browserAction.input_schema.properties.identity.additionalProperties, false);
+assert.equal(browserAction.input_schema.properties.identity.properties.profile.pattern, "^[A-Za-z0-9_-]{1,64}$");
+
 assert.throws(() => plugin.plan({}, context()), /allow_state_change/);
 const input = {
   allow_state_change: true,
@@ -92,6 +100,10 @@ assert.ok(combinedOrigin.header_tombstones.includes("X-CSRF-Token"));
 assert.ok(combinedOrigin.query_params.some((part) => part.name === "csrf" && part.value === null));
 assert.ok(combinedOrigin.body_params.some((part) => part.name === "csrf_token" && part.value === null));
 assert.ok(result.result.outcomes.some((outcome) => outcome.kind === "session-binding"));
+
+const defaultTokenPlan = plugin.plan({allow_state_change:true,max_mutations:80}, context());
+const defaultMutations = Array.from(defaultTokenPlan.result.mutations, (item) => item.name);
+assert.ok(defaultMutations.includes("header-remove:X-CSRF-Token"), "runtime defaults include the documented CSRF header names");
 
 const failed = plan.operations.map((operation) => observation(operation));
 failed.find((item) => item.id === "baseline-0").error = "transport failed";
@@ -184,7 +196,7 @@ assert.equal(failedReadback.error,"readback_predicate_not_met","failure of eithe
 assert.throws(()=>plugin.plan({...readbackInput,readback:{...readbackInput.readback,url:"https://other.test/profile"}},context()),/same-origin/);
 
 const browserContext=context();browserContext.action="browser_scan";
-const browserPlan=plugin.plan({allow_state_change:true,identity_profile:"portswigger-victim",token_names:["csrf_token"]},browserContext);
+const browserPlan=plugin.plan({allow_state_change:true,identity:{profile:"portswigger-victim"},token_names:["csrf_token"]},browserContext);
 assert.equal(browserPlan.execution,"sequential");
 assert.equal(browserPlan.operations.length,2);
 assert.ok(browserPlan.operations.every((op)=>op.type==="browser_csrf"&&op.mode==="cross_site_form_post"&&op.identity.profile==="portswigger-victim"));
@@ -195,5 +207,8 @@ assert.equal(browserAnalysis.result.browser_managed_cookie_delivery_reproducible
 assert.equal(browserAnalysis.result.acceptance_candidates[0].status,"awaiting_state_confirmation");
 const unauthenticatedBrowserAnalysis=plugin.analyze({},browserPlan.operations.map((op)=>({id:op.id,tested:true,status:"completed",exchanges:[],cookie_delivery:{managed_cookie_delivered:false,sent_matched_count:0}})),browserContext);
 assert.equal(unauthenticatedBrowserAnalysis.result.acceptance_candidates.length,0,"navigation without an applicable managed cookie is not a delivery candidate");
+assert.throws(()=>plugin.plan({allow_state_change:true,identity_profile:"portswigger-victim",token_names:["csrf_token"]},browserContext),/named managed profile selector/);
+assert.throws(()=>plugin.plan({allow_state_change:true,identity:{cookie_file:"victim.json"},token_names:["csrf_token"]},browserContext),/named managed profile selector/);
+assert.throws(()=>plugin.plan({allow_state_change:true,identity:{profile:"invalid profile"},token_names:["csrf_token"]},browserContext),/named managed profile selector/);
 
 console.log("CSRFAnalyzer hardening tests passed.");

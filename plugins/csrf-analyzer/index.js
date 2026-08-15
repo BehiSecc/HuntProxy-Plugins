@@ -239,10 +239,15 @@
     if(!query.length&&!body.length)throw new Error("Browser CSRF scan requires a configured token in the captured query or form body");
     return {query_params:query,body_params:body};
   }
+  function browserIdentity(input){
+    var identity=input&&input.identity,keys=identity&&typeof identity==="object"&&!Array.isArray(identity)?Object.keys(identity):[];
+    if(keys.length!==1||keys[0]!=="profile"||typeof identity.profile!=="string"||!/^[A-Za-z0-9_-]{1,64}$/.test(identity.profile))throw new Error("browser_scan identity must contain exactly one named managed profile selector");
+    return {profile:identity.profile};
+  }
   function browserPlan(input,context){
     if(input.allow_state_change!==true)throw new Error("Browser CSRF testing sends the state-changing request and requires allow_state_change=true");
-    var exchange=browserBase(context),patch=browserTokenRemoval(input,context),method=String(exchange.method).toUpperCase(),operations=[];
-    for(var repeat=0;repeat<2;repeat+=1)operations.push({id:"browser-token-remove-"+repeat,type:"browser_csrf",base_exchange_id:exchange.exchange_id,mode:method==="GET"?"top_level_get":"cross_site_form_post",query_params:patch.query_params,body_params:patch.body_params,identity:{profile:String(input.identity_profile)},timeout_ms:Number(input.timeout_ms||15000)});
+    var identity=browserIdentity(input),exchange=browserBase(context),patch=browserTokenRemoval(input,context),method=String(exchange.method).toUpperCase(),operations=[];
+    for(var repeat=0;repeat<2;repeat+=1)operations.push({id:"browser-token-remove-"+repeat,type:"browser_csrf",base_exchange_id:exchange.exchange_id,mode:method==="GET"?"top_level_get":"cross_site_form_post",query_params:patch.query_params,body_params:patch.body_params,identity:identity,timeout_ms:Number(input.timeout_ms||15000)});
     return {execution:"sequential",operations:operations,result:{browser_mode:method==="GET"?"top_level_get":"cross_site_form_post",mutation:"token-remove",confirmation:"delivery_only",requires_readback:true}};
   }
   function browserAnalyze(observations){

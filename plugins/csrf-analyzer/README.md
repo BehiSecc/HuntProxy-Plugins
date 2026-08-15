@@ -50,7 +50,7 @@ Without a read-back, findings remain tentative because they prove acceptance rat
 
 ## Browser Mode
 
-The separate `browser_scan` action uses a named HuntProxy cookie profile in fresh Chromium. It sends two token-removed top-level GETs or form POSTs from an isolated cross-site document so real browser cookie rules apply.
+The separate `browser_scan` action uses an explicit named HuntProxy cookie profile selector such as `{"identity":{"profile":"user-a"}}` in fresh Chromium. It sends two token-removed top-level GETs or form POSTs from an isolated cross-site document so real browser cookie rules apply.
 
 Browser mode returns an acceptance candidate when both runs complete and a matching managed-profile cookie was delivered. It does not create a finding by itself because cookie delivery does not prove authentication or state change.
 
