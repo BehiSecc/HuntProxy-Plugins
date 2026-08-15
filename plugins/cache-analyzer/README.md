@@ -1,139 +1,75 @@
 # CacheAnalyzer
 
-CacheAnalyzer profiles cache behavior, screens cache-key inputs, confirms only
-candidate-specific persistence, and tests web cache deception. Every scan
-requires `allow_cache_side_effects=true`.
+CacheAnalyzer helps an AI agent find web cache poisoning, cache-key mistakes, and web cache deception without treating every changed response as a vulnerability.
 
-## Scan modes and stages
+It profiles the cache, narrows broad candidate lists, and keeps testing until a unique marker or private response is reproduced through clean cache hits.
 
-`scan_mode` defaults to `full`.
+## Start With a Useful Request
 
-- `light` directly confirms a short, high-yield set of forwarding, host,
-  rewrite, and method headers plus the common forwarded-host/scheme
-  combination. It does not load the long-tail header wordlist.
-- `full` screens every eligible entry from the
-  bundled header and parameter resources in bounded, independently marked
-  groups. Copy `result.follow_up` into the next scan. The returned sequence is
-  normally `discover -> screen -> confirm -> advanced`.
+Choose a saved GET or HEAD exchange. For poisoning, use a stable endpoint that exposes cache behavior. For deception, use a request whose authenticated response is meaningfully different from its logged-out response.
 
-When the saved response references passive same-origin script or stylesheet
-resources, the bounded `discover` phase profiles the saved URL plus up to 12
-host-resolved targets. It requires either a stable nonempty 2xx representation
-or a stable 301/302/307/308 response with `Location`, plus an explicit cache
-HIT. Two distinct query keys establish isolation; exact-URL fallback is
-available only with `allow_shared_cache_key_tests=true`. Full carries at most
-three eligible targets through the staged queue, while Light selects one. This
-lets an uncacheable HTML shell lead the scan to a cacheable referenced
-endpoint without automatically GETting flat application routes such as logout
-or admin actions. Cross-origin and sensitive signed URLs are excluded by the
-host. Supplying `target_url` explicitly skips automatic discovery. When no
-cacheable target is proven, discovery returns `no_cacheable_target_found` and
-does not spend the broad probing budget.
+Every run needs a unique 8–40 character alphanumeric `marker` and `allow_cache_side_effects: true`. If the saved page loaded same-origin scripts or styles, discovery can profile those resources and move testing to a cacheable target. You can also provide a same-origin `target_url` directly.
 
-Deception-only scans skip poisoning discovery and test variants of the private
-base URL directly; that URL is not expected to be cacheable in its ordinary
-form. When poisoning discovery selects a separate static resource, deception
-uses dedicated private/public baselines on `deception_base_url` rather than the
-resource baselines.
+## Example Prompt
 
-A screen page that cannot fit under the 2,000-operation limit returns another
-screen follow-up with `screen_cursor` and accumulated candidates. Coverage is
-never implied: every result reports generated, tested, deferred, and skipped
-counts. Header values are type-aware (hostnames, IP addresses, schemes, ports,
-paths, and methods) instead of sending one malformed value everywhere.
+```text
+Use HuntProxy MCP. Run CacheAnalyzer in full mode against exchange 42.
+Generate a unique marker, set allow_cache_side_effects to true, keep shared-key
+tests disabled, run every returned follow_up, and separate confirmed findings
+from incomplete cache evidence.
+```
 
-The confirm stage sends each attributed header or query parameter separately.
-The advanced follow-up covers header combinations, non-sensitive cookies,
-fat GET, parameter cloaking, full-query behavior, URL normalization, and
-deception. It does not repeat the direct query probes already completed by
-confirmation. Automatic cloaking uses bounded confirmed or screen-reflected
-parameters as carriers with common or endpoint-derived targets; exact marker
-persistence still gates findings. Fat-GET
-also tests bounded parameter names that screening observed as reflected,
-because a keyed query parameter can still be unkeyed in a GET body.
+Use `light` instead when you want a smaller high-yield header and deception check.
 
-Full-query and URL-normalization probes can touch a shared cache key and remain
-disabled unless `allow_shared_cache_key_tests=true`. The same acknowledgement
-is required by `shared_header_cache_key_oracle=true`, which is intended for
-strict caches that reject query cache busters. Parameter-cloaking probes also
-use the profiled isolated `hp_cache_bust` key in addition to the candidate
-carrier, preventing them from warming or colliding with the original public
-entry. Their poison requests also request bounded `Cache-Control: no-cache`
-revalidation and still reject a pre-existing HIT as proof.
-The full-query poison request asks the cache to revalidate with
-`Cache-Control: no-cache`; a pre-existing HIT is still rejected as proof.
+## How the Workflow Progresses
 
-## Evidence discipline
+| Stage | What Happens |
+| --- | --- |
+| **Discover** | Profiles the saved URL and bounded same-origin resources, then selects one cacheable target in Light or up to three in Full. This stage runs when poisoning is included, no `target_url` is supplied, and extra page-discovered targets are available. |
+| **Screen** | Full mode batches header and query candidates and keeps inputs whose unique markers survive a poison/clean pair. Screening never creates a finding. |
+| **Confirm** | Retests narrowed headers and query parameters individually with fresh cache profiles and clean confirmation requests. Light mode starts here with a small header set. |
+| **Advanced** | Full mode adds header combinations, non-sensitive cookies, full-query behavior, parameter cloaking, fat GET, URL normalization, and cache deception where applicable. |
+| **Next target** | Continues the same workflow when discovery selected another cacheable resource. |
 
-Each stage starts with credentialed and credential-free baselines plus a
-two-key cache profile. The profile primes and repeats two distinct
-`hp_cache_bust` values. `isolation_verified=true` requires key A to repeat as
-a HIT, the first request for key B not to be a HIT, and key B to repeat as a
-HIT. Cache-profile namespaces include the stage and screen cursor, preventing
-earlier follow-ups from warming the later stage's profile keys.
+Always pass `result.follow_up` back unchanged until it becomes `null`. A large screen can return another screen page before confirmation, and Full continues into advanced analysis.
 
-A cache-poisoning finding is created only when all applicable checks pass:
+## What It Checks
 
-1. The poison response contains the candidate-specific marker.
-2. The marker-bearing poison response is not itself a cache HIT.
-3. Two later clean requests to the exact same tested key contain that marker.
-4. At least one clean response has explicit cache-HIT evidence.
-5. An isolated probe also has a verified two-key cache profile. Explicitly
-   acknowledged shared-key probes use their shared-key proof instead.
+- unkeyed headers, header combinations, query parameters, and cookies;
+- full-query cache-key behavior;
+- parameter cloaking and fat-GET discrepancies;
+- URL normalization collisions; and
+- web cache deception using static-looking suffixes, delimiters, and normalized paths.
 
-Response changes without the exact marker are returned only as bounded
-`inconclusive_mutation_only` diagnostics. Marker persistence without cache or
-isolation proof is also diagnostic and never becomes a persisted finding.
-Marker search covers the complete captured response body and response headers,
-not only the preview.
-Typed scheme/protocol headers are the narrow exception to marker-only proof:
-a deterministic HTTP redirect that is absent from clean baselines may be
-confirmed when it persists unchanged in two clean cache HIT responses with the
-same freshness and key-isolation gates. Generic status changes remain
-diagnostic-only.
-Deception equality uses full captured-body hashes or normalized full bodies;
-matching previews alone cannot establish a private-response cache leak.
-Marker reflection is not required for deception. Firm proof requires an
-explicit authenticated MISS whose full representation matches the private
-baseline, followed by two credential-free HIT responses on the exact same
-unique path that reproduce that private representation. Conflicting
-`private`/`no-store`/`Vary: *` evidence overrides apparent HIT headers.
+## How It Confirms a Result
 
-Cache evidence recognizes positive `Age`, `X-Cache`,
-`CF-Cache-Status`, `X-Cache-Hits`, and `Cache-Status` values while
-distinguishing misses, bypasses, `private`, `no-store`, and `Vary: *`.
-All semantic operations declare either
-`with_project_credentials` or `without_project_credentials`; credential-free
-requests also tombstone Cookie and authorization headers. These labels express
-the requested credential policy, not a claim that credentials were present on
-the saved exchange.
+For cache poisoning, a firm finding requires the candidate marker in a fresh poison response and in two later clean requests to the exact tested key. Both clean responses must show explicit cache-HIT evidence, and the cache-buster profile must prove that the test key is isolated.
 
-Findings with the same endpoint, proof class, and marker-normalized confirmed
-response fingerprint are merged. The retained finding includes
-`supporting_variants`, `variant_count`, and bounded combined evidence.
-The confirm follow-up also carries bounded root-cause identifiers into the
-advanced stage, so an equivalent combination or advanced probe is suppressed
-instead of being persisted as a second finding.
+Shared-key probes replace isolation proof only when `allow_shared_cache_key_tests: true` is supplied. A changed response without the exact marker remains diagnostic. Deterministic scheme redirects are the narrow exception and must persist through two clean-HIT trials.
 
-Coverage counts use `coverage_unit=candidate_inputs`; they are intentionally
-different from network operation counts because screen requests batch multiple
-candidates. Bounded diagnostic arrays include total and truncation fields.
+For cache deception, the plugin first proves that authenticated and logged-out baselines differ. It then requires an authenticated MISS at the crafted path followed by two credential-free HIT responses that reproduce the complete private representation. `private`, `no-store`, or `Vary: *` evidence overrides an apparent HIT.
 
-## Operational notes
+## Useful Options
 
-Operations execute sequentially because each poison/clean/confirm sequence is
-order-sensitive. Network execution is capped at 2,000 operations and 15
-minutes. Broad screening uses host-side full-body exact-marker searches and
-does not copy response bodies into JavaScript. Confirmation retains only a
-bounded body prefix plus full hashes and marker-search results. The host also
-enforces an aggregate analysis payload budget, preserving exchanges, hashes,
-headers, previews, and proof booleans when bodies must be omitted. Aggregation
-has a separate bounded JavaScript budget. Retry scheduling also caps cumulative planned delay at
-10 minutes and reduces the selected variant count when necessary. The saved
-base exchange must use GET or HEAD; the plugin does not replay state-changing
-methods as part of cache discovery.
+| Option | Default | What It Controls |
+| --- | ---: | --- |
+| `scan_mode` | `full` | Use `light` for a smaller high-yield workflow or `full` for wordlists and advanced families. |
+| `modes` | Poisoning + deception | Run only one mode when the objective is already known. |
+| `target_url` | Saved URL | Test a specific same-origin target and skip automatic discovery. |
+| `oracle_families` | Broad set | Restrict poisoning to selected families. |
+| `max_discovery_targets` | `12` | Bound same-origin resources profiled in addition to the saved URL. |
+| `max_header_candidates` | Full `5000`, Light `40` | Cap candidate headers before staging and operation limits are applied. |
+| `max_parameter_candidates` | `1000` | Cap query-parameter candidates used during screening. |
+| `max_poison_variants` | `500` | Cap variants selected across the enabled families. |
+| `allow_shared_cache_key_tests` | `false` | Enable exact/shared-key checks such as full-query and URL-normalization tests. |
+| `poison_attempts` | `1` | Repeat poison requests for short-lived cache entries. |
 
-Use a harmless saved exchange on the same origin and pass `target_url` when
-saving the target itself would warm a shared key. Cross-origin overrides are
-rejected. Sensitive authentication/session cookie names still require an
-explicit name and `allow_sensitive_cookie_mutation=true`.
+Sensitive cookie names must be supplied explicitly with `allow_sensitive_cookie_mutation: true`.
+
+## Current Limits
+
+- Only saved GET and HEAD exchanges are accepted, and target overrides must remain on the same origin.
+- Confirmed cache findings need recognizable HIT/MISS evidence such as `Age`, `X-Cache`, `CF-Cache-Status`, `X-Cache-Hits`, or `Cache-Status`.
+- Discovery selects at most three eligible targets in Full and one in Light.
+- Full mode can require several jobs when candidate groups do not fit within the 2,000-operation stage limit.
+- Shared-key tests stay disabled until their separate option is enabled.

@@ -1,122 +1,151 @@
-# HuntProxy plugin API v1
+# HuntProxy Plugin API v1
 
-This is the compact contract reference. Start with
-[Write a HuntProxy plugin](writing-plugins.md) and the
-[minimal example](../examples/minimal-plugin/) if you are building your first
-plugin.
+This is the contract reference for HuntProxy plugin authors. If you are building your first plugin, start with [Create a HuntProxy Plugin](writing-plugins.md) and the [minimal working example](../examples/minimal-plugin/).
 
-## Package contract
-
-The manifest shape is defined in
-[`schemas/plugin-manifest-v1.json`](../schemas/plugin-manifest-v1.json). The
-generic checker also verifies files, UTF-8, digests, host-compatible byte
-limits, exports, and safe path resolution:
-
-```bash
-node scripts/validate-plugin.mjs path/to/plugin
+```text
+plan(input, context) → HuntProxy executes bounded operations → analyze(input, observations, context)
 ```
 
-The public schema intentionally uses simple IDs and explicit limits even where
-the host accepts a broader defaulted form.
+The plugin chooses what to test and interprets the observations. HuntProxy validates the plan, performs the network work, saves every exchange, and persists evidence-backed findings.
 
-| Manifest field | Contract |
-|---|---|
-| `schema_version` | `1` |
-| `id` | 2–63 lowercase letters, digits, or hyphens; begins alphanumeric |
-| `name` | Nonblank, 1–80 characters, at most 128 UTF-8 bytes |
-| `version` | `MAJOR.MINOR.PATCH` |
-| `description` | 1–300 characters |
-| `enabled` | Boolean; disabled packages cannot run |
-| `entrypoint` | Safe relative `.js` path, UTF-8, at most 4 MiB |
-| `entrypoint_sha256` | Lowercase SHA-256 of the exact file bytes |
-| `resources` | Named safe relative UTF-8 files, each at most 1 MiB and 4 MiB total |
-| `capabilities` | Unique values from the table below |
-| `limits` | Explicit conservative ceilings |
-| `actions` | Unique names, descriptions, input schemas, capability hints, and optional saved-exchange requirements |
+## Contents
 
-`input_schema` is shown to agents for discovery. The host does not currently
-validate action input against it before calling `plan()`. Validate required,
-bounded, and safety-sensitive values inside `plan()` too.
+- [Package Contract](#package-contract)
+- [Capabilities](#capabilities)
+- [Effective Limits](#effective-limits)
+- [JavaScript Lifecycle](#javascript-lifecycle)
+- [Context](#context)
+- [Plan Result](#plan-result)
+- [Operations](#operations)
+  - [Semantic HTTP Request](#semantic-http-request)
+  - [Private HTTP Workflow](#private-http-workflow)
+  - [Raw HTTP/1](#raw-http1)
+  - [Barriered HTTP/1 Group](#barriered-http1-group)
+  - [Raw HTTP/2](#raw-http2)
+  - [Race Group](#race-group)
+  - [Browser CSRF](#browser-csrf)
+  - [AWS API Gateway](#aws-api-gateway)
+- [Observations](#observations)
+- [Analysis and Findings](#analysis-and-findings)
+- [Agent and Job Flow](#agent-and-job-flow)
 
-Set an action's `requires_base_exchange` to `true` when planning or evidence
-always depends on a saved request. HuntProxy exposes the requirement through
-`extension_describe` and rejects preview/run calls without `base_exchange_id`
-before starting the JavaScript runtime. It defaults to `false` for existing
-packages.
+## Package Contract
+
+A plugin is an immediate child of HuntProxy's configured `plugin_dir`:
+
+```text
+my-plugin/
+├── plugin.json
+├── index.js
+├── README.md       optional, recommended
+└── resources/      optional UTF-8 files
+```
+
+The public manifest shape is defined by [`schemas/plugin-manifest-v1.json`](../schemas/plugin-manifest-v1.json). Validate a package from the HuntProxy-Plugins repository root with:
+
+```bash
+node scripts/validate-plugin.mjs path/to/my-plugin
+```
+
+| Manifest Field | Contract |
+| --- | --- |
+| `schema_version` | Must be `1`. |
+| `id` | 2–63 lowercase letters, digits, or hyphens; begins with a letter or digit. |
+| `name` | Nonblank, 1–80 characters and at most 128 UTF-8 bytes. |
+| `version` | `MAJOR.MINOR.PATCH`. |
+| `description` | 1–300 characters. |
+| `enabled` | Boolean. A disabled package cannot run. |
+| `entrypoint` | Safe relative `.js` path; UTF-8 and at most 4 MiB. |
+| `entrypoint_sha256` | Lowercase SHA-256 of the exact entrypoint bytes. |
+| `resources` | Named safe relative UTF-8 files, each at most 1 MiB and 4 MiB total, with exact SHA-256 digests. |
+| `capabilities` | Unique host capabilities from the table below. |
+| `limits` | Explicit ceilings for the job and JavaScript runtime. |
+| `actions` | Unique agent-visible actions, descriptions, input schemas, capability hints, and optional base-exchange requirements. |
+
+An action has this general shape:
+
+```json
+{
+  "name": "scan",
+  "description": "Test one captured request for a focused behavior.",
+  "required_capabilities": ["http.semantic"],
+  "requires_base_exchange": true,
+  "input_schema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {}
+  }
+}
+```
+
+Action names match `^[a-z][a-z0-9_]{1,63}$` and must be unique inside the manifest.
+
+`input_schema` is discovery metadata shown to the agent. HuntProxy does not currently apply schema validation or defaults before calling `plan()`. The plugin must validate types, required fields, bounds, unknown fields, and explicit opt-ins itself.
+
+`requires_base_exchange: true` makes HuntProxy advertise the dependency and reject preview or run calls without `base_exchange_id` before JavaScript starts.
 
 ## Capabilities
 
-| Capability | Permits |
-|---|---|
-| `http.semantic` | `http_request` and `http_workflow` |
-| `browser.csrf` | Isolated real-browser CSRF delivery probes |
-| `http.raw` | `raw_http1`, `raw_http1_group`, and `raw_http2`; also exposes bounded raw base-request context |
-| `page.discover` | Bounded static endpoint/URL discovery from the stored base response |
-| `http.race` | `race_group` |
-| `identity.use` | Bounded unredacted base request headers/body for identity-aware comparisons |
-| `aws.api_gateway` | Specialized host-managed IpRotate Gateway operations |
+| Capability | What It Permits |
+| --- | --- |
+| `http.semantic` | `http_request` and `http_workflow`. |
+| `http.raw` | `raw_http1`, `raw_http1_group`, and `raw_http2`; also bounded raw base-request context. |
+| `http.race` | `race_group`. |
+| `identity.use` | Bounded identity-aware context and host-resolved profile or cookie-file selectors. |
+| `page.discover` | Bounded passive same-origin resource candidates from the saved base response. |
+| `browser.csrf` | Isolated Chromium delivery through `browser_csrf`. |
+| `aws.api_gateway` | IpRotate's specialized `aws_api_gateway` lifecycle operation. |
 
-`browser.csrf` plans a bounded `browser_csrf` operation using a captured GET or
-form-urlencoded POST plus an explicit named cookie-profile identity. HuntProxy
-clones managed cookies into a fresh non-persistent Chromium context, submits from
-an opaque cross-site document, captures the exchanges, reports only whether a
-matching managed cookie was delivered, and discards the context. Custom attacker
-origins, arbitrary scripts or headers, non-form bodies, sibling origins, and
-WebSocket flows are intentionally unsupported.
+Capabilities belong to the whole manifest. `actions[].required_capabilities` must be a subset of that list, but it is discovery metadata rather than a separate action-level boundary. HuntProxy checks every planned operation against the manifest capabilities.
 
-Capabilities are granted to the whole manifest. An action's
-`required_capabilities` must be a subset, but it is discovery metadata rather
-than an action-level security boundary. HuntProxy still checks every planned
-operation against the manifest capabilities.
+## Effective Limits
 
-## Effective limits
-
-| Limit | Default | Accepted/effective range |
-|---|---:|---:|
+| Limit | Host Default | Accepted Range |
+| --- | ---: | ---: |
 | Job timeout | 120,000 ms | 1,000–900,000 ms |
-| Planned requests | 100 | 1–10,000 |
+| Planned network operations | 100 | 1–10,000 |
 | Request concurrency | 4 | 1–100, then reduced to the project limit |
-| QuickJS memory | 16 MiB | 4–64 MiB |
-| Each `plan`/`analyze` stage | 2,000 ms legacy fallback; 60,000 ms first-party | 250–120,000 ms |
+| QuickJS memory | 16 MiB | 4–128 MiB |
+| Each `plan` or `analyze` stage | 2,000 ms | 250–120,000 ms |
+| Manifest | — | 256 KiB |
 | Entrypoint | — | 4 MiB |
 | Plugin input | — | 2 MiB |
 | Final result | — | 8 MiB |
-| Body exposed to JavaScript | — | 256 KiB, then marked truncated |
+| Response body exposed to JavaScript | — | 256 KiB before truncation or omission |
 
-`max_operations` counts actual requests, not only top-level operation objects:
-workflow steps, raw-group members, HTTP/2 streams, race requests, and AWS
-regions all count. `max_concurrency` is also reduced to the project's request
-concurrency limit. At most four plugin jobs run at once across the host.
-`extension_describe` also returns host-resolved `effective_limits`, making an
-omitted or clamped value visible before execution. `extension_preview` runs the
-real planner without network traffic and reports stage-scoped request,
-candidate, runtime, and mode estimates. If execution completed but aggregation
-timed out, `job_resume_analysis` retries the retained analysis without replaying
-any probes.
+The public schema requires `timeout_ms`, `max_operations`, `max_concurrency`, and `memory_mb`. `js_stage_timeout_ms` is optional.
 
-## JavaScript lifecycle
+`max_operations` counts actual network work, not top-level objects. Workflow steps, raw-group members, HTTP/2 streams, race requests, and AWS regions all count. HuntProxy exposes the resolved values as `effective_limits` through `extension_describe`.
 
-The UTF-8 entrypoint assigns:
+At most four plugin jobs run concurrently across the host. Candidate lists, repeats, response processing, and output should remain bounded even when the manifest ceiling is high.
+
+## JavaScript Lifecycle
+
+The UTF-8 entrypoint assigns two synchronous functions:
 
 ```js
 globalThis.HuntProxyPlugin = {
-  plan: function (input, context) { return planObject; },
-  analyze: function (input, observations, context) { return analysisObject; }
+  plan: function (input, context) {
+    return {operations: [], result: {}};
+  },
+  analyze: function (input, observations, context) {
+    return {findings: [], result: {}};
+  }
 };
 ```
 
-Both functions are synchronous, JSON-only, and run in separate QuickJS
-contexts. Async functions and Promise returns are unsupported because HuntProxy
-does not await them. Filesystem/process APIs, sockets, `fetch`, Node modules,
-and npm packages are unavailable.
+Both functions must return plain JSON. Async functions, generators, and Promise results are unsupported. The runtime provides no `fetch`, sockets, filesystem or process APIs, Node.js modules, or npm packages.
 
-### Context
+Planning and analysis run in separate QuickJS contexts. Globals do not carry between them, and `plan.result` becomes `plan_result` in the final job output rather than an input to `analyze()`.
 
-Every call receives:
+## Context
+
+Both stages receive a context shaped like:
 
 ```json
 {
   "api_version": 1,
+  "execution_nonce": "0123456789abcdef0123456789abcdef",
   "plugin_id": "example",
   "plugin_version": "1.0.0",
   "action": "scan",
@@ -127,81 +156,104 @@ Every call receives:
 }
 ```
 
-When supplied, `base_exchange` contains presented request metadata:
+When supplied, `base_exchange` contains a presented request summary:
 
 ```text
 exchange_id, method, url, headers, request_length,
 request_body_hash, request_preview
 ```
 
-With `identity.use`, it also contains `identity.request_headers` as base64
-values and a bounded `identity.request_body_base64`. With `http.raw`, it gains
-`raw_request_base64` plus `raw_request_reconstructed`, or
-`raw_request_omitted: true` when unavailable.
-With `page.discover`, it also contains `page_discovery` with the saved source
-URL and a bounded `targets` list of host-resolved, same-origin passive resource
-URLs extracted from the decoded stored response, plus total/truncation fields.
-Emails, flat application routes, cross-origin references, userinfo, fragments,
-and sensitive signed-query candidates are excluded. Discovery is passive;
-plugins must still deliberately request each candidate.
+Capabilities add bounded context:
 
-`identity.use` also permits semantic HTTP operations to declare an opaque
-`identity` selector containing exactly one of `profile` or `cookie_file`.
-HuntProxy resolves selectors host-side once per job, applies cookie
-domain/path/expiry rules to each request URL, and suppresses the active project
-cookie jar. Cookie bytes are not exposed to plugin JavaScript or job output;
-the caller-supplied file path is used only as an opaque selector. Named profiles are project-scoped and managed through the `cookies`
-tool with `profile_name`.
+- `identity.use` adds base64 request identity headers and up to 256 KiB of request body under `base_exchange.identity`. This context may contain credentials and is available only for semantic saved exchanges; a raw-wire base exchange is rejected.
+- `http.raw` adds up to 2 MiB of exact or reconstructed raw request data through `raw_request_base64`, plus `raw_request_reconstructed`; otherwise it sets `raw_request_omitted: true`.
+- `page.discover` adds up to 64 passive same-origin resource candidates and total/truncation metadata under `base_exchange.page_discovery`. It is omitted when the action input already supplies `target_url`.
 
-If `input.exchange_ids` is an integer array, the host loads bounded
-`related_exchanges` containing `exchange_id`, `method`, `url`, and
-`status_code`. Verified manifest resources appear as UTF-8 strings under their
-manifest names.
+When `input.exchange_ids` is an integer array, HuntProxy loads bounded `related_exchanges` containing `exchange_id`, `method`, `url`, and `status_code`. Verified resource files appear as strings under their manifest names in `context.resources`.
 
-### Plan result
+Identity selectors contain exactly one nonempty `profile` or `cookie_file`. The same selector object must appear in the caller's action input before a plugin may use it in an operation. HuntProxy resolves it host-side, suppresses the active project cookie jar for that operation, applies the selected cookies by domain/path/expiry rules, and keeps their bytes out of JavaScript and job output. A plugin operation using selectors also requires `identity.use`.
+
+## Plan Result
+
+`plan()` returns:
 
 ```json
 {
   "execution": "parallel",
   "stop_on_error": false,
   "operations": [],
-  "result": {}
+  "result": {},
+  "preview": {
+    "stage": "confirm",
+    "candidate_count": 10,
+    "candidate_unit": "variants"
+  }
 }
 ```
 
-All fields are optional. Execution defaults to `parallel`; use `sequential`
-when top-level operations depend on order. Workflow steps are internally
-sequential. `stop_on_error: true` requires sequential execution. `result` is
-returned later as `plan_result`; it is not passed to `analyze()`.
+All fields are optional. Top-level execution defaults to `parallel`; use `sequential` when operations depend on order. `stop_on_error: true` requires sequential execution. Workflow steps remain internally ordered.
 
-Operation IDs must be nonempty, unique, stable, and safe to expose in History
-as `plugin-op:<id>` labels.
+Operation IDs must be nonempty, unique, and stable. HuntProxy uses them in observations and History labels.
+
+`preview` is optional bounded metadata for `extension_preview`. Supported fields include stage, scope, follow-up expectation, candidate count and unit, candidate breakdown, selected/supported/recommended modes, and a recommendation.
+
+`scope` is `current_stage` or `complete_action`. Preview identifiers are short slugs, candidate breakdown and supported modes are limited to 16 entries, and the recommendation is limited to 512 characters.
+
+Every operation URL is checked against project scope when it executes. Without explicit host patterns, a base-exchange job is pinned to that exchange's host; a job without a base exchange is pinned to the project's target host. Preview sends no requests, so successful planning does not guarantee that every URL will pass execution-time scope checks.
 
 ## Operations
 
-### Semantic request
+| Operation | Capability | Purpose |
+| --- | --- | --- |
+| `http_request` | `http.semantic` | Replay or modify one semantic HTTP request. |
+| `http_workflow` | `http.semantic` | Run ordered requests with private extraction and substitution. |
+| `raw_http1` | `http.raw` | Send one byte-oriented HTTP/1 request. |
+| `raw_http1_group` | `http.raw` | Release 2–32 HTTP/1 connections through one barrier. |
+| `raw_http2` | `http.raw` | Send ordered HTTP/2 headers and streams. |
+| `race_group` | `http.race` | Run sequential controls, parallel requests, or synchronized races. |
+| `browser_csrf` | `browser.csrf` + `identity.use` | Test supported cross-site delivery in isolated Chromium. |
+| `aws_api_gateway` | `aws.api_gateway` | Manage IpRotate's bounded API Gateway profiles. |
+
+### Semantic HTTP Request
 
 ```json
 {
-  "id": "replay",
+  "id": "probe",
   "type": "http_request",
   "base_exchange_id": 42,
   "method": "GET",
   "protocol": "auto",
   "headers": [{"name": "X-Check", "value": "one"}],
-  "header_tombstones": ["Authorization"],
-  "query_params": [{"name": "debug", "value": "1"}]
+  "header_tombstones": ["X-Remove-Me"],
+  "query_params": [{"name": "debug", "value": "1"}],
+  "observe": {
+    "body_bytes": 4096,
+    "body_contains": ["expected marker"]
+  }
 }
 ```
 
-Supply `base_exchange_id`, or an inline `url` and usually `method`. Optional
-fields include `delay_before_ms` (0–30,000), `body_text`, `body_base64`, and
-typed `query_params`, `cookie_params`, and `body_params`. A typed parameter
-with `value: null` removes it. Protocol is `auto`, `h1`, or `h2`.
-`cookie_params` and `body_params` require `base_exchange_id`; body parameters
-only mutate saved form-urlencoded bodies or top-level JSON objects.
+Provide `base_exchange_id`, or an inline `url` and usually `method`. Common optional fields are:
 
-### Private workflow
+- `delay_before_ms`, from 0 to 30,000;
+- `body_text` or `body_base64`;
+- `headers` and `header_tombstones`;
+- typed `query_params`, `cookie_params`, and `body_params`; and
+- `protocol`: `auto`, `h1`, or `h2`.
+
+A parameter with `value: null` removes it. `cookie_params` and `body_params` require a saved exchange; body parameters modify saved form-urlencoded bodies or top-level JSON objects.
+
+`credential_mode` defaults to `with_project_credentials`; use `without_project_credentials` to suppress the project cookie jar. An opaque `identity` selector can apply a named profile or local cookie file when `identity.use` is declared.
+
+`identity_comparison` optionally groups requests that use the same base exchange. HuntProxy rejects the group when supposedly different selectors resolve to identical cookie credentials.
+
+`observe.body_contains` searches up to 32 exact strings case-insensitively on the host without copying the complete body into JavaScript. If `response_body_search_complete` is false, a missing match is inconclusive.
+
+Each search string is limited to 200 bytes. When `observe` is present, `body_bytes` defaults to zero; request only the response bytes the analysis actually needs.
+
+See the [minimal plugin](../examples/minimal-plugin/) for a basic replay and [ParamFinder](../plugins/param-finder/README.md) for a staged semantic workflow.
+
+### Private HTTP Workflow
 
 ```json
 {
@@ -210,23 +262,38 @@ only mutate saved form-urlencoded bodies or top-level JSON objects.
   "steps": [
     {
       "id": "acquire",
-      "request": {"id": "get-form", "url": "https://example.test/form", "method": "GET"},
-      "extract": [{"from": "body_regex", "name": "csrf", "pattern": "name=csrf value=([^ >]+)", "group": 1, "encoding": "url"}]
+      "request": {
+        "id": "get-form",
+        "url": "https://example.test/form",
+        "method": "GET"
+      },
+      "extract": [{
+        "from": "body_regex",
+        "name": "csrf",
+        "pattern": "name=csrf value=([^ >]+)",
+        "group": 1,
+        "encoding": "url"
+      }]
     },
     {
       "id": "submit",
-      "request": {"id": "post-form", "url": "https://example.test/form", "method": "POST", "headers": [{"name": "Content-Type", "value": "application/x-www-form-urlencoded"}], "body_text": "csrf={{extract:csrf}}"}
+      "request": {
+        "id": "post-form",
+        "url": "https://example.test/form",
+        "method": "POST",
+        "headers": [{"name": "Content-Type", "value": "application/x-www-form-urlencoded"}],
+        "body_text": "csrf={{extract:csrf}}"
+      }
     }
   ]
 }
 ```
 
-A workflow has 1–64 ordered steps. Each step may extract at most 16 values
-from `body_regex`, `header`, or `json`; extracts are at most 8 KiB each and
-64 KiB total. Encodings are `raw`, `url`, `json`, or `base64`; extracts are
-required by default. `{{extract:name}}` works in method, URL, UTF-8 header
-values, `body_text`, and typed parameter values—not `body_base64`. Extracted
-values remain host-private and are removed from observations and results.
+A workflow contains 1–64 ordered steps. Each step may extract up to 16 values from `body_regex`, `header`, or `json`; extracts are limited to 8 KiB each and 64 KiB total. Encodings are `raw`, `url`, `json`, and `base64`.
+
+Extracts are required by default. An optional missing extract produces no value, but a later placeholder still fails if that value is unavailable. `{{extract:name}}` works in method, URL, UTF-8 header values, `body_text`, and typed parameter values, but not `body_base64`. Observation metadata exposes extracted names only; values remain host-private.
+
+See [CSRFAnalyzer](../plugins/csrf-analyzer/README.md) for a maintained private-workflow example.
 
 ### Raw HTTP/1
 
@@ -237,15 +304,19 @@ values remain host-private and are removed from observations and results.
   "target_url": "https://example.test/",
   "request_utf8": "GET / HTTP/1.1\r\nHost: example.test\r\n\r\n",
   "use_project_cookies": false,
-  "options": {"response_mode": "auto", "read_timeout_ms": 60000, "idle_timeout_ms": 1000}
+  "options": {
+    "response_mode": "auto",
+    "read_timeout_ms": 60000,
+    "idle_timeout_ms": 1000
+  }
 }
 ```
 
-Use exactly one of `request_utf8` or `request_base64`. Advanced options support
-bounded split writes, response-gated continuation, half-close, and response
-modes `auto`, `until_idle`, or `until_close`.
+Supply exactly one of `request_utf8` or `request_base64`. `target_url` selects the connection destination rather than rewriting the raw bytes. Raw options support an upstream proxy, bounded split writes, response-gated continuation, half-close, and response modes `auto`, `until_idle`, and `until_close`.
 
-### Barriered raw HTTP/1 group
+`pause_at_byte` and `pause_ms` must be supplied together, with the offset strictly between the first and last request byte. `await_response_before_continue` requires those split options. Split pauses range from 1–120,000 ms, read timeouts from 1–120,000 ms, and idle timeouts from 1–10,000 ms. Managed cookie injection cannot be combined with split-byte writes.
+
+### Barriered HTTP/1 Group
 
 ```json
 {
@@ -259,9 +330,7 @@ modes `auto`, `until_idle`, or `until_close`.
 }
 ```
 
-Groups require 2–32 members. HuntProxy opens every connection before releasing
-the requests through one barrier. Each member accepts the raw HTTP/1 fields
-above and produces its own saved exchange.
+Groups require 2–32 uniquely named members and must fit the project's request-concurrency limit. HuntProxy opens every connection before releasing the requests through one local barrier. Each successful member produces its own saved exchange, and the aggregate response allowance is capped at 64 MiB.
 
 ### Raw HTTP/2
 
@@ -283,12 +352,11 @@ above and produces its own saved exchange.
 }
 ```
 
-Raw HTTP/2 requires HTTPS with ALPN `h2`. Header order is preserved, including
-pseudo-headers. Streams may supply an odd `stream_id` and one of `body_text`
-or `body_base64`. `final_data_together` releases final DATA frames in one
-write; unsupported protocol negotiation is an error rather than a fallback.
+Raw HTTP/2 requires HTTPS with ALPN `h2`; unsupported negotiation is an error rather than an HTTP/1 fallback. A request contains 1–100 uniquely named streams with 1–256 ordered header fields each. Streams may set a unique odd 31-bit `stream_id` and one of `body_text` or `body_base64`; total outbound bodies are capped at 65,535 bytes. `final_data_together` requires at least two streams and releases final DATA fragments in one TLS write.
 
-### Race group
+See [Request Smuggler](../plugins/request-smuggler/README.md) for maintained raw HTTP examples.
+
+### Race Group
 
 ```json
 {
@@ -304,64 +372,86 @@ write; unsupported protocol negotiation is an error rather than a fallback.
 }
 ```
 
-Techniques are `sequential_control`, `parallel`, `last_byte_sync`, and
-`h2_single_packet`. Requests accept semantic URL/method/header/body overrides,
-project-cookie opt-in, and bounded success predicates for status, headers,
-body, JSON, and redirects. Private extraction/binding requires a sequential,
-stop-on-error plan. See Racer's
-[`RACE_GROUP_CONTRACT.md`](../plugins/racer/RACE_GROUP_CONTRACT.md) for the
-advanced synchronization and private-validation contract.
+Groups contain 1–1,000 requests. Techniques are `sequential_control`, `parallel`, `last_byte_sync`, and `h2_single_packet`. Requests accept semantic URL, method, header, and body overrides plus bounded success predicates for status, headers, body, JSON, and redirects. A body-dependent predicate that cannot inspect the full body is indeterminate rather than false.
+
+`last_byte_sync` must fit the project's request-concurrency limit. `h2_single_packet` supports at most 100 requests, requires one HTTPS origin with ALPN `h2`, and does not fall back to HTTP/1.
+
+HTTP/1 last-byte mode reconstructs a semantic HTTP/1 request; it is not byte-for-byte inherited raw replay. Current split writes cannot inject the managed project cookie jar, so use credentials already captured in the saved request with `use_project_cookies: false`.
+
+Extraction is allowed only from `sequential_control` groups, with at most 16 extracts per group and 256 per plan. Any private extraction or binding requires a sequential, stop-on-error plan; placeholders are unsupported in `body_base64` and regular-expression predicates. Start with the [Racer guide](../plugins/racer/README.md), then use [`RACE_GROUP_CONTRACT.md`](../plugins/racer/RACE_GROUP_CONTRACT.md) for the low-level synchronization and private-validation contract.
+
+### Browser CSRF
+
+```json
+{
+  "id": "browser-check",
+  "type": "browser_csrf",
+  "base_exchange_id": 42,
+  "mode": "cross_site_form_post",
+  "body_params": [{"name": "csrf", "value": null}],
+  "identity": {"profile": "user-a"},
+  "timeout_ms": 15000
+}
+```
+
+Modes are `top_level_get` and `cross_site_form_post`, and must match the captured GET or POST method. POST requires a saved `application/x-www-form-urlencoded` body. The operation uses a named managed-cookie profile in fresh, non-persistent Chromium and reports whether a matching cookie was delivered.
+
+Timeout is 1,000–30,000 ms. Materialized forms are limited to 128 fields, with names up to 1,024 bytes and values up to 64 KiB. Custom attacker origins, header tombstones, arbitrary scripts, JSON/multipart bodies, sibling-origin flows, and WebSockets are unsupported. The operation needs both `browser.csrf` and `identity.use` for its required profile selector.
+
+An unavailable browser runtime returns a `not_tested` observation with a reason. Matching-cookie delivery proves browser delivery only, not authentication or server-side state change.
 
 ### AWS API Gateway
 
 ```json
-{
-  "id": "rotation-status",
-  "type": "aws_api_gateway",
-  "action": "status"
-}
+{"id": "rotation-status", "type": "aws_api_gateway", "action": "status"}
 ```
 
-This is a specialized IpRotate host capability, not a general AWS SDK. Actions
-are `status`, `enable` (`target_url`, `regions`, `stage_name`), and `disable`
-(`target_url`). Credentials stay in the local IpRotate credential file and are
-never passed into JavaScript.
+This is IpRotate's specialized host operation, not a general AWS SDK. Actions are:
+
+- `enable`: `target_url`, `regions`, and `stage_name`;
+- `status`; and
+- `disable`: `target_url`.
+
+AWS credentials remain in IpRotate's local credential file and never enter JavaScript context or job output.
+
+See [IpRotate](../plugins/ip-rotate/README.md) for its setup and lifecycle.
 
 ## Observations
 
-`analyze()` receives one observation per top-level operation. Sequential plans
-preserve order; parallel plans use completion order. Always correlate by `id`.
+`analyze()` receives one observation per top-level operation. Parallel observations arrive in completion order; always correlate them by `id`.
 
-An ordinary semantic response contains:
+A normal semantic response can contain:
 
-```text
-id, exchange_id, status_code, duration_ms, response_length,
-response_body_hash, response_preview, response_headers,
-response_body_base64, response_body_truncated
+```json
+{
+  "id": "probe",
+  "exchange_id": 43,
+  "status_code": 200,
+  "duration_ms": 84,
+  "response_length": 512,
+  "response_body_hash": "...",
+  "response_preview": {"text": "..."},
+  "response_headers": [{"name": "Content-Type", "value_base64": "..."}],
+  "response_body_base64": "...",
+  "response_body_truncated": false,
+  "response_body_contains": {"expected marker": true},
+  "response_body_search_complete": true
+}
 ```
 
-Response header values and bodies are base64. Bodies are decoded when safe and
-bounded to 256 KiB. A semantic request may add
-`observe: {body_bytes, body_contains}`. `body_bytes` is capped at 256 KiB and
-defaults to zero when `observe` is present; up to 32 exact strings can be
-searched case-insensitively across the decoded saved body, returning
-`response_body_contains` without copying that body into JavaScript.
-`response_body_search_complete` is false when an unsupported or oversized
-encoded body could not be searched completely; plugins must treat that as
-inconclusive rather than as a negative match. The host
-also enforces a bounded aggregate analysis payload. If legacy captures exceed
-it, bodies/transcripts are omitted with an `*_omitted_reason` while hashes,
-previews, headers, evidence IDs, and host-side search results remain available.
-Operation-specific wrappers are:
+Raw response header values (`value_base64`) and the optional `response_body_base64` are base64; `response_preview.text` is readable text. Bodies are bounded to 256 KiB before truncation. The aggregate observation payload is limited to 24 MiB; bodies or transcripts may be removed with an `*_omitted_reason`, or oversized legacy observations may be replaced by evidence-only error metadata while keeping recoverable exchange IDs.
 
-| Operation | Observation |
-|---|---|
-| `http_workflow` | `{id, steps, terminal, extracted, error?}` |
-| `raw_http1` | `{id, raw}` with a bounded `response_transcript_base64` |
-| `raw_http1_group` | `{id, dispatch, members}` |
-| `raw_http2` | `{id, protocol, single_write_release, streams, ...}` |
-| `race_group` | `{id, technique, attempt, synchronized, responses, error?}` |
-| `aws_api_gateway` | `{id, ip_rotation, error?}` |
+Operation wrappers are:
+
+| Operation | Observation Shape |
+| --- | --- |
+| `http_workflow` | `{id, steps, terminal, extracted, error?}`; `extracted` contains names only. |
+| `raw_http1` | `{id, raw}` with a bounded response transcript. |
+| `raw_http1_group` | `{id, dispatch, members}`. |
+| `raw_http2` | `{id, protocol, single_write_release, streams, ...}`. |
+| `race_group` | `{id, technique, attempt, synchronized, responses, error?}`. |
+| `browser_csrf` | Delivery status, cookie-delivery evidence, exchanges, and reason when not tested. |
+| `aws_api_gateway` | `{id, ip_rotation, error?}`. |
 
 A normal operation failure becomes:
 
@@ -369,34 +459,66 @@ A normal operation failure becomes:
 {"id": "probe", "error": {"code": "...", "message": "..."}}
 ```
 
-After a sequential stop-on-error failure, remaining observations contain
-`{"id":"...","skipped":{"reason":"previous operation failed"}}`.
-Cancellation and stage exceptions fail the whole job.
+After a sequential stop-on-error failure, remaining observations contain a `skipped.reason`. Cancellation or a JavaScript stage exception fails the whole job.
 
-Jobs retain `execution.evidence_exchange_ids` for all saved probe exchanges
-before analysis starts, so the IDs remain available if analysis fails.
-Generated exchanges also receive a `plugin-job:<uuid>` label for recovery after
-the in-memory job record expires.
+HuntProxy collects `execution.evidence_exchange_ids` for saved probe exchanges before analysis starts. Generated exchanges receive `plugin`, the manifest plugin name, `plugin:<id>`, `plugin-op:<normalized-id>`, and `plugin-job:<uuid>` labels.
 
-## Analysis and findings
+## Analysis and Findings
 
-Return JSON such as:
+`analyze()` returns JSON such as:
 
 ```json
 {
-  "findings": [],
+  "findings": [{
+    "title": "Confirmed example issue",
+    "severity": "medium",
+    "confidence": "firm",
+    "explanation": "The positive behavior was reproduced against its control.",
+    "evidence_exchange_ids": [43],
+    "metadata": {"variant": "example"}
+  }],
   "result": {"tested": 1}
 }
 ```
 
-At most 1,000 findings may be returned. A persisted finding requires `title`
-and a nonempty `evidence_exchange_ids` array referencing exchanges saved in
-the same project. Recommended fields are `severity`, `confidence`,
-`explanation`, and bounded non-secret `metadata`.
+A plugin may return at most 1,000 findings. Every persisted finding needs a title and at least one evidence exchange from the same project. Negative, failed, or ambiguous checks belong in `result`, not `findings`.
 
-HuntProxy redacts known base-request secrets and sensitive output keys, but a
-plugin must still avoid copying secrets or private extracts into any output.
-Extra finding metadata remains in the job analysis; the persisted finding
-record stores its title, description, and first evidence link.
-Every generated exchange is labeled with `plugin`, the plugin name,
-`plugin:<id>`, and `plugin-op:<operation-id>`.
+An optional `description` becomes the persisted description. Without it, HuntProxy builds one from severity, confidence, explanation, and evidence IDs.
+
+Do not copy cookies, tokens, passwords, raw authenticated requests, or private workflow extracts into results, errors, metadata, or findings. Host redaction is a backstop, not a substitute for keeping secrets out of plugin-authored output.
+
+The completed job result has this outer shape:
+
+```json
+{
+  "plan_result": {},
+  "execution": {"evidence_exchange_ids": [43]},
+  "analysis": {"findings": [], "result": {}},
+  "persisted_findings": []
+}
+```
+
+Keys named `remediation` are removed recursively before plugin output is returned or persisted. Extra finding metadata remains in job analysis; the persisted finding stores its title, description, and first evidence link.
+
+Keep `analysis.result.follow_up` compact. The summary view preserves it directly only when it is at most 64 KiB; use the full result view for larger analysis output.
+
+## Agent and Job Flow
+
+| MCP Tool | Purpose |
+| --- | --- |
+| `extension_list` | List loaded plugins and rejected-package issues. |
+| `extension_describe` | Show actions, input schemas, capabilities, and effective limits. |
+| `extension_preview` | Run the real planner without network traffic. |
+| `extension_run` | Start a plugin job. |
+| `job_status` | Poll progress using the returned recommended interval. |
+| `job_results` | Read `summary`, `findings`, or `full` result views. |
+| `job_cancel` | Cancel queued or running work. |
+| `job_resume_analysis` | Retry retained analysis after an aggregation timeout without replaying probes. |
+
+Analysis checkpoints are bounded and memory-only. Resume them before HuntProxy restarts or the retained job is evicted from the 256-job in-memory window.
+
+## Related Documentation
+
+- [Create a HuntProxy Plugin](writing-plugins.md) is the first-plugin walkthrough.
+- [How HuntProxy Plugins Work](architecture.md) explains the host/plugin boundary and job lifecycle.
+- [Plugin manifest schema](../schemas/plugin-manifest-v1.json) is the machine-readable package contract.

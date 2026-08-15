@@ -1,81 +1,101 @@
-# HuntProxy first-party plugins
+<h1 id="huntproxy-plugins" align="center">HuntProxy Plugins</h1>
 
-This repository contains HuntProxy's maintained, agent-oriented security
-extensions. Extensions describe a small set of named actions. HuntProxy owns
-network I/O, scope enforcement, credentials, rate limits, cancellation,
-history, evidence, and findings.
+## Introduction
 
-The initial pack is intentionally focused on tests that an agent can invoke
-without adding more UI to HuntProxy:
+[HuntProxy](https://github.com/BehiSecc/HuntProxy) gives AI agents a reliable workbench to structure a hunt, organize traffic, and run repeatable tests.
 
-- ParamFinder
-- AuthAnalyzer
-- Request Smuggler
-- Racer
-- 403Bypasser
-- JWTAnalyzer
-- CacheAnalyzer
-- CSRFAnalyzer
-- UploadAnalyzer
-- IpRotate
+But some vulnerabilities cannot be tested well with a single broad prompt. Request smuggling is the clearest example: there are many protocol variants, timing rules, controls, and false positives. Asking a model to "test everything" is not enough.
 
-Enabled manifests have runnable implementations and offline unit coverage.
-Disabled manifests, if any, are specifications visible to development tooling
-and must not be advertised as runnable. Enable an extension only after its
-implementation, isolated tests, local integration tests, safety review, and
-resource-limit tests all pass.
+So I rebuilt many of the testing workflows that bug hunters and web security researchers already rely on, then adapted them for HuntProxy. Each plugin gives the agent a focused way to test one vulnerability class while HuntProxy handles the requests, limits, History, and evidence.
 
-## Repository layout
+These plugins are practical starting points, not complete replacements for specialist judgment. Some may not cover every technique or target-specific edge case. The goal is to give the agent a reliable path through the common tests, then let you review the proof and decide what deserves deeper manual work.
 
-```text
-plugins/<id>/plugin.json       Versioned manifest and agent action schemas
-plugins/<id>/README.md         Scope, behavior, and completion criteria
-schemas/plugin-manifest-v1.json
-docs/architecture.md
-docs/upstream-audit.md
-tests/validate-manifests.mjs
-```
+> [!NOTE]
+> While building this pack, I used relevant [PortSwigger Web Security Academy](https://portswigger.net/web-security) labs to validate the plugins, and they performed well across those labs.
 
-Run `npm test` to validate all manifests using only Node.js built-ins.
+## 📚 Table of Contents
 
-## Build your own plugin
+- [HuntProxy Plugins](#huntproxy-plugins)
+  - [ Plugins](#-plugins)
+  - [ Install and Use the Plugins](#-install-and-use-the-plugins)
+  - [ Create a Plugin](#-create-a-plugin)
+  - [ Credits](#-credits)
 
-Start with [Write a HuntProxy plugin](docs/writing-plugins.md) and the
-[minimal working example](examples/minimal-plugin/). The tutorial is the short
-path from copy to first run; [Plugin API v1](docs/plugin-api-v1.md) is the
-compact reference for manifests, operations, observations, and findings.
+## 🧩 Plugins
 
-Validate any plugin directory without first-party name assumptions:
+This repository currently includes ten enabled plugins. Some require extra setup or explicit confirmation before they can run. The plugin decides what to test and how to interpret the responses; HuntProxy performs the network requests and keeps the resulting traffic and evidence.
+
+| Plugin | What It Does | What It Doesn't Cover | How It Works |
+| --- | --- | --- | --- |
+| **403Bypasser** | Tries path, header, method, encoding, and Referer variations against endpoints that return 401 or 403. | It cannot firmly confirm an ambiguous path-only result unless the target provides a reliable success marker. | [Details](plugins/403-bypasser/README.md) |
+| **AuthAnalyzer** | Replays the same requests as two different users, and can compare them with a logged-out request. | It does not discover accounts or credentials; the identities must be provided. | [Details](plugins/auth-analyzer/README.md) |
+| **CacheAnalyzer** | Looks for cache poisoning, cache-key mistakes, and web cache deception, then checks whether the behavior is reproducible. |  | [Details](plugins/cache-analyzer/README.md) |
+| **CSRFAnalyzer** | Checks token, Origin, Referer, method, and content-type defenses, including optional cross-session and browser-based tests. | It does not mutate multipart tokens or cover sibling-domain, client-side redirect, or WebSocket CSRF chains. | [Details](plugins/csrf-analyzer/README.md) |
+| **IpRotate** | Rotates matching HuntProxy traffic through AWS API Gateways in selected regions. | It works for one exact target origin at a time and does not rotate raw HTTP operations. | [Details](plugins/ip-rotate/README.md) |
+| **JWTAnalyzer** | Finds JWTs in captured requests and checks claims, algorithms, signatures, weak HMAC keys, KID behavior, and configured key-confusion cases. | It only finds tokens in HTTP Cookie or Authorization headers; WebSocket JWTs are not covered. | [Details](plugins/jwt-analyzer/README.md) |
+| **ParamFinder** | Finds hidden or unkeyed parameters in queries, headers, cookies, forms, and JSON bodies. | JSON body discovery is limited to top-level fields; nested JSON parameters are not covered. | [Details](plugins/param-finder/README.md) |
+| **Racer** | Tests limit overruns, object-state collisions, and multi-step race conditions using parallel, HTTP/1 last-byte, and HTTP/2 single-packet techniques. |  | [Details](plugins/racer/README.md) |
+| **Request Smuggler** | Checks HTTP/1 desynchronization and HTTP/2 downgrade, splitting, response-queue, and tunnelling behavior. | Browser-powered client-side desync is not covered. | [Details](plugins/request-smuggler/README.md) |
+| **UploadAnalyzer** | Checks filename normalization, extension bypasses, and MIME/content validation using harmless upload files. | It only changes the first file in a multipart request and does not discover where uploaded files are stored. | [Details](plugins/upload-analyzer/README.md) |
+
+## 📥 Install and Use the Plugins
+
+You need a working [HuntProxy](https://github.com/BehiSecc/HuntProxy) installation first.
+
+HuntProxy loads plugins from `~/.huntproxy/plugins` by default:
 
 ```bash
-node scripts/validate-plugin.mjs path/to/plugin
+git clone https://github.com/BehiSecc/HuntProxy-Plugins.git
+mkdir -p "$HOME/.huntproxy/plugins"
+cp -R HuntProxy-Plugins/plugins/. "$HOME/.huntproxy/plugins/"
 ```
 
-## Install and run
+If HuntProxy is already running, stop it with `HuntProxy stop`, then restart your AI client so the plugins are loaded.
 
-For a normal installation, copy the immediate children of `plugins/` into
-`~/.huntproxy/plugins/` and restart HuntProxy. During development, point
-HuntProxy directly at this checkout in `~/.huntproxy/config.toml`:
-
-```toml
-plugin_dir = "/home/administrator/HuntProxy-Plugins/plugins"
-```
-
-Agents discover and run extensions through HuntProxy's MCP tools:
+Most plugins begin with a request already captured in HuntProxy History. Some actions need additional input or an explicit safety acknowledgement; your agent can discover both from the plugin description.
 
 ```text
-extension_list
-  -> extension_describe(plugin_id)
-  -> extension_run(project_id, plugin_id, action, base_exchange_id, input)
-  -> job_status(job_id) / job_results(job_id) / job_cancel(job_id)
+Use HuntProxy MCP. List the installed plugins, describe the best one for this
+test, and tell me what it needs before running anything.
 ```
 
-No extension runs automatically. Start from a saved exchange in the intended
-project, inspect the selected action's input schema, and supply any explicit
-safety acknowledgement it requires. Every generated request is saved in
-HuntProxy History with `plugin`, the extension name, and `plugin:<id>` labels.
+Then run a focused test:
 
-Packages are integrity-pinned by SHA-256. The current host does not have a
-publisher-signature trust store. Advanced transports fail explicitly when the
-requested protocol or synchronization primitive is unavailable; they do not
-silently fall back to a weaker technique.
+```text
+Use HuntProxy MCP. Run 403Bypasser against the latest 403 response in project 1.
+Do not enable state-changing variants. Summarize promising results with their
+History exchange IDs.
+```
+
+<details>
+<summary><strong>Use this checkout directly during development</strong></summary>
+
+Instead of copying the plugins, point HuntProxy at an absolute path in `~/.huntproxy/config.toml`:
+
+```toml
+plugin_dir = "/absolute/path/to/HuntProxy-Plugins/plugins"
+```
+
+Restart HuntProxy after changing a manifest, entrypoint, resource, or digest. Paths beginning with `~` are not expanded in this setting.
+
+</details>
+
+## 🛠 Create a Plugin
+
+A plugin plans a bounded test and analyzes the result. HuntProxy performs the requests, applies scope and resource limits, and saves the traffic and evidence. Plugin JavaScript runs inside QuickJS and cannot open sockets, read files, launch processes, use Node.js modules, or call `fetch()` directly.
+
+Start with [Write a HuntProxy plugin](docs/writing-plugins.md) and the [minimal working example](examples/minimal-plugin/). Use [Plugin API v1](docs/plugin-api-v1.md) for the complete contract and [Architecture](docs/architecture.md) for the trust boundary.
+
+```bash
+node scripts/validate-plugin.mjs examples/minimal-plugin
+node examples/minimal-plugin/test.mjs
+cp -R examples/minimal-plugin examples/my-plugin
+```
+
+Edit `plugin.json`, `index.js`, and the tests, update `entrypoint_sha256`, then validate the new directory. The validator requires Node.js 18 or newer; the plugin code itself runs inside HuntProxy's embedded QuickJS.
+
+## 🙏 Credits
+
+A special thank you to [James Kettle](https://x.com/albinowax). His public research on request smuggling, web caches, race conditions, and hidden attack surfaces was a major source of inspiration for this pack.
+
+Thank you also to the [PortSwigger Web Security Academy](https://portswigger.net/web-security) for making advanced web security techniques practical to learn and test.

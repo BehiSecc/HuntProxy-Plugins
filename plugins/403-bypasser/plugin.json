@@ -13,6 +13,7 @@
     "name": "scan",
     "description": "Generate and compare authorization-bypass variants for one denied request.",
     "required_capabilities": ["http.semantic", "identity.use"],
+    "requires_base_exchange": true,
     "input_schema": { "type": "object", "additionalProperties": false, "required": [], "properties": { "allow_state_changes": { "type": "boolean", "default": false }, "include_not_found": { "type": "boolean", "default": false, "description": "Also investigate a 404 control, with lower-severity results." }, "referer_values": { "type": "array", "maxItems": 20, "uniqueItems": true, "items": { "type": "string", "pattern": "^https?://", "maxLength": 2048 }, "description": "Caller-declared trusted page URLs to test when access control may rely on Referer." }, "success_markers": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 200 }, "description": "Optional protected-resource strings required in an allowed response." }, "failure_markers": { "type": "array", "maxItems": 20, "items": { "type": "string", "minLength": 1, "maxLength": 200 }, "description": "Optional denial/login strings that disqualify an allowed-looking response." }, "max_variants": { "type": "integer", "minimum": 1, "maximum": 100, "default": 50 } } }
   }]
 }

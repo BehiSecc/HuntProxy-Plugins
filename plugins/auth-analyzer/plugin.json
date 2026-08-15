@@ -13,6 +13,7 @@
     "name": "scan",
     "description": "Replay base and selected related exchanges using two supplied identity header/cookie sets and an anonymous control.",
     "required_capabilities": ["http.semantic", "identity.use"],
+    "requires_base_exchange": true,
     "input_schema": {
       "type": "object", "additionalProperties": false, "required": ["primary", "secondary", "domains"],
       "properties": {
@@ -57,6 +58,7 @@
     "name": "anonymous_audit",
     "description": "Send only anonymous controls to a request shape that the caller explicitly confirms should require authentication.",
     "required_capabilities": ["http.semantic", "identity.use"],
+    "requires_base_exchange": true,
     "input_schema": {
       "type": "object", "additionalProperties": false, "required": ["domains", "confirm_expected_protected"],
       "properties": {

@@ -1,78 +1,66 @@
 # Request Smuggler
 
-`scan` is a bounded HTTP/1 desynchronization scanner. It measures the normal
-target and a harmless marker path, establishes every selected technique's clean
-controls before sending any ambiguous request, then uses dedicated post-probe
-observers. This catches
-both same-client-socket effects and contamination that emerges through a pooled
-backend connection after the front end closes the original client connection.
-CL.TE, TE.CL, TE.TE permutations, and CL.0 use a marker oracle. CL.0 leaves
-the smuggled header block incomplete so the next request completes it, matching
-real single-connection behavior. The 0.CL family dispatches an early-response
-request with no body and an independent valid chopped-prefix/revealed-canary
-request over two separate connections behind one start barrier. The same
-second request is sent alone as a control and resolves to the normal path; a
-canary response only in the grouped case confirms that the hidden length
-consumed its prefix. A bounded `zero_cl_offsets` sweep accounts for headers
-inserted during front-end rewriting. It also covers whitespace/tab,
-folded-name/value, hop-by-hop, duplicate, underscore, and bare LF/CR
-header-hiding variants. The second connection pauses after its first byte for
-the bounded `zero_cl_delay_ms` interval, giving the early-response request a
-deterministic lead without serializing the pair. Each retains repeated quorum
-and bounded post-pair observers. All standalone controls run before any pair,
-so a delayed queued response cannot corrupt the baseline. `zero_cl_observers`
-controls how many later requests sample each pair. Repeated non-canary
-divergence is retained in structured diagnostics; only exact reproducible
-canary revelation becomes a finding. Targeted pool-dependent confirmation can use up to nine
-repeats; broad scans remain bounded by the package request limit.
+Request Smuggler helps an AI agent find HTTP request desynchronization by sending bounded HTTP/1 and HTTP/2 probe sequences, then checking whether a harmless canary response leaks into later traffic.
 
-`connection_state` compares a Host-bearing request directly and as the second
-request on one established connection. Set `connection_state_host` and
-`connection_state_path` to the authorized values you need to test. The default
-uses a unique subdomain of the target and the probe path.
+It is built for confirmation, not guesswork. Most findings require a canary to be reproduced against clean controls; connection-state checks instead compare the same Host-bearing request directly and as the second request on one connection.
 
-The default five-cycle gate requires at least three exact marker confirmations
-and every front-loaded control to remain clean before producing a firm finding.
-Timeouts, protocol rejection, and response divergence without marker
-contamination remain diagnostics rather than findings. Requests run
-sequentially and every exchange is tagged with its
-operation ID.
+## Start With a Stable Request
 
-Use a unique marker, an idempotent `probe_path`, and `confirm_intrusive=true`.
-Authentication is excluded by default; set `include_auth=true` only when the
-authorized target requires it. A custom `canary_path` should be harmless and
-have a response distinguishable from the probe path.
+Choose a harmless request from HuntProxy History. The plugin needs its exact raw bytes and uses the saved origin, path, and ordinary headers to build each probe.
 
-The HTTP/2 families use HuntProxy's ordered raw HPACK fields without semantic
-normalization. They cover H2.CL, H2.TE, CRLF header-value injection, CRLF
-request splitting, header-name tunnelling, and pseudo-path tunnelling. The host
-requires HTTPS with ALPN `h2`, preserves duplicate and malformed field order,
-and never falls back to HTTP/1. H2 probes use the same front-loaded control and
-dedicated post-probe observer oracle as HTTP/1. Tunnelling is only firm when a
-nested HTTP/1 response is repeatedly visible in the HTTP/2 response body.
-`tunnel_path` selects the harmless inner response and `tunnel_outer_path`
-selects a shorter outer response (default `/login`). A separate header-name
-Host-injection probe remains diagnostic-only unless a future workflow supplies
-a direct, authorized routing oracle; a changed response alone does not prove
-that the injected Host reached an HTTP/1 origin. Nested-response confirmation
-requires a complete Content-Length-framed inner response whose body matches the
-direct canary response.
+Use an idempotent `probe_path` and a harmless canary path whose response is easy to distinguish from the normal page. Cookies and authorization are excluded by default; include them only when the target cannot be tested without authentication.
 
-Response comparison is semantic: status, normalized response body, and relevant
-routing headers are compared while volatile CDN trace headers are ignored.
-Canary confirmation requires the exact normalized canary body or a non-empty
-Location oracle; matching only the canary status code is insufficient. HTTP/2
-reset, GOAWAY, incomplete, and truncated streams are classified as rejection or
-inconclusive evidence and never as downstream responses.
+## Example Prompt
 
-The default scan is intentionally thorough: five cycles across every selected
-framing variant can schedule hundreds of requests. Use `families`,
-`max_techniques`, and
-`repeats` to reduce volume on fragile targets. Browser-proven client-side
-desync remains out of scope. Pause-based coverage requires the separate
-opt-in `pause` family because its default three-or-more 61-second cycles are
-slow. It sends the same CL.0 carrier twice on one connection and splits the
-wire write immediately after the first header block. `pause_await_response`
-uses response-gated continuation for servers where that is the relevant
-primitive; the default fixed pause matches vectors that require the entire
-delay even if an early response is already available.
+```text
+Use HuntProxy MCP. Run Request Smuggler against exchange 42. Generate a unique
+marker, set confirm_intrusive to true, keep authentication excluded, start with
+three repeats, and report firm findings, tentative signals, and diagnostics
+separately.
+```
+
+For a fragile target, ask the agent to test one or two families first, then expand only when the controls remain stable.
+
+## What It Checks
+
+| Group | Coverage |
+| --- | --- |
+| **HTTP/1 framing** | CL.TE, TE.CL, TE.TE variations, and CL.0 marker pipelines. |
+| **0.CL** | Early-response connection pairs, header-hiding variations, and front-end rewrite offsets. |
+| **Connection state** | Whether a Host-bearing request behaves differently when sent second on an established HTTP/1 connection. |
+| **HTTP/2 downgrade** | H2.CL, H2.TE, and response-queue behavior using ordered HTTP/2 fields. |
+| **HTTP/2 injection** | CRLF header-value injection and request splitting. |
+| **HTTP/2 tunnelling** | Header-name and pseudo-path tunnelling with nested-response confirmation. |
+| **Parser diagnostics** | Conflicting duplicate Content-Length, signed Content-Length, and HTTP/2 header-name Host injection. These signals are diagnostic-only. |
+| **Pause-based CL.0** | An optional family that delays the remainder of a CL.0 request pipeline. |
+
+## How It Confirms a Result
+
+Before sending any ambiguous request, the plugin records the normal endpoint and canary twice and prepares clean controls for every selected technique. It then repeats each probe and sends fresh observer requests afterward, so contaminated traffic cannot become a later baseline.
+
+Most firm findings require stable controls and reproducible downstream canary contamination. With the default five repeats, the canary must appear in at least three attempts while every standalone control stays clean. The connection-state family instead confirms that the same Host-bearing request changes only when it is sent second on an established connection.
+
+With stable, distinct baselines and clean controls, exact canary contamination below that threshold is kept as tentative evidence. Timeouts, parser rejection, protocol errors, and response divergence without the canary remain diagnostics rather than vulnerabilities.
+
+## Useful Options
+
+| Option | Default | When to Use It |
+| --- | ---: | --- |
+| `marker` | Required | Generate a unique 8–32 character alphanumeric value for every run. |
+| `confirm_intrusive` | Required | Must be `true` before the plugin plans the scan. |
+| `families` | Broad scan | Limit testing to selected technique groups. The slow pause family is not included by default. |
+| `repeats` | `5` | Choose 3–9 repetitions. More repeats improve confirmation but increase traffic. |
+| `max_techniques` | `30` | Bound the selected framing variations. The default broad scan can schedule up to 633 requests. |
+| `probe_path` | Saved path | Use a harmless, idempotent endpoint for the outer and observer requests. |
+| `canary_path` | Unique missing path | Use a harmless path with a response clearly different from the probe response. |
+| `include_auth` | `false` | Copy the saved Cookie and Authorization headers into raw probes. |
+| `zero_cl_*` | Built-in bounds | Tune the 0.CL offset sweep, pair delay, and post-pair observers. |
+| `pause_ms` | `61000` | Change the delay used only by the opt-in pause family. |
+
+## Current Limits
+
+- HTTP/2 checks require HTTPS with ALPN `h2`; they never silently fall back to HTTP/1.
+- Browser-powered client-side desynchronization is not covered.
+- The default 30-technique scan includes only part of the built-in 0.CL matrix. Run the `0_cl` family separately to cover all 26 built-in variants.
+- Parser discrepancies alone are diagnostic. The plugin confirms a desynchronization primitive, not a victim-impact exploit chain.
+- The plugin uses bounded built-in probe families; it does not accept arbitrary raw probe templates or cover every target-specific desynchronization technique.

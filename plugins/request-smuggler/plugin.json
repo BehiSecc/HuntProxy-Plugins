@@ -13,6 +13,7 @@
     "name": "scan",
     "description": "Run bounded HTTP/1 and exact HTTP/2 marker pipelines with differential controls against one saved request.",
     "required_capabilities": ["http.raw"],
+    "requires_base_exchange": true,
     "input_schema": {
       "type": "object",
       "additionalProperties": false,

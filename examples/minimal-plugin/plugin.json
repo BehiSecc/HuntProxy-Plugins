@@ -18,6 +18,7 @@
     "name": "inspect",
     "description": "Replay the selected saved exchange once and return response metadata.",
     "required_capabilities": ["http.semantic"],
+    "requires_base_exchange": true,
     "input_schema": {
       "type": "object",
       "additionalProperties": false,

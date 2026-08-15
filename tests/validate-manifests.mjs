@@ -18,6 +18,15 @@ const expectedIds = new Set([
   "request-smuggler",
   "upload-analyzer",
 ]);
+const baseExchangeActions = new Map([
+  ["403-bypasser", ["scan"]],
+  ["auth-analyzer", ["scan", "anonymous_audit"]],
+  ["cache-analyzer", ["scan"]],
+  ["csrf-analyzer", ["scan", "browser_scan"]],
+  ["jwt-analyzer", ["scan"]],
+  ["request-smuggler", ["scan"]],
+  ["upload-analyzer", ["scan"]],
+]);
 const seen = new Set();
 
 for (const entry of await readdir(pluginsDirectory, { withFileTypes: true })) {
@@ -26,6 +35,11 @@ for (const entry of await readdir(pluginsDirectory, { withFileTypes: true })) {
   const validated = await validatePluginDirectory(directory);
   assert.equal(validated.id, entry.name, `${entry.name}: first-party directory must match id`);
   assert.ok(!seen.has(validated.id), `${entry.name}: duplicate plugin id`);
+  const manifest = JSON.parse(await readFile(join(directory, "plugin.json"), "utf8"));
+  for (const actionName of baseExchangeActions.get(validated.id) ?? []) {
+    const action = manifest.actions.find((candidate) => candidate.name === actionName);
+    assert.equal(action?.requires_base_exchange, true, `${entry.name}.${actionName}: saved exchange requirement must be advertised`);
+  }
   seen.add(validated.id);
 }
 
@@ -41,5 +55,7 @@ const inputSchema = schema.properties.actions.items.properties.input_schema;
 assert.ok(inputSchema.required.includes("type"));
 assert.equal(inputSchema.properties.type.const, "object");
 assert.equal(schema.properties.actions.items.properties.requires_base_exchange.type, "boolean");
+const minimalManifest = JSON.parse(await readFile(join(repository, "examples/minimal-plugin/plugin.json"), "utf8"));
+assert.equal(minimalManifest.actions[0].requires_base_exchange, true);
 assert.equal(schema.properties.resources.propertyNames.maxLength, 64);
 console.log(`Validated ${seen.size} HuntProxy plugin manifests.`);

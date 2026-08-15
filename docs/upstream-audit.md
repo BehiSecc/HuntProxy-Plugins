@@ -5,13 +5,14 @@ independent implementations unless an asset is explicitly recorded below.
 
 ## Reusable with attribution
 
-PortSwigger's Param Miner repository is Apache-2.0. Its `resources/` wordlists
-are therefore candidates for redistribution with the repository's copyright,
-license, and NOTICE obligations preserved. The audited upstream commit was
+PortSwigger's Param Miner repository is Apache-2.0. The audited upstream commit was
 `4c35086a963cb68a608e91d90aef135be0f572a3` (2026-06-29). Files observed:
 `assetnote-params`, `boring_headers`, `fierce-subdomains`, `functions`,
-`headers`, `params`, `wafparams`, and `words`. They have not yet been copied;
-vendoring must pin the commit, preserve the license, and add a provenance file.
+`headers`, `params`, `wafparams`, and `words`. ParamFinder redistributes these
+files, and CacheAnalyzer includes a modified `resources/headers` list. Copyright,
+source, modification, and license details are recorded in
+[`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md); the upstream license
+notices are also preserved with both plugins.
 
 PortSwigger HTTP Request Smuggler and Turbo Intruder are Apache-2.0 at audited
 commits `a25814d258c501b59b7f561d816f4d787c61ab70` and
