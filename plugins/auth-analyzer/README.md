@@ -31,6 +31,8 @@ Before applying an identity, AuthAnalyzer removes Cookie, Authorization, and Pro
 
 GET, HEAD, and OPTIONS requests are included by default. Other methods are skipped unless `allow_state_changes` is enabled.
 
+Planning and analysis report `selection`: selected and excluded shape counts, exclusions by reason, and each excluded exchange ID and method. Reasons distinguish a method excluded by the existing state-change policy, a domain mismatch, a duplicate exchange, and the `max_requests` shape limit. An excluded-only run completes with zero operations and `coverage.status: "no_executed_coverage"`.
+
 ## How Results Are Classified
 
 Every identity and request pair is sent twice. By default, a repeated 2xx or 3xx response counts as allowed. Success markers can recognize an allowed outcome at another status, while failure markers can reject login and denial responses.
@@ -40,6 +42,8 @@ Missing, mixed, failed, or skipped attempts remain inconclusive; they are never 
 For equality checks, AuthAnalyzer normalizes common CSRF tokens, nonces, timestamps, UUIDs, log IDs, and signed-URL noise before comparing response bodies. Target-specific `ignore_patterns` can remove additional changing values.
 
 Every classification keeps the generated History exchange IDs, including inconclusive and negative results.
+
+`tested_operations` counts unique planned operations with usable response status observations. `coverage` separates planned, observed, usable, failed, skipped, and missing operations; duplicate or unrelated observations never increase tested coverage. Each classification reports control usability and stability. Missing, failed, omitted, truncated, or unstable evidence qualifies coverage, as does a primary identity that does not reproduce an allowed baseline. A complete denial can still support a status-only outcome. When available, `captured_status_match` compares replay status with the saved exchange; `captured_response_match` stays `not_evaluated` because status equality does not establish a complete saved-response match.
 
 For a focused logged-out check, use `anonymous_audit` when you already know how the selected requests behave for a signed-in identity and want to test them as a logged-out user. It requires `confirm_expected_protected: true`.
 

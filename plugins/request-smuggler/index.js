@@ -106,10 +106,10 @@
       { name: ":method", value: method },
       { name: ":scheme", value: "https" },
       { name: ":authority", value: parsed.authority },
-      { name: ":path", value: path },
-      { name: "user-agent", value: "HuntProxy-Request-Smuggler/1.2" }
+      { name: ":path", value: path }
     ];
     (inherited || []).forEach(function(line){var split=line.indexOf(":");if(split>0)fields.push({name:line.slice(0,split).trim().toLowerCase(),value:line.slice(split+1).trim()});});
+    if (!fields.some(function (field) { return field.name === "user-agent"; })) fields.push({ name: "user-agent", value: "HuntProxy-Request-Smuggler/1.2" });
     return fields.concat(extras || []);
   }
   function h2Probe(parsed, path, canaryPath, inherited, marker, variant, tunnelPath, tunnelOuterPath) {
@@ -331,14 +331,38 @@
     var first=probeSegments[0],status=first&&first.status;return usableSegment(first)&&[400,408,411,413,414,417,421,431,500,501,505].indexOf(status)!==-1;
   }
   function evidence(items) { var output=[]; items.forEach(function(item){var value=rawResult(item);if(value&&value.exchange_id)output.push(value.exchange_id);if(item&&Array.isArray(item.streams))item.streams.forEach(function(stream){if(stream.exchange_id)output.push(stream.exchange_id);});});return output; }
+  function baselineAttemptUsable(item) {
+    if (!hasResult(item) || item.skipped || item.transport_error || item.timed_out || item.response_complete === false) return false;
+    var raw = rawResult(item);
+    if (raw && (raw.transport_error || raw.response_complete === false || raw.truncated || raw.response_transcript_truncated || raw.read_outcome === "timeout")) return false;
+    return segments(item).length > 0 && segments(item).every(function (segment) {
+      return Number.isInteger(segment.status) && segment.status >= 100 && segment.status <= 599 && usableSegment(segment);
+    });
+  }
+  function baselineAssessment(attempts, expectedStatus) {
+    var available = attempts.filter(function (item) { return !!item; }).length;
+    var usable = attempts.filter(baselineAttemptUsable).length;
+    var repeatStable = usable === 2 && stable(attempts[0], attempts[1]), reasons = [];
+    if (available < 2) reasons.push("missing_observation");
+    if (usable < available) reasons.push("unusable_response_evidence");
+    if (usable === 2 && !repeatStable) reasons.push("responses_unstable");
+    var savedStatus = typeof expectedStatus === "number" ? expectedStatus : null;
+    var statusMatch = savedStatus !== null && usable === 2 ? attempts.every(function (item) { return segments(item)[0].status === savedStatus; }) : null;
+    if (statusMatch === false) reasons.push("captured_status_mismatch");
+    return { observed_attempts: available, usable_attempts: usable, stable: repeatStable, limitations: reasons,
+      captured_status_code: savedStatus, captured_status_match: statusMatch,
+      captured_response_match: "not_evaluated", captured_response_match_reason: "response_representations_not_compared" };
+  }
   function analyze(input, observations, context) {
     segmentMemo={};transcriptMemo={};markerMemo=String(input.marker||"").toLowerCase();
     var map = byId(observations), set = techniques(input, context), repeats = Math.max(3, Math.min(Number(input.repeats || 5), 9)), findings = [], diagnostics = [];
     var hasH2=set.items.some(function(item){return isH2Mode(item.mode);});
     var h1BaseDirect=[map["direct-base-0"],map["direct-base-1"]],h1CanaryDirect=[map["direct-canary-0"],map["direct-canary-1"]];
     var h2BaseDirect=[map["h2-direct-base-0"],map["h2-direct-base-1"]],h2CanaryDirect=[map["h2-direct-canary-0"],map["h2-direct-canary-1"]];
-    var h1Stable=stable(h1BaseDirect[0],h1BaseDirect[1])&&stable(h1CanaryDirect[0],h1CanaryDirect[1]);
-    var h2Stable=!hasH2||(stable(h2BaseDirect[0],h2BaseDirect[1])&&stable(h2CanaryDirect[0],h2CanaryDirect[1]));
+    var protocolBaselines = { http1: { endpoint: baselineAssessment(h1BaseDirect, context.base_exchange.status_code), canary: baselineAssessment(h1CanaryDirect, null) } };
+    if (hasH2) protocolBaselines.http2 = { endpoint: baselineAssessment(h2BaseDirect, context.base_exchange.status_code), canary: baselineAssessment(h2CanaryDirect, null) };
+    var h1Stable=protocolBaselines.http1.endpoint.stable&&protocolBaselines.http1.canary.stable;
+    var h2Stable=!hasH2||(protocolBaselines.http2.endpoint.stable&&protocolBaselines.http2.canary.stable);
     var threshold = Math.max(3, Math.ceil(repeats * 0.6));
     set.items.forEach(function (technique, index) {
       var h2Mode=isH2Mode(technique.mode),baseDirect=h2Mode?h2BaseDirect:h1BaseDirect,canaryDirect=h2Mode?h2CanaryDirect:h1CanaryDirect;
@@ -371,7 +395,11 @@
       var candidate = directStable && clean === repeats && timeouts >= threshold;
       var unstableZero=technique.mode==="zero_cl_pair"&&divergentVictims>=Math.max(2,Math.ceil(repeats*0.4));
       var responseCandidate=directStable&&clean===repeats&&(divergentVictims>=threshold||unstableZero),unstableMarker=directStable&&canaryDistinct&&clean===repeats&&contaminated>0;
-      diagnostics.push({ family: technique.family, technique: technique.name, polarity: technique.polarity, clean_controls: clean, canary_confirmations: contaminated, divergent_victims: divergentVictims, probe_only_timeouts: timeouts, probe_rejections: probeRejections, probe_inconclusive: probeInconclusive, probe_response_differences: probeDifferences, repeats: repeats, signal: confirmed ? "marker_contamination" : unstableMarker ? "marker_contamination_unstable" : responseCandidate ? "victim_divergence" : candidate ? "timing_candidate" : probeRejections === repeats ? "rejected" : probeInconclusive === repeats ? "inconclusive" : "none" });
+      var baselineLimitations = [];
+      if (!directStable) baselineLimitations.push("direct_controls_unstable_or_unavailable");
+      if (!canaryDistinct) baselineLimitations.push("endpoint_and_canary_not_distinct");
+      if (clean < repeats) baselineLimitations.push("missing_or_unusable_controls");
+      diagnostics.push({ family: technique.family, technique: technique.name, polarity: technique.polarity, clean_controls: clean, canary_confirmations: contaminated, divergent_victims: divergentVictims, probe_only_timeouts: timeouts, probe_rejections: probeRejections, probe_inconclusive: probeInconclusive, probe_response_differences: probeDifferences, repeats: repeats, coverage_qualified: baselineLimitations.length > 0, baseline_limitations: baselineLimitations, signal: confirmed ? "marker_contamination" : unstableMarker ? "marker_contamination_unstable" : responseCandidate ? "victim_divergence" : candidate ? "timing_candidate" : probeRejections === repeats ? "rejected" : probeInconclusive === repeats ? "inconclusive" : "none" });
       if (confirmed) findings.push({
         title: "Confirmed " + (h2Mode ? "HTTP/2 downgrade/tunnelling" : "HTTP/1 request desynchronization") + ": " + technique.name, severity: technique.mode==="h2_header_injection"?"medium":"high", confidence: "firm",
         explanation: (technique.mode === "h2_tunnel" ? "A nested or directly routed canary response was reproducibly exposed by the HTTP/2 tunnelling probe" : technique.mode==="h2_header_injection"?"The malformed HTTP/2 header name reproducibly changed the downstream response":"A harmless marker request was reproducibly parsed out of the ambiguous pipeline") + " in " + contaminated + " of " + repeats + " attempts, while every standalone control remained clean.",
@@ -383,7 +411,7 @@
         evidence_exchange_ids: evidence(controls.concat(probes,victims,recoveries,observers)), metadata: { family: technique.family, polarity: technique.polarity, signal: "marker_contamination_unstable", confirmations: contaminated, attempts: repeats }
       });
     });
-    var result={ findings: findings, result: { direct_controls_stable: h1Stable && h2Stable, diagnostics: diagnostics, limitations: ["Firm framing findings require repeated downstream marker contamination; timeout, rejection, and response-divergence-only signals remain diagnostics.", "HTTP/2 probes require HTTPS with ALPN h2 and never fall back to HTTP/1.", "HTTP/2 reset, GOAWAY, incomplete, and truncated streams are never treated as downstream responses.", "HTTP/2 nested-response confirmation requires a complete Content-Length-framed inner response.", "Pause-based findings require the explicit pause family; browser client-side desync remains out of scope."] } };segmentMemo=null;transcriptMemo=null;markerMemo=null;return result;
+    var result={ findings: findings, result: { direct_controls_stable: h1Stable && h2Stable, protocol_baselines: protocolBaselines, qualified_techniques: diagnostics.filter(function (item) { return item.coverage_qualified; }).length, diagnostics: diagnostics, limitations: ["Firm framing findings require repeated downstream marker contamination; timeout, rejection, and response-divergence-only signals remain diagnostics.", "Captured status comparisons do not establish a complete saved-response match; raw and decoded response representations are not compared.", "HTTP/2 probes require HTTPS with ALPN h2 and never fall back to HTTP/1.", "HTTP/2 reset, GOAWAY, incomplete, and truncated streams are never treated as downstream responses.", "HTTP/2 nested-response confirmation requires a complete Content-Length-framed inner response.", "Pause-based findings require the explicit pause family; browser client-side desync remains out of scope."] } };segmentMemo=null;transcriptMemo=null;markerMemo=null;return result;
   }
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };
 }());

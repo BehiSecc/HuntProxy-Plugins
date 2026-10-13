@@ -8,6 +8,8 @@ It is built for confirmation, not guesswork. Most findings require a canary to b
 
 Choose a harmless request from HuntProxy History. The plugin needs its exact raw bytes and uses the saved origin, path, and ordinary headers to build each probe.
 
+Both HTTP/1 and HTTP/2 preserve a captured User-Agent. The plugin adds its fallback only when no User-Agent was captured.
+
 Use an idempotent `probe_path` and a harmless canary path whose response is easy to distinguish from the normal page. Cookies and authorization are excluded by default; include them only when the target cannot be tested without authentication.
 
 ## Example Prompt
@@ -41,6 +43,8 @@ Before sending any ambiguous request, the plugin records the normal endpoint and
 Most firm findings require stable controls and reproducible downstream canary contamination. With the default five repeats, the canary must appear in at least three attempts while every standalone control stays clean. The connection-state family instead confirms that the same Host-bearing request changes only when it is sent second on an established connection.
 
 With stable, distinct baselines and clean controls, exact canary contamination below that threshold is kept as tentative evidence. Timeouts, parser rejection, protocol errors, and response divergence without the canary remain diagnostics rather than vulnerabilities.
+
+`protocol_baselines` reports endpoint and canary observations separately for HTTP/1 and HTTP/2, including usable attempts, repeat stability, and limitations. Each diagnostic marks `coverage_qualified` when controls are missing, unusable, unstable, or indistinguishable. An available captured status is compared separately; complete saved-response equality remains `not_evaluated` because raw transcript and decoded body representations are not directly comparable. The host's `execution` summary distinguishes returned observations from planned or skipped work.
 
 ## Useful Options
 

@@ -159,7 +159,7 @@ Both stages receive a context shaped like:
 When supplied, `base_exchange` contains a presented request summary:
 
 ```text
-exchange_id, method, url, headers, request_length,
+exchange_id, method, url, status_code, headers, request_length,
 request_body_hash, request_preview
 ```
 
@@ -462,6 +462,10 @@ A normal operation failure becomes:
 After a sequential stop-on-error failure, remaining observations contain a `skipped.reason`. Cancellation or a JavaScript stage exception fails the whole job.
 
 HuntProxy collects `execution.evidence_exchange_ids` for saved probe exchanges before analysis starts. Generated exchanges receive `plugin`, the manifest plugin name, `plugin:<id>`, `plugin-op:<normalized-id>`, and `plugin-job:<uuid>` labels.
+
+The host also records `planned_operations`, `observed_operations`, `skipped_operations`, and `unobserved_operations` in `execution`, measured in top-level operations. `operations_with_errors`, `not_tested_operations`, and `evidence_limited_operations` are overlapping limitation counts; a composite operation can retain useful steps alongside a failure. The execution state distinguishes `no_operations_planned`, `no_observations`, `partial`, and `observations_recorded`. Returned observations are not proof of clean controls or completed testing. Partial results preserve recorded execution metadata after failure or cancellation, and an analysis retry reuses the same execution summary without sending operations again.
+
+Plugin-authored coverage and `tested_operations` fields have plugin-specific meanings. Review the host execution summary and plugin control/exclusion details before using them as coverage evidence. Existing `job_status.operation_count` and `completed_operations` remain request-weighted progress counters, including failed or not-tested operations; they do not count requests actually sent. Previews expose a bounded `planning_summary` for selection and exclusion counts.
 
 ## Analysis and Findings
 
