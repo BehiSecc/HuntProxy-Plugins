@@ -18,6 +18,7 @@ These plugins are practical starting points, not complete replacements for speci
 - [HuntProxy Plugins](#huntproxy-plugins)
   - [ Plugins](#-plugins)
   - [ Install and Use the Plugins](#-install-and-use-the-plugins)
+  - [ Release Compatibility](#-release-compatibility)
   - [ Create a Plugin](#-create-a-plugin)
   - [ Credits](#-credits)
 
@@ -40,17 +41,9 @@ This repository currently includes ten enabled plugins. Some require extra setup
 
 ## 📥 Install and Use the Plugins
 
-You need a working [HuntProxy](https://github.com/BehiSecc/HuntProxy) installation first.
+You need a working [HuntProxy](https://github.com/BehiSecc/HuntProxy) installation first. HuntProxy 0.2.0 and later ships the matching first-party plugin catalog and installs it automatically during installation, updates, and startup. No separate clone or copy step is needed.
 
-HuntProxy loads plugins from `~/.huntproxy/plugins` by default:
-
-```bash
-git clone https://github.com/BehiSecc/HuntProxy-Plugins.git
-mkdir -p "$HOME/.huntproxy/plugins"
-cp -R HuntProxy-Plugins/plugins/. "$HOME/.huntproxy/plugins/"
-```
-
-If HuntProxy is already running, stop it with `HuntProxy stop`, then restart your AI client so the plugins are loaded.
+HuntProxy loads the installed packages from `~/.huntproxy/plugins`. It updates an unchanged first-party package to the bundled version and preserves a package whose files you changed. If a preserved package needs a compatibility update, merge your changes into the current package or move the customized directory aside and restart HuntProxy so it can install the bundled package.
 
 Most plugins begin with a request already captured in HuntProxy History. Some actions need additional input or an explicit safety acknowledgement; your agent can discover both from the plugin description.
 
@@ -79,6 +72,12 @@ plugin_dir = "/absolute/path/to/HuntProxy-Plugins/plugins"
 Restart HuntProxy after changing a manifest, entrypoint, resource, or digest. Paths beginning with `~` are not expanded in this setting.
 
 </details>
+
+## 🔗 Release Compatibility
+
+The versions bundled with HuntProxy 0.2.0 are recorded in the [release compatibility matrix](docs/release-compatibility.md). The core release embeds the reviewed catalog from commit `d4e1aa3`; runtime setup does not fetch a moving branch from this repository.
+
+Racer versions earlier than 0.6.4 are incompatible with HuntProxy 0.2.0 and are blocked before preview or execution. This avoids treating retained failed responses as successful race evidence. Unchanged first-party Racer installations upgrade automatically. If you customized an older Racer package, preserve your changes separately and merge them into Racer 0.6.4.
 
 ## 🛠 Create a Plugin
 

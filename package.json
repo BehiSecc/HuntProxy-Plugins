@@ -1,7 +1,7 @@
 {
   "name": "huntproxy-first-party-plugins",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "First-party, agent-oriented security extensions for HuntProxy",
   "scripts": {
     "validate-plugin": "node scripts/validate-plugin.mjs",
