@@ -211,6 +211,84 @@ const operationError = racer.analyze(
 );
 assert.equal(operationError.result.diagnostics[0].errors[0].code, "protocol_incompatible");
 
+// Ordinary retained HTTP responses exercise analysis only: no requests run.
+const retainedInput = {
+  ...input,
+  setup_requests: undefined,
+  validation_requests: undefined,
+  control_mode: "single_each",
+  attempts: 2,
+  expected_max_successes: 0,
+};
+const retainedFailures = [
+  { error: "connection ended unexpectedly" },
+  { transport_error: "connection ended unexpectedly" },
+  { complete: false },
+  { response_complete: false },
+  { reset: "CANCEL" },
+  { truncated: true },
+  { response_body_truncated: true },
+  { response_transcript_truncated: true },
+  { body_truncated: true },
+  { read_outcome: "error" },
+  { read_outcome: "timeout" },
+  { read_outcome: "limit" },
+  { status_code: null },
+];
+for (const failure of retainedFailures) {
+  for (const successStatuses of [undefined, [200]]) {
+    const failed = { ...response("ordinary", 800, true, "retained"), ...failure };
+    const rejectedResult = racer.analyze({ ...retainedInput, success_statuses: successStatuses }, [
+      group("control-0", [response("baseline", 799, true)]),
+      group("race-0", [failed, { ...failed, exchange_id: 801, success: null }], true),
+      group("race-1", [failed, { ...failed, exchange_id: 801, success: null }], true),
+    ], context);
+    assert.equal(rejectedResult.findings.length, 0, `retained failure must not create a finding: ${JSON.stringify(failure)}`);
+    for (const diagnostic of rejectedResult.result.diagnostics) {
+      assert.equal(diagnostic.successes, 0);
+      assert.equal(diagnostic.semantic_success_used, false);
+      assert.equal(diagnostic.novel_signatures.length, 0);
+      assert.equal(diagnostic.unusable_response_count, 2);
+      assert.deepEqual(Array.from(diagnostic.unusable_exchange_ids), [800, 801]);
+      assert.equal(diagnostic.errors.length, 2);
+    }
+  }
+}
+
+const unusableControlResult = racer.analyze({ ...retainedInput, expected_max_successes: 100 }, [
+  group("control-0", [{ ...response("baseline", 810, true, "retained"), transport_error: "connection ended unexpectedly" }]),
+  group("race-0", [response("ordinary", 811, true, "complete")], true),
+  group("race-1", [response("ordinary", 812, true, "complete")], true),
+], context);
+assert.equal(unusableControlResult.findings.length, 0, "unusable retained control cannot establish a novel response");
+assert.equal(unusableControlResult.result.control_response_count, 1);
+assert.equal(unusableControlResult.result.usable_control_response_count, 0);
+assert.deepEqual(Array.from(unusableControlResult.result.unusable_control_exchange_ids), [810]);
+assert.equal(unusableControlResult.result.control_errors.length, 1);
+assert.ok(unusableControlResult.result.diagnostics.every((diagnostic) => diagnostic.successes === 1 && diagnostic.novel_signatures.length === 0));
+
+const completeSiblingResult = racer.analyze({ ...retainedInput, expected_max_successes: 100 }, [
+  group("control-0", [response("baseline", 820, true)]),
+  group("race-0", [response("ordinary", 821, true, "complete"), { ...response("retained", 822, true, "failed"), complete: false }], true),
+  group("race-1", [response("ordinary", 823, true, "complete"), { ...response("retained", 824, true, "failed"), truncated: true }], true),
+], context);
+assert.equal(completeSiblingResult.findings.length, 1, "complete sibling observations remain usable");
+for (const diagnostic of completeSiblingResult.result.diagnostics) {
+  assert.equal(diagnostic.successes, 1);
+  assert.deepEqual(Array.from(diagnostic.novel_signatures), ["200:complete:10"]);
+  assert.equal(diagnostic.unusable_response_count, 1);
+}
+assert.ok(completeSiblingResult.findings[0].evidence_exchange_ids.includes(822), "retained failure evidence remains linked");
+
+for (const stage of ["setup", "validate"]) {
+  const failedStage = observations.map((observation) => observation.id.startsWith(`${stage}-`)
+    ? { ...observation, responses: observation.responses.map((item) => ({ ...item, response_complete: false })) }
+    : observation);
+  const failedStageResult = racer.analyze(input, failedStage, context);
+  assert.equal(failedStageResult.findings.length, 0, `incomplete ${stage} response cannot satisfy its success condition`);
+  assert.ok(failedStageResult.result.diagnostics.every((diagnostic) => stage === "setup" ? !diagnostic.setup_passed : !diagnostic.validation_passed));
+}
+
 assert.throws(() => racer.plan({ ...input, requests: [{ url: "https://example.test", body_text: "a", body_base64: "Yg==" }] }, context), /cannot combine/);
 
 console.log("Racer advanced VM tests passed.");

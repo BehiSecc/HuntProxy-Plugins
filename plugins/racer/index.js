@@ -233,8 +233,21 @@
 
   function byId(observations) { var output = {}; observations.forEach(function (item) { output[item.id] = item; }); return output; }
   function responses(observation) { return observation && Array.isArray(observation.responses) ? observation.responses : []; }
+  function responseError(response) {
+    if (!response || typeof response !== "object") return "response unavailable";
+    if (response.error) return response.error;
+    if (response.transport_error) return response.transport_error;
+    if (response.reset) return response.reset;
+    if (response.complete === false || response.response_complete === false) return "response incomplete";
+    if (response.truncated === true || response.response_body_truncated === true || response.response_transcript_truncated === true || response.body_truncated === true) return "response truncated";
+    if (["error", "timeout", "limit"].indexOf(response.read_outcome) !== -1) return "response transport did not finish";
+    if (response.status_code == null) return "response status unavailable";
+    return null;
+  }
+  function usableResponse(response) { return !responseError(response); }
   function semanticSuccess(response) { return response && response.success && response.success.matched === true; }
   function isSuccess(response, input) {
+    if (!usableResponse(response)) return false;
     if (response && response.success && typeof response.success.matched === "boolean") return semanticSuccess(response);
     var status = Number(response && response.status_code || 0);
     if (Array.isArray(input.success_statuses) && input.success_statuses.length) return input.success_statuses.indexOf(status) !== -1;
@@ -261,25 +274,28 @@
     var map = byId(observations), attempts = boundedInteger(input.attempts, 3, 1, 20, "attempts");
     var controlMode = input.control_mode || "single_each", control = map["control-0"];
     var maximum = boundedInteger(input.expected_max_successes, 1, 0, 100, "expected_max_successes");
-    var controlSignatures = {};
-    responses(control).forEach(function (response) { controlSignatures[signature(response)] = true; });
+    var controlSignatures = {}, usableControl = responses(control).filter(usableResponse);
+    var unusableControl = responses(control).filter(function (response) { return !usableResponse(response); });
+    usableControl.forEach(function (response) { controlSignatures[signature(response)] = true; });
     var privateValidationProof = validationProvesPrivateMatch(templates(input, {}, "validation_requests", "validation", input.validation_success));
     var anomalous = [], novel = [], diagnostics = [], supporting = [], timeSensitiveEvidence = [], timeSensitiveAttempts = 0;
     for (var attempt = 0; attempt < attempts; attempt += 1) {
       var race = map["race-" + attempt], setup = map["setup-" + attempt], validations = validationGroups(map, "validate-" + attempt, input);
       var groupResponses = responses(race), successes = groupResponses.filter(function (response) { return isSuccess(response, input); }).length;
-      var semantic = groupResponses.some(function (response) { return response && response.success && typeof response.success.matched === "boolean"; });
+      var semantic = groupResponses.some(function (response) { return usableResponse(response) && response.success && typeof response.success.matched === "boolean"; });
       var setupPassed = !setup || groupSucceeded(setup, input);
       var validationPassed = !validations.length || validations.every(function (validation) { return groupSucceeded(validation, input); });
       var synchronized = input.technique === "parallel" || (race && race.synchronized === true);
       if (input.technique === "sequential") synchronized = false;
-      var newSignatures = groupResponses.map(signature).filter(function (value) { return control && !controlSignatures[value]; });
+      var usableResponses = groupResponses.filter(usableResponse);
+      var newSignatures = usableResponses.map(signature).filter(function (value) { return usableControl.length > 0 && !controlSignatures[value]; });
       var qualifies = setupPassed && validationPassed && input.technique !== "sequential" && (synchronized || input.technique === "parallel");
       if (qualifies && successes > maximum) { anomalous.push(race); supporting.push(setup);supporting=supporting.concat(validations); }
       if (qualifies && (input.pattern || "limit_overrun") === "time_sensitive" && privateValidationProof && groupResponses.length >= 2 && successes === groupResponses.length) { timeSensitiveAttempts += 1; timeSensitiveEvidence.push(setup,race);timeSensitiveEvidence=timeSensitiveEvidence.concat(validations); }
       if (qualifies && control && newSignatures.length) novel.push(race);
       var operationErrors = race && race.error ? [race.error] : [];
-      diagnostics.push({ attempt: attempt, synchronized: !!synchronized, release_skew_ms: race && race.release_skew_ms, successes: successes, semantic_success_used: semantic, setup_passed: setupPassed, validation_passed: validationPassed, novel_signatures: newSignatures, errors: operationErrors.concat(groupResponses.filter(function (response) { return !!response.error; }).map(function (response) { return response.error; })) });
+      var unusableResponses = groupResponses.filter(function (response) { return !usableResponse(response); });
+      diagnostics.push({ attempt: attempt, synchronized: !!synchronized, release_skew_ms: race && race.release_skew_ms, successes: successes, semantic_success_used: semantic, setup_passed: setupPassed, validation_passed: validationPassed, novel_signatures: newSignatures, unusable_response_count: unusableResponses.length, unusable_exchange_ids: unusableResponses.filter(function (response) { return response && response.exchange_id; }).map(function (response) { return response.exchange_id; }), errors: operationErrors.concat(unusableResponses.map(responseError)) });
     }
     var findings = [], requiredRepeats = 2;
     if (timeSensitiveAttempts >= requiredRepeats) {
@@ -328,7 +344,7 @@
         metadata: { pattern: input.pattern || "multi_endpoint", technique: input.technique || "last_byte_sync", anomalous_attempts: novel.length, control_mode: controlMode }
       });
     }
-    return { findings: findings, result: { diagnostics: diagnostics, control_mode: controlMode, control_response_count: responses(control).length, semantic_predicates_recommended: !diagnostics.some(function (item) { return item.semantic_success_used; }), synchronization: input.technique === "h2_single_packet" ? "The host negotiated ALPN h2 and released every stream's final DATA fragment in one TLS write; protocol-incompatible targets are never downgraded." : null } };
+    return { findings: findings, result: { diagnostics: diagnostics, control_mode: controlMode, control_response_count: responses(control).length, usable_control_response_count: usableControl.length, unusable_control_exchange_ids: unusableControl.filter(function (response) { return response && response.exchange_id; }).map(function (response) { return response.exchange_id; }), control_errors: unusableControl.map(responseError), semantic_predicates_recommended: !diagnostics.some(function (item) { return item.semantic_success_used; }), synchronization: input.technique === "h2_single_packet" ? "The host negotiated ALPN h2 and released every stream's final DATA fragment in one TLS write; protocol-incompatible targets are never downgraded." : null } };
   }
 
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };
