@@ -32,7 +32,7 @@ assert.equal(variants[1].role, "blocked-control");
 for (const name of ["case-folded-extension", "trailing-dot", "trailing-space", "double-extension", "encoded-dot", "double-encoded-dot", "encoded-null-suffix", "encoded-null-png-suffix", "encoded-null-jpg-suffix", "windows-ads-suffix"]) {
   assert.ok(variants.some((variant) => variant.name === name), `missing ${name}`);
 }
-for (const [name, filename] of [["encoded-null-png-suffix", "huntproxy-upload.php%00.png"], ["encoded-null-jpg-suffix", "huntproxy-upload.php%00.jpg"]]) {
+for (const [name, filename] of [["encoded-null-png-suffix", "huntproxy-upload-0.php%00.png"], ["encoded-null-jpg-suffix", "huntproxy-upload-0.php%00.jpg"]]) {
   const index = variants.findIndex((variant) => variant.name === name);
   assert.match(Buffer.from(plan.operations[index * 2].body_base64, "base64").toString("binary"), new RegExp(`filename="${filename.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
 }

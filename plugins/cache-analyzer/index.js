@@ -51,6 +51,7 @@
     return "cb" + (value >>> 0).toString(16);
   }
 
+  function normalizationPrefix(url) { return splitUrl(url).path.replace(/[^\/]*$/, "") || "/"; }
   function splitUrl(url) {
     var match = String(url).match(/^(https?:\/\/[^/?#]+)([^?#]*)(\?[^#]*)?$/);
     if (!match) throw new Error("base exchange URL is not HTTP(S)");
@@ -169,6 +170,7 @@
     return { value: markerValue, marker: markerValue };
   }
 
+  var UNSAFE_HEADERS = { "content-length": 1, "transfer-encoding": 1, "connection": 1, "proxy-connection": 1, "keep-alive": 1, "te": 1, "trailer": 1, "upgrade": 1, "expect": 1, "range": 1, "if-range": 1, "proxy-authorization": 1, "cookie": 1, "set-cookie": 1, "host": 1 };
   function headerCandidates(input, context, token) {
     var mode = input.scan_mode === "light" ? "light" : "full";
     var maximum = boundedInteger(input.max_header_candidates, mode === "light" ? 40 : 5000, 1, 5000);
@@ -180,8 +182,7 @@
     }
     raw.some(function (entry) {
       var pieces = String(entry || "").trim().split("~"), name = pieces.shift(), key = String(name || "").toLowerCase();
-      var unsafe = { "content-length": 1, "transfer-encoding": 1, "connection": 1, "proxy-connection": 1, "cookie": 1, "set-cookie": 1, "host": 1 };
-      if (!name || unsafe[key] || seen[key] || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) return false;
+      if (!name || UNSAFE_HEADERS[key] || seen[key] || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) return false;
       seen[key] = true;
       var markerValue = token + "h" + output.length.toString(36), typed = typedHeaderValue(name, pieces.join("~"), markerValue);
       output.push({ raw: String(entry), name: name, key: key, value: typed.value, marker: typed.marker, redirect_oracle: typed.redirect_oracle || null });
@@ -226,10 +227,9 @@
 
   function poisonVariants(baseUrl, token, input, context, includeHeaders) {
     var variants = [], combinationVariants = [], shapeVariants = [];
-    var unsafe = { "content-length": 1, "transfer-encoding": 1, "connection": 1, "proxy-connection": 1, "cookie": 1, "set-cookie": 1 };
     function combinationHeader(value, markerValue) {
       var pieces = String(value || "").trim().split("~"), name = pieces[0], key = name.toLowerCase();
-      if (!name || unsafe[key] || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) return null;
+      if (!name || UNSAFE_HEADERS[key] || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) return null;
       var typed = typedHeaderValue(name, pieces.slice(1).join("~"), markerValue);
       return { name: name, value: typed.value, marker: typed.marker };
     }
@@ -538,11 +538,12 @@
         operations.push(clean); operations.push(confirm);
       });
       if (normalizationEnabled && phase === "advanced") {
+        var normalizationDirectory = normalizationPrefix(targetUrl);
         for (var normalizationRepeat = 0; normalizationRepeat < 2; normalizationRepeat += 1) {
           var suffix = token + "n" + normalizationRepeat;
-          operations.push(rawRequest("normalization-poison-" + normalizationRepeat, exchange.url, "/hp<" + suffix + ">"));
-          operations.push(rawRequest("normalization-clean-" + normalizationRepeat, exchange.url, "/hp%3C" + suffix + "%3E"));
-          operations.push(rawRequest("normalization-confirm-" + normalizationRepeat, exchange.url, "/hp%3C" + suffix + "%3E"));
+          operations.push(rawRequest("normalization-poison-" + normalizationRepeat, targetUrl, normalizationDirectory + "hp<" + suffix + ">"));
+          operations.push(rawRequest("normalization-clean-" + normalizationRepeat, targetUrl, normalizationDirectory + "hp%3C" + suffix + "%3E"));
+          operations.push(rawRequest("normalization-confirm-" + normalizationRepeat, targetUrl, normalizationDirectory + "hp%3C" + suffix + "%3E"));
         }
       }
     }
@@ -1060,9 +1061,9 @@
         var rawHit = [map["normalization-clean-0"], map["normalization-confirm-0"], map["normalization-clean-1"], map["normalization-confirm-1"]].some(function (item) { return rawCacheEvidence(item).state === "hit"; });
         if (normalizationConfirmed && rawHit) findings.push({
           title: "Web cache poisoning via URL normalization", severity: "high", confidence: "firm",
-          explanation: "Two unique raw paths containing harmless angle-bracket markers collided with their browser-encoded equivalents, and each encoded clean request reproduced the raw response twice.",
+          explanation: "Two unique raw paths under " + normalizationPrefix(targetUrl) + " containing harmless angle-bracket markers collided with their browser-encoded equivalents, and each encoded clean request reproduced the raw response twice.",
           evidence_exchange_ids: normalizationEvidence,
-          metadata: { variant: "url-normalization", supporting_variants: ["url-normalization"], variant_count: 1, root_cause: "cache-poisoning:" + endpointRoot(targetUrl) + ":url-normalization", finding_type: "cache_poisoning", marker: token, proof: "same_key_marker_persistence_with_explicit_hit", credential_policy: "without_project_credentials" }
+          metadata: { variant: "url-normalization", supporting_variants: ["url-normalization"], variant_count: 1, probe_directory: normalizationPrefix(targetUrl), root_cause: "cache-poisoning:" + endpointRoot(targetUrl) + ":url-normalization", finding_type: "cache_poisoning", marker: token, proof: "same_key_marker_persistence_with_explicit_hit", credential_policy: "without_project_credentials" }
         });
       }
     }

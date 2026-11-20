@@ -189,10 +189,11 @@
   function rawH2(id, parsed, request, input) { return { id: id, type: "raw_http2", target_url: parsed.url, streams: [{ id: id + "-stream", headers: request.headers, body_text: request.body }], options: { timeout_ms: Math.max(1000, Math.min(Number(input.read_timeout_ms || 8000), 30000)), final_data_together: false } }; }
   function isH2Mode(mode){return mode==="h2"||mode==="h2_tunnel"||mode==="h2_header_injection";}
   function rawPause(id,parsed,request,input){return {id:id,type:"raw_http1",target_url:parsed.url,request_base64:toBase64(request.bytes),use_project_cookies:false,options:{pause_at_byte:request.split,pause_ms:Math.max(1,Math.min(Number(input.pause_ms||61000),120000)),await_response_before_continue:input.pause_await_response===true,half_close_write:false,response_mode:"until_idle",read_timeout_ms:Math.max(1000,Math.min(Number(input.read_timeout_ms||30000),120000)),idle_timeout_ms:Math.max(500,Math.min(Number(input.idle_timeout_ms||1500),5000))}};}
-  function plan(input, context) {
-    if (input.confirm_intrusive !== true) throw new Error("desynchronization testing requires confirm_intrusive=true");
-    if (!/^[a-z0-9]{8,32}$/i.test(String(input.marker || ""))) throw new Error("marker must be a unique 8-32 character alphanumeric value");
-    var set = techniques(input, context), repeats = Math.max(3, Math.min(Number(input.repeats || 5), 9)), operations = [];
+  // Must stay equal to plugin.json limits.max_operations: the host rejects larger plans outright.
+  var MAX_PLANNED_REQUESTS = 700;
+  function requestTotal(operations) { return operations.reduce(function (count, operation) { return count + (operation.type === "raw_http1_group" ? operation.members.length : operation.type === "raw_http2" ? operation.streams.length : 1); }, 0); }
+  function buildOperations(input, set, repeats) {
+    var operations = [];
     for (var direct = 0; direct < 2; direct += 1) {
       operations.push(raw("direct-base-" + direct, set.parsed, normalGet(set.path, set.parsed, set.inherited, true), input));
       operations.push(raw("direct-canary-" + direct, set.parsed, normalGet(set.canary_path, set.parsed, set.inherited, true), input));
@@ -245,8 +246,28 @@
         }
       }
     });
-    var requestCount = operations.reduce(function (count, operation) { return count + (operation.type === "raw_http1_group" ? operation.members.length : operation.type === "raw_http2" ? operation.streams.length : 1); }, 0);
-    return { execution: "sequential", operations: operations, preview: { stage: "scan", scope: "complete_action", follow_up_expected: false, candidate_count: set.items.length, candidate_unit: "techniques", candidate_breakdown: set.items.reduce(function (output, item) { output[item.family] = (output[item.family] || 0) + 1; return output; }, {}), supported_modes: [], recommendation: "The planned request count is exact; runtime depends strongly on raw response and idle timeouts." }, result: { repeats: repeats, auth_included: input.include_auth === true, canary_path: set.canary_path, request_count: requestCount, techniques: set.items.map(function (item) { return { family: item.family, name: item.name, polarity: item.polarity, canary_confirmation: item.confirmable }; }), limitations: ["HTTP/2 families require HTTPS with ALPN h2 and never fall back to HTTP/1", "Pause-based probing is opt-in because each cycle may hold a connection for up to pause_ms", "Browser client-side desync requires a direct real-browser workflow and is not currently confirmed by this plugin", "Authentication is excluded unless include_auth=true"] } };
+    return operations;
+  }
+  // Drops techniques from the end of the ordered selection until the plan fits the host request limit.
+  // Same totals as buildOperations without building any request, so analyze() stays cheap.
+  function countRequests(input, set, repeats) {
+    var observers = Math.max(1, Math.min(Number(input.zero_cl_observers || 2), 5));
+    return 4 + (set.items.some(function (item) { return isH2Mode(item.mode); }) ? 4 : 0) + set.items.reduce(function (total, item) {
+      return total + repeats + repeats * (item.mode === "zero_cl_pair" ? 2 + observers : 3);
+    }, 0);
+  }
+  function fittedTechniques(input, context) {
+    var set = techniques(input, context), repeats = Math.max(3, Math.min(Number(input.repeats || 5), 9)), deferred = [];
+    while (countRequests(input, set, repeats) > MAX_PLANNED_REQUESTS && set.items.length > 1) deferred.unshift(set.items.pop().name);
+    return { set: set, repeats: repeats, deferred: deferred };
+  }
+  function plan(input, context) {
+    if (input.confirm_intrusive !== true) throw new Error("desynchronization testing requires confirm_intrusive=true");
+    if (!/^[a-z0-9]{8,32}$/i.test(String(input.marker || ""))) throw new Error("marker must be a unique 8-32 character alphanumeric value");
+    var fitted = fittedTechniques(input, context), set = fitted.set, repeats = fitted.repeats, operations = buildOperations(input, set, repeats);
+    var requestCount = requestTotal(operations);
+    if (requestCount !== countRequests(input, set, repeats)) throw new Error("internal request count mismatch: " + requestCount + " planned, " + countRequests(input, set, repeats) + " counted");
+    return { execution: "sequential", operations: operations, preview: { stage: "scan", scope: "complete_action", follow_up_expected: false, candidate_count: set.items.length, candidate_unit: "techniques", candidate_breakdown: set.items.reduce(function (output, item) { output[item.family] = (output[item.family] || 0) + 1; return output; }, {}), supported_modes: [], recommendation: "The planned request count is exact; runtime depends strongly on raw response and idle timeouts." }, result: { repeats: repeats, deferred_techniques: fitted.deferred, request_limit: MAX_PLANNED_REQUESTS, auth_included: input.include_auth === true, canary_path: set.canary_path, request_count: requestCount, techniques: set.items.map(function (item) { return { family: item.family, name: item.name, polarity: item.polarity, canary_confirmation: item.confirmable }; }), limitations: ["HTTP/2 families require HTTPS with ALPN h2 and never fall back to HTTP/1", "Pause-based probing is opt-in because each cycle may hold a connection for up to pause_ms", "Browser client-side desync requires a direct real-browser workflow and is not currently confirmed by this plugin", "Authentication is excluded unless include_auth=true"] } };
   }
   function byId(observations) { var output = {}; observations.forEach(function (item) { output[item.id] = item; if (Array.isArray(item.members)) item.members.forEach(function (member) { output[member.id] = member; }); }); return output; }
   function rawResult(item) { return item && !item.error && item.raw ? item.raw : null; }
@@ -355,7 +376,7 @@
   }
   function analyze(input, observations, context) {
     segmentMemo={};transcriptMemo={};markerMemo=String(input.marker||"").toLowerCase();
-    var map = byId(observations), set = techniques(input, context), repeats = Math.max(3, Math.min(Number(input.repeats || 5), 9)), findings = [], diagnostics = [];
+    var fitted = fittedTechniques(input, context), map = byId(observations), set = fitted.set, repeats = fitted.repeats, findings = [], diagnostics = [];
     var hasH2=set.items.some(function(item){return isH2Mode(item.mode);});
     var h1BaseDirect=[map["direct-base-0"],map["direct-base-1"]],h1CanaryDirect=[map["direct-canary-0"],map["direct-canary-1"]];
     var h2BaseDirect=[map["h2-direct-base-0"],map["h2-direct-base-1"]],h2CanaryDirect=[map["h2-direct-canary-0"],map["h2-direct-canary-1"]];
@@ -411,7 +432,7 @@
         evidence_exchange_ids: evidence(controls.concat(probes,victims,recoveries,observers)), metadata: { family: technique.family, polarity: technique.polarity, signal: "marker_contamination_unstable", confirmations: contaminated, attempts: repeats }
       });
     });
-    var result={ findings: findings, result: { direct_controls_stable: h1Stable && h2Stable, protocol_baselines: protocolBaselines, qualified_techniques: diagnostics.filter(function (item) { return item.coverage_qualified; }).length, diagnostics: diagnostics, limitations: ["Firm framing findings require repeated downstream marker contamination; timeout, rejection, and response-divergence-only signals remain diagnostics.", "Captured status comparisons do not establish a complete saved-response match; raw and decoded response representations are not compared.", "HTTP/2 probes require HTTPS with ALPN h2 and never fall back to HTTP/1.", "HTTP/2 reset, GOAWAY, incomplete, and truncated streams are never treated as downstream responses.", "HTTP/2 nested-response confirmation requires a complete Content-Length-framed inner response.", "Pause-based findings require the explicit pause family; browser client-side desync remains out of scope."] } };segmentMemo=null;transcriptMemo=null;markerMemo=null;return result;
+    var result={ findings: findings, result: { deferred_techniques: fitted.deferred, direct_controls_stable: h1Stable && h2Stable, protocol_baselines: protocolBaselines, qualified_techniques: diagnostics.filter(function (item) { return item.coverage_qualified; }).length, diagnostics: diagnostics, limitations: ["Firm framing findings require repeated downstream marker contamination; timeout, rejection, and response-divergence-only signals remain diagnostics.", "Captured status comparisons do not establish a complete saved-response match; raw and decoded response representations are not compared.", "HTTP/2 probes require HTTPS with ALPN h2 and never fall back to HTTP/1.", "HTTP/2 reset, GOAWAY, incomplete, and truncated streams are never treated as downstream responses.", "HTTP/2 nested-response confirmation requires a complete Content-Length-framed inner response.", "Pause-based findings require the explicit pause family; browser client-side desync remains out of scope."] } };segmentMemo=null;transcriptMemo=null;markerMemo=null;return result;
   }
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };
 }());

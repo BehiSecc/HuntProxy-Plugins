@@ -105,11 +105,15 @@
     if(!/^https?:\/\/[^\s]+$/i.test(url)) throw new Error("safe_readback_url is required for the opted-in server configuration chain");
     return {extension:ext,filename:filename,url:url,mime:"application/x-huntproxy-inert"};
   }
+  function repeatVariant(variant, value, repeat) {
+    var copy = {}; Object.keys(variant).forEach(function (key) { copy[key] = variant[key]; });
+    copy.filename = String(variant.filename).replace(value, value + "-" + repeat);
+    return copy;
+  }
   function plan(input, context) {
     var value = source(input, context), operations = [], list = variants(input, value.fileType), workflow=chain(input,value);
     list.forEach(function (variant, index) {
-      var body = mutated(value, variant);
-      for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("variant-" + index + "-" + repeat, value, body));
+      for (var repeat = 0; repeat < 2; repeat += 1) operations.push(operation("variant-" + index + "-" + repeat, value, mutated(value, repeatVariant(variant, marker(input), repeat))));
     });
     if(workflow){
       var config={filename:".htaccess",type:"text/plain",content:"AddType "+workflow.mime+" ."+workflow.extension+"\n"};
@@ -119,7 +123,8 @@
       for(var read=0;read<2;read+=1) operations.push({id:"server-readback-"+read,type:"http_request",base_exchange_id:value.exchange.exchange_id,method:"GET",url:workflow.url,header_tombstones:["Content-Type","Content-Length"],body_base64:encode64(""),protocol:"auto"});
     }
     return { operations: operations, execution: workflow?"sequential":"parallel", stop_on_error:!!workflow, result: {
-      variants: list.map(function (item) { return { name: item.name, role: item.role, filename: item.filename }; }),
+      variants: list.map(function (item) { return { name: item.name, role: item.role, filename: item.filename, repeat_filenames: [0, 1].map(function (repeat) { return repeatVariant(item, marker(input), repeat).filename; }) }; }),
+      created_files: workflow ? [".htaccess", workflow.filename] : [], cleanup_required: !!workflow,
       marker: marker(input), destructive_payloads: false, executable_payloads: false, retrieval_performed:!!workflow,
       server_config_chain: workflow?{filename:workflow.filename,declared_mime:workflow.mime,safe_readback_url:workflow.url}:null,
       comparison_model: "allowed control versus prohibited control versus normalization variants"
@@ -130,8 +135,13 @@
   function normalized(item) {
     return preview(item).replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/gi, "<uuid>").replace(/[a-z0-9_-]{24,}/gi, "<opaque>").replace(/\b\d+\b/g, "<n>").replace(/\s+/g, " ").trim();
   }
+  function locationKey(item) {
+    var value = (responseHeader(item, "location")[0] || "").toLowerCase();
+    return value.replace(/[0-9a-f]{8}-[0-9a-f-]{27,}/g, "<uuid>").replace(/[a-z0-9_-]{24,}/g, "<opaque>").replace(/\d+/g, "<n>");
+  }
   function similarity(a, b) {
     if (!a || !b || a.status_code !== b.status_code) return 0;
+    if (locationKey(a) !== locationKey(b)) return 0;
     if (a.response_body_hash && b.response_body_hash && a.response_body_hash === b.response_body_hash) return 1;
     var left = normalized(a), right = normalized(b);
     if (left === right) return 1;
@@ -151,15 +161,20 @@
   function responseHeader(item,name) {
     return (item&&item.response_headers||[]).filter(function(header){return String(header.name).toLowerCase()===String(name).toLowerCase();}).map(function(header){return decode64(header.value_base64||"");});
   }
-  function reflectedParentPath(item, variant) {
+  function reflectedParentPath(item, variant, value) {
     var text=preview(item).replace(/&#x2f;|&#47;|&sol;/gi,"/");
     try { text=decodeURIComponent(text); } catch (_) {}
-    var basename=variant.filename.replace(/^.*(?:\/|%2f|\\)/i,"").toLowerCase();
-    return text.indexOf("../"+basename)!==-1 || text.indexOf("..\\"+basename)!==-1;
+    // Each repeat uploads its own filename, so the response may echo any of them.
+    return [variant, repeatVariant(variant, value, 0), repeatVariant(variant, value, 1)].some(function (candidate) {
+      var basename=candidate.filename.replace(/^.*(?:\/|%2f|\\)/i,"").toLowerCase();
+      return text.indexOf("../"+basename)!==-1 || text.indexOf("..\\"+basename)!==-1;
+    });
   }
   function rejected(item, input) {
     return !item || item.error || item.status_code >= 400
-      || /invalid (?:file|upload|filename)|not allowed|unsupported (?:file|media)|prohibited|blocked|extension denied|upload failed/.test(preview(item))
+      || (item.status_code >= 300 && /[?&#\/_-](?:error|errors|fail(?:ed|ure)?|invalid|denied|rejected)\b/i.test(responseHeader(item, "location")[0] || ""))
+      || /invalid (?:file|upload|filename|type|extension)|not (?:allowed|permitted|supported)|unsupported (?:file|media|type)|prohibited|blocked|rejected|extension denied|upload failed|file type/.test(preview(item))
+      || /"(?:error|errors)"\s*:\s*(?:"[^"]+"|\{|\[\s*[^\]\s])|"(?:success|ok)"\s*:\s*false|"status"\s*:\s*"(?:error|fail(?:ed|ure)?)"/.test(preview(item))
       || includesMarker(item, input.failure_markers);
   }
   function accepted(item, input) {
@@ -178,13 +193,13 @@
       outcomes.push({ variant: variant.name, role: variant.role, reproduced: !!result, apparently_accepted: !!isAccepted, allowed_similarity: Math.round(score * 1000) / 1000, error: result ? null : "unstable_or_failed" });
       if (variant.role === "filename-bypass" && allowedAccepted && prohibitedBlocked && isAccepted && (score >= 0.82 || includesMarker(result, input.success_markers))) {
         findings.push({
-          title: "Upload filename restriction bypass using " + variant.name, severity: "high", confidence: score >= 0.9 ? "firm" : "tentative",
+          title: "Upload filename restriction bypass using " + variant.name, severity: "high", confidence: score >= 0.9 && (input.success_markers || []).length && variant.filename.indexOf("%") === -1 ? "firm" : "tentative",
           explanation: "The direct prohibited-extension control was rejected, while this inert filename-normalization variant was accepted reproducibly with an outcome consistent with the allowed control.",
           evidence_exchange_ids: [allowed.exchange_id, prohibited.exchange_id, result.exchange_id].filter(Boolean),
-          metadata: { variant: variant.name, role: variant.role, marker: marker(input), prohibited_extension: extension(input, "prohibited_extension", "php"), allowed_similarity: Math.round(score * 1000) / 1000 }
+          metadata: { variant: variant.name, role: variant.role, marker: marker(input), prohibited_extension: extension(input, "prohibited_extension", "php"), allowed_similarity: Math.round(score * 1000) / 1000, decode_unverified: variant.filename.indexOf("%") !== -1 }
         });
       }
-      if (variant.role === "path-traversal" && isAccepted && reflectedParentPath(result,variant)) {
+      if (variant.role === "path-traversal" && isAccepted && reflectedParentPath(result,variant,marker(input))) {
         findings.push({
           title: "Potential upload path traversal using " + variant.name, severity: "high", confidence: "tentative",
           explanation: "The upload response reproducibly reflected a decoded parent-directory filename. This is evidence of unsafe filename handling, but without read-back it does not prove that storage resolved outside the intended upload directory.",
@@ -200,7 +215,8 @@
         });
       }
     });
-    if (allowedAccepted && prohibitedAccepted) findings.push({
+    var prohibitedMatchesAllowed = !!allowed && !!prohibited && (similarity(allowed, prohibited) >= 0.82 || includesMarker(prohibited, input.success_markers));
+    if (allowedAccepted && prohibitedAccepted && prohibitedMatchesAllowed) findings.push({
       title: "Direct prohibited upload extension accepted", severity: "medium", confidence: similarity(allowed, prohibited) >= 0.9 ? "firm" : "tentative",
       explanation: "The caller-designated prohibited extension was accepted directly with inert text content. This indicates a missing or ineffective filename-extension restriction, but does not prove executability or public retrieval.",
       evidence_exchange_ids: [allowed.exchange_id, prohibited.exchange_id].filter(Boolean), metadata: { variant: "control-prohibited-extension", marker: marker(input), prohibited_extension: extension(input, "prohibited_extension", "php") }
@@ -221,7 +237,8 @@
     return { findings: findings, result: {
       allowed_control_accepted: !!allowedAccepted, prohibited_control_blocked: !!prohibitedBlocked, prohibited_control_accepted: !!prohibitedAccepted,
       outcomes: outcomes, server_config_chain:chainResult, tested_operations: observations.length,
-      limitations: ["Acceptance does not prove that an uploaded object is web-accessible or executable; this extension never uploads executable code and does not retrieve uploads by default.", "A reflected parent-directory filename does not prove that storage escaped its intended root without a separate safe read-back.", "Only the first supported multipart file part is mutated.", "Storage renaming and asynchronous malware scanning require separate read-back validation."]
+      created_files: workflow ? [".htaccess", workflow.filename] : [], cleanup_required: !!workflow,
+      limitations: (workflow ? ["The server configuration chain wrote .htaccess and " + workflow.filename + " to the upload directory, replacing any existing .htaccess there; remove both and restore the previous .htaccess after testing."] : []).concat(["Acceptance does not prove that an uploaded object is web-accessible or executable; this extension never uploads executable code and does not retrieve uploads by default.", "A reflected parent-directory filename does not prove that storage escaped its intended root without a separate safe read-back.", "Only the first supported multipart file part is mutated.", "Storage renaming and asynchronous malware scanning require separate read-back validation.", "Percent-encoded filenames are reported tentatively: acceptance does not show that the server decoded them."])
     } };
   }
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };

@@ -290,7 +290,7 @@ function observation(operation, status = 403, hash = "base", text = "denied") {
   const cacheContext = context("https://example.test/account");
   cacheContext.resources = { headers: headerResource, cookies: cookieResource, parameters: parameterResource };
 
-  assert.equal(cacheManifest.version, "0.15.0");
+  assert.equal(cacheManifest.version, "0.16.0");
   assert.equal(cacheManifest.limits.memory_mb, 96);
   assert.equal(cacheManifest.limits.js_stage_timeout_ms, 60000);
   assert.equal(cacheManifest.actions[0].input_schema.properties.scan_mode.default, "full");
@@ -901,7 +901,8 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
   const plan = plugin.plan(input, ctx);
   assert.equal(plan.operations.length, 8);
   const decoded = Buffer.from(plan.operations[0].body_base64, "base64").toString("binary");
-  assert.match(decoded, /filename="hp-upload\.txt"/);
+  assert.match(decoded, /filename="hp-upload-0\.txt"/, "each repeat uploads its own filename");
+  assert.match(Buffer.from(plan.operations[1].body_base64, "base64").toString("binary"), /filename="hp-upload-1\.txt"/);
   assert.match(decoded, /--huntproxy-boundary--/);
   const observations = plan.operations.map((op) => observation(op, 201, "accepted", "uploaded"));
   assert.ok(plugin.analyze(input, observations, ctx).findings.some((finding) => /Direct prohibited/.test(finding.title)));

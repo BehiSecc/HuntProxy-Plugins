@@ -19,8 +19,9 @@
     header: ["X-Custom-IP-Authorization", "X-Forwarded-Host", "X-Original-URL", "X-Rewrite-URL", "X-Forwarded-For", "X-HTTP-Method-Override"]
   };
 
-  function uniqueWords(input, context, location) {
-    var out = [], seen = {}, limitReached = false, max = Math.max(1, Math.min(Number(input.max_words || 100000), 100000));
+  function uniqueWords(input, context, location, exclude) {
+    // Names already in the request start out as seen, so they are skipped without a second pass.
+    var out = [], seen = Object.assign({}, exclude || {}), limitReached = false, max = Math.max(1, Math.min(Number(input.max_words || 100000), 100000));
     function add(value) {
       value = String(value || "").trim();
       if (!value || value.length > 128) return;
@@ -129,10 +130,7 @@
       var scoped = {};
       Object.keys(input).forEach(function (key) { scoped[key] = input[key]; });
       if (input.words_by_location && Array.isArray(input.words_by_location[location])) scoped.words = input.words_by_location[location];
-      output[location] = uniqueWords(scoped, context, location);
-      var limitReached = output[location].word_limit_reached;
-      output[location] = output[location].filter(function (word) { return !existing[location][String(word).toLowerCase()]; });
-      output[location].word_limit_reached = limitReached;
+      output[location] = uniqueWords(scoped, context, location, existing[location]);
       if (input.url && location === "header") {
         output[location] = output[location].filter(function (word) {
           return ["authorization", "cookie", "proxy-authorization", "host"].indexOf(String(word).toLowerCase()) === -1;
