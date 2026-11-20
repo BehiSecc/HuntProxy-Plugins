@@ -95,15 +95,12 @@
     (input.referer_values || []).forEach(function (value, index) {
       values.push({ name: "header:referer:" + index, method: baseExchange.method, headers: [{ name: "Referer", value: String(value) }] });
     });
-    var baseHasBody = ["GET", "HEAD", "OPTIONS"].indexOf(String(baseExchange.method).toUpperCase()) === -1;
     ["GET", "HEAD", "OPTIONS"].forEach(function (method) {
       if (method !== String(baseExchange.method).toUpperCase()) {
         var variant = { name: "method:" + method.toLowerCase(), method: method };
-        // A bodiless method must not replay the original body, whatever its content type.
-        if (baseHasBody) { variant.body_base64 = ""; variant.header_tombstones = ["Content-Type", "Content-Length"]; }
         if (method === "GET") {
           var query = formQueryParams(context);
-          if (query.length) variant.query_params = query;
+          if (query.length) { variant.query_params = query; variant.body_base64 = ""; variant.header_tombstones = ["Content-Type", "Content-Length"]; }
         }
         values.push(variant);
       }

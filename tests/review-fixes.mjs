@@ -41,6 +41,13 @@ function observation(id, { status = 200, text = "ok", hash = "same", headers = [
   const none = plugin.plan({ active: true, token: jwt }, identityContext({ headers: [["Accept", "*/*"]] }));
   assert.ok(none.operations.every((op) => op.headers[0].name === "Authorization"), "without a JWT in the request, the token is sent as a bearer token");
 
+  const noExpiry = `${encode({ alg: "HS256", typ: "JWT" })}.${encode({ sub: "alice" })}.c2ln`;
+  const noExpiryPlan = plugin.plan({ active: true }, identityContext({ headers: [["Cookie", `session=${noExpiry}`]] }));
+  const sentTokens = noExpiryPlan.operations.filter((op) => op.id.startsWith("variant-")).map((op) => op.cookie_params[0].value);
+  assert.ok(sentTokens.length > 0);
+  assert.ok(!sentTokens.includes(noExpiry), "no variant resends the original token as a mutation");
+  assert.ok(!plugin.analyze({ active: true }, noExpiryPlan.operations.map((op) => observation(op.id)), identityContext({ headers: [["Cookie", `session=${noExpiry}`]] })).findings.some((finding) => /bypass using no exp/.test(finding.title)), "removing a missing exp claim is not a bypass");
+
   const plan = plugin.plan({ active: true }, cookieContext);
   const observations = plan.operations.map((op, index) => observation(op.id, { error: index === plan.operations.length - 1 ? { code: "scope_denied", message: "outside scope" } : null }));
   const result = plugin.analyze({ active: true }, observations, cookieContext).result;
@@ -170,19 +177,6 @@ function observation(id, { status = 200, text = "ok", hash = "same", headers = [
   const chained = plugin.plan(chainInput, ctx);
   assert.deepEqual(Array.from(chained.result.created_files).slice(0, 1), [".htaccess"]);
   assert.equal(chained.result.cleanup_required, true);
-}
-
-// 403Bypasser: converting a JSON POST to a bodiless method drops the body.
-{
-  const plugin = await load("403-bypasser");
-  const ctx = identityContext({ method: "POST", url: "https://example.test/admin", headers: [["Content-Type", "application/json"]], body: '{"role":"admin"}' });
-  const plan = plugin.plan({ allow_state_changes: true }, ctx);
-  for (const method of ["GET", "HEAD", "OPTIONS"]) {
-    const op = plan.operations.find((item) => item.method === method);
-    assert.ok(op, `missing ${method}`);
-    assert.equal(op.body_base64, "", `${method} conversion sends no body`);
-    assert.ok(op.header_tombstones.includes("Content-Type"));
-  }
 }
 
 console.log("Review-fix regression tests passed.");

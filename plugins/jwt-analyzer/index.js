@@ -157,7 +157,8 @@
       var expiredPayload=Object.assign({},jwt.payload,{exp:1});
       list.push({name:"expired",token:canResign?signedToken(jwt.header,expiredPayload,secret):token(jwt.header,expiredPayload,signature)});
     }
-    if(enabled.indexOf("no_exp")!==-1) {
+    // Removing a claim the token does not have resends the original token, which proves nothing.
+    if(enabled.indexOf("no_exp")!==-1 && jwt.payload.exp !== undefined) {
       var noExp=Object.assign({},jwt.payload); delete noExp.exp;
       list.push({name:"no_exp",token:canResign?signedToken(jwt.header,noExp,secret):token(jwt.header,noExp,signature)});
     }

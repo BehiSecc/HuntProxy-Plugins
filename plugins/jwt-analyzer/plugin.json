@@ -1,7 +1,7 @@
 {
   "schema_version": 1, "id": "jwt-analyzer", "name": "JWTAnalyzer", "version": "1.4.0",
   "description": "Detect HTTP JWTs, report passive claim and algorithm issues, and run bounded signature, claim, and key-selection mutations.",
-  "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "20b8bdccdbc9aae25594cfcbedbf2d2c01dc014243d3540c202a6c3fb2a59caf",
+  "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "3936d31b86d5379fa515acb0ad7a4f15ae3c059102c9646b6c9be6fca8a1d3ab",
   "resources": { "hmac-secrets": { "path": "resources/hmac-secrets", "sha256": "f8896553bd7d0e9a5ae3accb4a2d4e1bb855aba9e641b01bd8e758f65d029a74" }, "rsa-test-key": { "path": "resources/rsa-test-key.json", "sha256": "4bc3f91b035832d7d1617806884d8331955927d030868dae88f8a6a52b0a6362" }, "rsa-test-jwks": { "path": "resources/rsa-test-jwks.json", "sha256": "a90d3649c0a46cde4f8cdfb41dc72ef339199dd0ed683ea49a14c3553e538da9" } },
   "capabilities": ["http.semantic", "identity.use"],
   "limits": { "timeout_ms": 300000, "max_operations": 50, "max_concurrency": 2, "memory_mb": 32, "js_stage_timeout_ms": 60000 },
