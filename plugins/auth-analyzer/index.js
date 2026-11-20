@@ -79,6 +79,12 @@
   function planResult(selection, identities, mode, operationCount) {
     return { request_shapes: selection.selected.length, identities: identities, mode: mode, planned_operations: operationCount, selection: selection.summary };
   }
+  function stateChanging(selection) { return selection.selected.some(function (shape) { return ["GET", "HEAD", "OPTIONS"].indexOf(String(shape.method || "GET").toUpperCase()) === -1; }); }
+  function planned(operations, result, selection) {
+    var output = { operations: operations, result: result };
+    if (stateChanging(selection)) { output.execution = "sequential"; result.sequential_reason = "state_changing_shapes"; }
+    return output;
+  }
   function operation(id, shape, identity, anonymous) {
     var op = { id: id, type: "http_request", base_exchange_id: shape.exchange_id, method: shape.method, protocol: "auto" };
     op.header_tombstones = ["Cookie", "Authorization", "Proxy-Authorization"];
@@ -102,7 +108,7 @@
       });
       var anonymousResult = planResult(selection, ["anonymous"], "anonymous_audit", operations.length);
       anonymousResult.anonymous_context_supplied = !!input.anonymous_context;
-      return { operations: operations, result: anonymousResult };
+      return planned(operations, anonymousResult, selection);
     }
     validateComparisonIdentities(input);
     var includeAnonymous = input.include_anonymous !== false;
@@ -113,7 +119,7 @@
         if (includeAnonymous) operations.push(operation("shape-" + index + "-anonymous-" + repeat, shape, null, true));
       }
     });
-    return { operations: operations, result: planResult(selection, includeAnonymous ? ["primary", "secondary", "anonymous"] : ["primary", "secondary"], "identity_comparison", operations.length) };
+    return planned(operations, planResult(selection, includeAnonymous ? ["primary", "secondary", "anonymous"] : ["primary", "secondary"], "identity_comparison", operations.length), selection);
   }
   function mapById(items) {
     var map = Object.create(null);
@@ -177,14 +183,29 @@
     return (!success.length || success.some(function (marker) { return value.indexOf(String(marker).toLowerCase()) !== -1; })) &&
       !failure.some(function (marker) { return value.indexOf(String(marker).toLowerCase()) !== -1; });
   }
-  function allowed(item, input) {
-    return !!item && markersMatch(item, input) &&
-      ((item.status_code >= 200 && item.status_code < 400) || (input.success_markers || []).length > 0);
+  function responseHeader(item, name) {
+    var wanted = String(name).toLowerCase(), found = "";
+    (item && item.response_headers || []).some(function (header) {
+      if (String(header && header.name || "").toLowerCase() !== wanted) return false;
+      found = header.value_base64 != null ? decode64(header.value_base64) : String(header.value || "");
+      return true;
+    });
+    return found;
   }
-  function outcome(pairValue, input) {
+  var AUTH_LOCATION = /(?:^|[\/?=&.#_-])(?:login|log-in|signin|sign-in|sign_in|logon|auth|authenticate|authorize|oauth2?|sso|saml|cas|idp)(?:$|[\/?=&.#_-])/i;
+  // A redirect to a sign-in page is the normal denied response, not access.
+  function authRedirect(item) { return item.status_code >= 300 && item.status_code < 400 && AUTH_LOCATION.test(responseHeader(item, "location")); }
+  function loginPage(item) { return item.status_code >= 200 && item.status_code < 300 && /<input\b[^>]*\btype\s*=\s*["']?password\b/i.test(text(item)); }
+  function allowed(item, input, anonymous) {
+    var markers = (input.success_markers || []).length > 0;
+    if (!item || !markersMatch(item, input) || authRedirect(item)) return false;
+    if (anonymous && !markers && loginPage(item)) return false;
+    return (item.status_code >= 200 && item.status_code < 400) || markers;
+  }
+  function outcome(pairValue, input, anonymous) {
     if (!pairValue || pairValue.attempts.some(function (item) { return !usableObservation(item); })) return "inconclusive";
     if (((input.success_markers || []).length || (input.failure_markers || []).length) && pairValue.attempts.some(bodyUnavailable)) return "inconclusive";
-    var values = pairValue.attempts.map(function (item) { return allowed(item, input); });
+    var values = pairValue.attempts.map(function (item) { return allowed(item, input, anonymous); });
     if (values[0] && values[1]) return "allowed";
     if (!values[0] && !values[1]) return "not_allowed";
     return "inconclusive";
@@ -202,7 +223,7 @@
     });
     return ids;
   }
-  function controlAssessment(pairValue, shape, input) {
+  function controlAssessment(pairValue, shape, input, anonymous) {
     var attempts = pairValue ? pairValue.attempts : [], reasons = [];
     if (!pairValue) reasons.push("not_selected");
     else {
@@ -216,7 +237,7 @@
     }
     var complete = !!pairValue && attempts.every(usableObservation);
     var savedStatus = typeof shape.status_code === "number" ? shape.status_code : null;
-    return { observations_usable: complete, responses_stable: !!(pairValue && pairValue.stable), outcome: pairValue ? outcome(pairValue, input) : "not_tested", limitations: reasons,
+    return { observations_usable: complete, responses_stable: !!(pairValue && pairValue.stable), outcome: pairValue ? outcome(pairValue, input, anonymous) : "not_tested", limitations: reasons,
       captured_status_code: savedStatus,
       captured_status_match: complete && savedStatus !== null ? attempts.every(function (item) { return item.status_code === savedStatus; }) : null,
       captured_response_match: "not_evaluated", captured_response_match_reason: "saved_response_body_not_compared" };
@@ -254,8 +275,8 @@
     var map = mapById(observations), findings = [], classifications = [];
     if (context.action === "anonymous_audit") {
       shapes(input, context).forEach(function (shape, index) {
-        var anonymous = pair(map, "shape-" + index + "-anonymous-", input), anonymousOutcome = outcome(anonymous, input), anonymousAllowed = anonymousOutcome === "allowed";
-        var anonymousControl = controlAssessment(anonymous, shape, input);
+        var anonymous = pair(map, "shape-" + index + "-anonymous-", input), anonymousOutcome = outcome(anonymous, input, true), anonymousAllowed = anonymousOutcome === "allowed";
+        var anonymousControl = controlAssessment(anonymous, shape, input, true);
         classifications.push({ exchange_id: shape.exchange_id, anonymous_stable: anonymous.stable, anonymous_allowed: anonymousOutcome === "inconclusive" ? null : anonymousAllowed, anonymous_outcome: anonymousOutcome, evidence_exchange_ids: evidence(anonymous), mode: "anonymous_audit", controls: { anonymous: anonymousControl }, coverage_qualified: anonymousControl.limitations.length > 0 });
         if (anonymousAllowed) findings.push({
           title: "Possible unauthenticated authorization exposure", severity: "high", confidence: "firm",
@@ -271,18 +292,19 @@
     shapes(input, context).forEach(function (shape, index) {
       var prefix = "shape-" + index + "-", primary = pair(map, prefix + "primary-", input), secondary = pair(map, prefix + "secondary-", input);
       var anonymous = input.include_anonymous === false ? null : pair(map, prefix + "anonymous-", input);
-      var primaryOutcome = outcome(primary, input), secondaryOutcome = outcome(secondary, input), anonymousOutcome = anonymous ? outcome(anonymous, input) : "not_tested";
+      var primaryOutcome = outcome(primary, input), secondaryOutcome = outcome(secondary, input), anonymousOutcome = anonymous ? outcome(anonymous, input, true) : "not_tested";
       var primaryAllowed = primaryOutcome === "allowed", secondaryAllowed = secondaryOutcome === "allowed", anonymousAllowed = anonymousOutcome === "allowed";
       var crossIdentity = primary.stable && secondary.stable && primaryAllowed && secondaryAllowed && same(primary.representative, secondary.representative, input);
       var protectedResource = !anonymous || anonymousOutcome === "inconclusive" ? null : (!anonymousAllowed ? true : (!primary.stable || !anonymous.stable ? null : !same(primary.representative, anonymous.representative, input)));
-      var controls = { primary: controlAssessment(primary, shape, input), secondary: controlAssessment(secondary, shape, input), anonymous: controlAssessment(anonymous, shape, input) };
+      var controls = { primary: controlAssessment(primary, shape, input), secondary: controlAssessment(secondary, shape, input), anonymous: controlAssessment(anonymous, shape, input, true) };
       var coverageQualified = !primaryAllowed || Object.keys(controls).some(function (key) { return controls[key].limitations.length > 0; });
       classifications.push({ exchange_id: shape.exchange_id, primary_stable: primary.stable, secondary_stable: secondary.stable, anonymous_stable: anonymous ? anonymous.stable : null, primary_allowed: primaryOutcome === "inconclusive" ? null : primaryAllowed, secondary_allowed: secondaryOutcome === "inconclusive" ? null : secondaryAllowed, anonymous_allowed: anonymousOutcome === "inconclusive" || anonymousOutcome === "not_tested" ? null : anonymousAllowed, anonymous_outcome: anonymousOutcome, primary_outcome: primaryOutcome, secondary_outcome: secondaryOutcome, protected_resource: protectedResource, responses_equal: crossIdentity, evidence_exchange_ids: evidence(primary, secondary, anonymous), controls: controls, coverage_qualified: coverageQualified });
-      if (primaryOutcome !== "inconclusive" && secondaryOutcome !== "inconclusive" && primaryAllowed !== secondaryAllowed) {
-        var allowedIdentity = primaryAllowed ? "primary" : "secondary";
+      // Primary allowed and secondary denied is the enforced boundary the test expects, so only the inverse is reported.
+      if (primaryOutcome !== "inconclusive" && secondaryOutcome !== "inconclusive" && secondaryAllowed && !primaryAllowed) {
+        var allowedIdentity = "secondary";
         findings.push({
           title: "Authorization outcome changes between supplied identities",
-          severity: "high", confidence: "firm",
+          severity: "medium", confidence: "tentative",
           explanation: "The " + allowedIdentity + " identity received a reproducible allowed response while the other supplied identity did not meet the allowed-response oracle. This is a privilege or identity boundary that requires review when the allowed identity is lower-privileged or attacker-controlled.",
           evidence_exchange_ids: evidence(primary, secondary),
           metadata: { source_exchange_id: shape.exchange_id, method: shape.method, url: shape.url, allowed_identity: allowedIdentity, primary_status: primary.attempts[0].status_code, secondary_status: secondary.attempts[0].status_code }
@@ -291,7 +313,7 @@
       if (crossIdentity && protectedResource !== false) {
         findings.push({
           title: "Possible cross-user authorization exposure",
-          severity: "high", confidence: protectedResource === true ? "firm" : "tentative",
+          severity: "high", confidence: protectedResource === true && input.confirm_identity_specific === true ? "firm" : "tentative",
           explanation: protectedResource === true ? "The request shape returned the same reproducible allowed response for two supplied identity sources while the anonymous control was not allowed or materially different." : "The request shape returned the same reproducible allowed response for two supplied identity sources; the anonymous control was inconclusive or not tested.",
           evidence_exchange_ids: evidence(primary, secondary, anonymous),
           metadata: { source_exchange_id: shape.exchange_id, method: shape.method, url: shape.url }
@@ -300,8 +322,8 @@
       if (primary.stable && anonymous && anonymous.stable && primaryAllowed && anonymousAllowed && same(primary.representative, anonymous.representative, input)) {
         findings.push({
           title: "Possible unauthenticated authorization exposure",
-          severity: "high", confidence: "firm",
-          explanation: "The anonymous control reproduced the authenticated response across repeated requests.",
+          severity: input.confirm_expected_protected === true ? "high" : "medium", confidence: input.confirm_expected_protected === true ? "firm" : "tentative",
+          explanation: "The anonymous control reproduced the authenticated response across repeated requests." + (input.confirm_expected_protected === true ? "" : " The shape was not confirmed as protected, so public content would produce the same result; run anonymous_audit with confirm_expected_protected=true to confirm."),
           evidence_exchange_ids: evidence(primary, anonymous),
           metadata: { source_exchange_id: shape.exchange_id, method: shape.method, url: shape.url }
         });

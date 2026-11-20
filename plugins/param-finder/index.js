@@ -94,6 +94,12 @@
     return op;
   }
 
+  function absentOperation(base, input, word, id) {
+    var op = operation(base, input, null, [], id);
+    op.cookie_params = [{ name: word, value: null }];
+    return op;
+  }
+
   function requestedLocations(input) {
     var locations = input.locations && input.locations.length ? input.locations : ["query", "header"];
     return locations.filter(function (value, index) {
@@ -101,13 +107,32 @@
     });
   }
 
+  function decodeName(value) { try { return decodeURIComponent(String(value).replace(/\+/g, " ")); } catch (_) { return String(value); } }
+  function existingNames(input, context) {
+    var base = context.base_exchange && context.base_exchange.exchange_id ? context.base_exchange : null;
+    var url = base ? String(base.url || "") : String(input.url || ""), names = { query: {}, header: {}, body: {}, cookie: {} };
+    String(url.split("#")[0].split("?")[1] || "").split("&").forEach(function (part) { if (part) names.query[decodeName(part.split("=")[0]).toLowerCase()] = true; });
+    (base && base.headers || []).forEach(function (header) { if (header && header.name) names.header[String(header.name).toLowerCase()] = true; });
+    var preview = base && base.request_preview ? String(base.request_preview.text || "") : "";
+    if (/^\s*\{/.test(preview)) {
+      try { Object.keys(JSON.parse(preview) || {}).forEach(function (name) { names.body[String(name).toLowerCase()] = true; }); }
+      catch (_) { (preview.match(/"([^"\\]{1,128})"\s*:/g) || []).forEach(function (item) { names.body[item.replace(/^"|"\s*:$/g, "").toLowerCase()] = true; }); }
+    } else if (preview && preview.indexOf("=") !== -1) {
+      preview.split("&").forEach(function (part) { if (part.indexOf("=") > 0) names.body[decodeName(part.split("=")[0]).toLowerCase()] = true; });
+    }
+    return names;
+  }
+
   function candidates(input, context) {
-    var output = {};
+    var output = {}, existing = existingNames(input, context);
     requestedLocations(input).forEach(function (location) {
       var scoped = {};
       Object.keys(input).forEach(function (key) { scoped[key] = input[key]; });
       if (input.words_by_location && Array.isArray(input.words_by_location[location])) scoped.words = input.words_by_location[location];
       output[location] = uniqueWords(scoped, context, location);
+      var limitReached = output[location].word_limit_reached;
+      output[location] = output[location].filter(function (word) { return !existing[location][String(word).toLowerCase()]; });
+      output[location].word_limit_reached = limitReached;
       if (input.url && location === "header") {
         output[location] = output[location].filter(function (word) {
           return ["authorization", "cookie", "proxy-authorization", "host"].indexOf(String(word).toLowerCase()) === -1;
@@ -172,6 +197,7 @@
           for (var repeat = 0; repeat < 2; repeat += 1) {
             operations.push(operation(base, input, location, [word], "confirm-" + location + "-" + index + "-" + repeat));
           }
+          if (location === "cookie" && base.mode === "exchange") operations.push(absentOperation(base, input, word, "confirm-absent-cookie-" + index));
           if (input.cache_key_tests !== false && (location === "query" || location === "header")) {
             for (var cacheRepeat = 0; cacheRepeat < 2; cacheRepeat += 1) {
               var cacheKey = marker(input, "cache-key-" + location + "-" + index + "-" + cacheRepeat);
@@ -309,20 +335,25 @@
     if (!baseline || !second) return { findings: [], result: { error: "baseline observations missing" } };
     if (baseline.error || second.error) throw new Error("ParamFinder baseline request failed: " + String((baseline.error || second.error).message || (baseline.error || second.error).code || "unknown request error"));
     var baselineUnstable = changed(baseline, second, false, input);
-    var page = selectedPage(input, context), all = page.all, findings = [], candidateCoverage = coverage(page);
+    var page = selectedPage(input, context), all = page.all, findings = [], candidateCoverage = coverage(page), skippedExisting = [];
+    var operationErrors = observations.filter(function (item) { return item && item.error; }).map(function (item) { return { id: item.id, error: typeof item.error === "object" ? String(item.error.code || item.error.message || "operation_failed") : String(item.error) }; });
     if (page.phase === "confirm") {
       page.groups.slice(page.cursor, page.end).forEach(function (group) {
           var location = group.location, index = group.start, word = all[location][index];
           var first = map["confirm-" + location + "-" + index + "-0"];
           var repeat = map["confirm-" + location + "-" + index + "-1"];
           var reproducible = equivalent(first, repeat, input);
-          if (reproducible && changed(baseline, first, baselineUnstable, input)) {
+          var absent = location === "cookie" && page.base.mode === "exchange" ? map["confirm-absent-cookie-" + index] : null;
+          // Removing a cookie that was never sent leaves the baseline unchanged; a changed response means it already existed.
+          var preexisting = !!absent && !absent.error && changed(baseline, absent, baselineUnstable, input);
+          if (preexisting) skippedExisting.push({ location: location, parameter: word });
+          if (reproducible && !preexisting && changed(baseline, first, baselineUnstable, input)) {
             findings.push({
               title: "Hidden " + location + " parameter: " + word,
               severity: "info",
-              confidence: baselineUnstable ? "tentative" : "firm",
-              explanation: "Adding the parameter produced a repeatable response change relative to two control requests.",
-              evidence_exchange_ids: [baseline.exchange_id, first.exchange_id, repeat.exchange_id].filter(Boolean),
+              confidence: baselineUnstable || (location === "cookie" && page.base.mode === "exchange" && (!absent || absent.error)) ? "tentative" : "firm",
+              explanation: "Adding the parameter produced a repeatable response change relative to two control requests." + (absent && !absent.error ? " Removing the cookie left the baseline unchanged, so it was not already present." : ""),
+              evidence_exchange_ids: [baseline.exchange_id, first.exchange_id, repeat.exchange_id].concat(absent && absent.exchange_id ? [absent.exchange_id] : []).filter(Boolean),
               metadata: { location: location, parameter: word }
             });
           }
@@ -350,7 +381,7 @@
         confirmFollowUp = continuationInput(input, "confirm", page.end, page.signature);
         if (input.resume_screen) confirmFollowUp.resume_screen = input.resume_screen;
       } else if (input.resume_screen) confirmFollowUp = input.resume_screen;
-      return { findings: findings, result: { phase: "confirm", baseline_unstable: baselineUnstable, confirmed: findings.length, cursor: page.cursor, next_cursor: page.end < page.groups.length ? page.end : null, request_budget_exhausted: page.end < page.groups.length, coverage: candidateCoverage, workflow_complete: confirmFollowUp === null, follow_up: confirmFollowUp } };
+      return { findings: findings, result: { phase: "confirm", baseline_unstable: baselineUnstable, confirmed: findings.length, existing_parameters_skipped: skippedExisting, operation_errors: operationErrors, cursor: page.cursor, next_cursor: page.end < page.groups.length ? page.end : null, request_budget_exhausted: page.end < page.groups.length, coverage: candidateCoverage, workflow_complete: confirmFollowUp === null, follow_up: confirmFollowUp } };
     }
     var narrowed = {}, bucketSize = Math.max(2, Math.min(Number(input.bucket_size || 64), 64));
     Object.keys(all).forEach(function (location) {
@@ -386,6 +417,7 @@
       result: {
         phase: "screen",
         baseline_unstable: baselineUnstable,
+        operation_errors: operationErrors,
         candidate_buckets: narrowed,
         cursor: page.cursor,
         next_cursor: page.end < page.groups.length ? page.end : null,

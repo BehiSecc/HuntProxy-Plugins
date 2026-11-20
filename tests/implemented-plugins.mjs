@@ -782,7 +782,7 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
 {
   const plugin = await load("jwt-analyzer");
   const jwtManifest = JSON.parse(await readFile(new URL("jwt-analyzer/plugin.json", root), "utf8"));
-  assert.equal(jwtManifest.version, "1.3.4");
+  assert.equal(jwtManifest.version, "1.4.0");
   assert.equal(jwtManifest.actions[0].requires_base_exchange, true);
   assert.match(jwtManifest.actions[0].input_schema.properties.token.description, /override.*required saved base request/i);
   assert.match(jwtManifest.actions[0].input_schema.properties.target_url.description, /replay destination override/i);

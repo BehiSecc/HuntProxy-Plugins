@@ -57,25 +57,35 @@
     });
     return values;
   }
-  function tokenContext(input, context) {
-    var explicit = String(input.token || "");
-    if (explicit.split(".").length === 3) return { token: explicit, kind: "explicit", name: "Authorization" };
+  // Finds the request slot carrying a JWT; with `wanted`, only the slot carrying that exact token.
+  function locateToken(context, wanted) {
     var found = null;
     headerValues(context).some(function (header) {
       if (/^authorization$/i.test(header.name)) {
         var match = header.value.match(/Bearer\s+([A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*)/i);
-        if (match) { found = { token: match[1], kind: "authorization", name: header.name }; return true; }
+        if (match && (!wanted || match[1] === wanted)) { found = { token: match[1], kind: "authorization", name: header.name }; return true; }
       }
       if (/^cookie$/i.test(header.name)) {
         return header.value.split(";").some(function (item) {
           var split = item.trim().indexOf("="); if (split < 1) return false;
           var name = item.trim().slice(0, split), value = item.trim().slice(split + 1);
-          if (value.split(".").length === 3) { found = { token: value, kind: "cookie", name: name }; return true; }
+          if (value.split(".").length === 3 && (!wanted || value === wanted)) { found = { token: value, kind: "cookie", name: name }; return true; }
           return false;
         });
       }
       return false;
     });
+    return found;
+  }
+  function tokenContext(input, context) {
+    var explicit = String(input.token || "");
+    if (explicit.split(".").length === 3) {
+      // Mutations must replace the token the application reads, so a supplied token goes into the
+      // slot that carries it, else the request's own JWT slot, and only then a new Authorization header.
+      var slot = locateToken(context, explicit) || locateToken(context, null);
+      return slot ? { token: explicit, kind: slot.kind, name: slot.name } : { token: explicit, kind: "explicit", name: "Authorization" };
+    }
+    var found = locateToken(context, null);
     if (!found) throw new Error("no JWT found in Authorization or Cookie headers; provide input.token explicitly");
     return found;
   }
@@ -262,7 +272,8 @@
         evidence_exchange_ids: [baseline.exchange_id, accepted.exchange_id].filter(Boolean), metadata: { variant: variant.name, explicit_success_oracle: explicitOracle }
       });
     });
-    return { findings: findings, result: { algorithm: jwt.header.alg || null, claims: Object.keys(jwt.payload).sort(), tested_operations: observations.length, target_url: input.target_url || null, explicit_success_oracle: explicitOracle, negative_control_rejected: explicitOracle && !!baseline && !successMatches(map["baseline-0"],input.success) && !successMatches(map["baseline-1"],input.success) } };
+    var operationErrors = (observations || []).filter(function (item) { return item && item.error; }).map(function (item) { return { id: item.id, error: typeof item.error === "object" ? String(item.error.code || item.error.message || "operation_failed") : String(item.error) }; });
+    return { findings: findings, result: { algorithm: jwt.header.alg || null, claims: Object.keys(jwt.payload).sort(), tested_operations: observations.length, operation_errors: operationErrors, baseline_stable: !!baseline, token_location: jwt.located.kind === "explicit" ? "authorization" : jwt.located.kind, target_url: input.target_url || null, explicit_success_oracle: explicitOracle, negative_control_rejected: explicitOracle && !!baseline && !successMatches(map["baseline-0"],input.success) && !successMatches(map["baseline-1"],input.success) } };
   }
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };
 }());
