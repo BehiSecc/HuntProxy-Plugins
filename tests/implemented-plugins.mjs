@@ -878,7 +878,7 @@ function privilegedContext({ url = "https://example.test/admin", method = "GET",
   const plugin = await load("csrf-analyzer");
   const ctx = privilegedContext({
     method: "POST", url: "https://example.test/profile?csrf=query-token",
-    headers: [["Content-Type", "application/x-www-form-urlencoded"], ["X-CSRF-Token", "header-token"]],
+    headers: [["Content-Type", "application/x-www-form-urlencoded"], ["X-CSRF-Token", "header-token"], ["Cookie", "sid=primary"]],
     body: "name=alice&csrf_token=body-token",
   });
   assert.throws(() => plugin.plan({}, ctx), /allow_state_change/);

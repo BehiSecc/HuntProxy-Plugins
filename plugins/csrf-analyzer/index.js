@@ -41,11 +41,46 @@
     return { headers: headers, ordered_headers: ordered, body: decode64(context.base_exchange.identity.request_body_base64 || "") };
   }
   function firstHeader(data, name) { var values = data.headers[String(name).toLowerCase()] || []; return values.length ? values[0] : ""; }
+  var DEFAULT_TOKEN_NAMES = ["csrf", "csrf_token", "_csrf", "xsrf", "_token", "authenticity_token", "x-csrf-token", "x-xsrf-token", "csrfmiddlewaretoken", "x-csrftoken", "csrftoken", "__requestverificationtoken", "_xsrf"];
+  // Framework token names (Django, ASP.NET, Rails, Laravel, Tornado) that a fixed list misses.
+  var TOKEN_NAME_PATTERN = /csrf|xsrf|anti[-_]?forgery|requestverification|authenticity/i;
   function tokenNames(input) {
-    return (input.token_names && input.token_names.length ? input.token_names : ["csrf", "csrf_token", "_csrf", "xsrf", "_token", "authenticity_token", "x-csrf-token", "x-xsrf-token"])
+    return (input.token_names && input.token_names.length ? input.token_names : DEFAULT_TOKEN_NAMES)
       .map(function (value) { return String(value); });
   }
   function lowerSet(values) { var out = {}; values.forEach(function (value) { out[String(value).toLowerCase()] = true; }); return out; }
+  function tokenMatcher(input) {
+    // An explicit token_names list is used as given unless discovery is requested; omitted lists discover framework names.
+    var explicit = !!(input.token_names && input.token_names.length), wanted = lowerSet(tokenNames(input));
+    var discover = input.token_name_discovery === true || (input.token_name_discovery !== false && !explicit);
+    return function (name) { name = String(name); return !!wanted[name.toLowerCase()] || (discover && TOKEN_NAME_PATTERN.test(name)); };
+  }
+  // Re-escape characters above U+00FF so encode64 never truncates code units parsed from \uXXXX escapes.
+  function latin1Json(value) { return JSON.stringify(value).replace(/[\u0100-\uffff]/g, function (c) { return "\\u" + ("000" + c.charCodeAt(0).toString(16)).slice(-4); }); }
+  function multipartBoundary(contentType) { var match = /boundary=(?:"([^"]+)"|([^;\s]+))/i.exec(contentType); return match ? (match[1] || match[2]) : ""; }
+  function multipartParts(body, boundary) {
+    var segments = String(body).split("--" + boundary), parts = [];
+    if (segments.length < 3) return null;
+    for (var i = 1; i < segments.length; i += 1) {
+      var segment = segments[i];
+      if (segment.slice(0, 2) === "--") return parts;
+      var headerEnd = segment.indexOf("\r\n\r\n");
+      if (segment.slice(0, 2) !== "\r\n" || headerEnd < 0 || segment.slice(-2) !== "\r\n") return null;
+      var head = segment.slice(2, headerEnd), name = /content-disposition:[^\r\n]*;\s*name="([^"]*)"/i.exec(head);
+      parts.push({ head: head, content: segment.slice(headerEnd + 4, segment.length - 2), name: name ? name[1] : "", file: /content-disposition:[^\r\n]*;\s*filename=/i.test(head) });
+    }
+    return null;
+  }
+  function multipartBody(boundary, parts) { return encode64(parts.map(function (part) { return "--" + boundary + "\r\n" + part.head + "\r\n\r\n" + part.content + "\r\n"; }).join("") + "--" + boundary + "--\r\n"); }
+  function withoutBodyPatch(patch) { var output = {}; Object.keys(patch || {}).forEach(function (key) { if (key !== "body_params" && key !== "body_base64") output[key] = patch[key]; }); return output; }
+  function credentialHeaderNames(data, isToken) {
+    var names = ["Cookie", "Authorization", "Proxy-Authorization"];
+    data.ordered_headers.forEach(function (header) {
+      if (!isToken(header.name) && /^(x-(api|auth|access|session)[-_a-z0-9]*|api[-_]?key)$/i.test(header.name) && names.indexOf(header.name) === -1) names.push(header.name);
+    });
+    return names;
+  }
+  function bodyTruncated(context) { var identity = context.base_exchange && context.base_exchange.identity; return !!(identity && identity.request_body_truncated); }
   function decodeComponent(value) { try { return decodeURIComponent(String(value).replace(/\+/g, " ")); } catch (_) { return String(value); } }
   function formParts(body) {
     return String(body).split("&").map(function (part) {
@@ -94,19 +129,19 @@
   }
   function freshValue(input,location,name,value){var config=freshToken(input);return config&&config.location===location&&config.name.toLowerCase()===String(name).toLowerCase()?"{{extract:csrf_fresh}}":value;}
   function jsonPointer(parts) { return "/" + parts.map(function(part){return String(part).replace(/~/g,"~0").replace(/\//g,"~1");}).join("/"); }
-  function jsonTokenPaths(value, wanted, parts, output, depth) {
+  function jsonTokenPaths(value, isToken, parts, output, depth) {
     if(!value || typeof value!=="object" || depth>8 || output.length>=40) return;
     Object.keys(value).forEach(function(name){
       var next=parts.concat([name]);
-      if(wanted[String(name).toLowerCase()] && output.length<40) output.push(next);
-      jsonTokenPaths(value[name],wanted,next,output,depth+1);
+      if(isToken(name) && output.length<40) output.push(next);
+      jsonTokenPaths(value[name],isToken,next,output,depth+1);
     });
   }
   function jsonChanged(value, path, replacement, remove) {
     var copy=JSON.parse(JSON.stringify(value)), current=copy;
     for(var index=0;index<path.length-1;index+=1) current=current[path[index]];
     if(remove) delete current[path[path.length-1]]; else current[path[path.length-1]]=replacement;
-    return encode64(JSON.stringify(copy));
+    return encode64(latin1Json(copy));
   }
   function jsonChangedAll(value, paths, replacement, remove) {
     var copy=JSON.parse(JSON.stringify(value));
@@ -116,7 +151,7 @@
       if(!current) return;
       if(remove) delete current[path[path.length-1]]; else current[path[path.length-1]]=replacement;
     });
-    return encode64(JSON.stringify(copy));
+    return encode64(latin1Json(copy));
   }
   function mergePatch(left,right) {
     var output={}, keys={}, arrayKeys={headers:true,header_tombstones:true,query_params:true,cookie_params:true,body_params:true};
@@ -129,14 +164,14 @@
     return output;
   }
   function mutationList(input, context) {
-    var exchange = base(context), data = raw(context), wanted = lowerSet(tokenNames(input)), values = [], seen = {};
+    var exchange = base(context), data = raw(context), isToken = tokenMatcher(input), values = [], seen = {}, truncated = bodyTruncated(context);
     var invalid = "huntproxy-invalid-csrf", contentType = firstHeader(data, "content-type").toLowerCase();
     var combinedRemoval={}, combinedInvalid={}, tokenFields=0;
     function add(name, patch, kind, negativeControl) {
       if (!seen[name]) { seen[name] = true; values.push({ name: name, patch: patch, kind: kind || "token", negative_control: negativeControl || null }); }
     }
     queryParts(exchange.url).forEach(function (part) {
-      if (!wanted[part.name.toLowerCase()]) return;
+      if (!isToken(part.name)) return;
       tokenFields+=1;
       combinedRemoval=mergePatch(combinedRemoval,{query_params:[{name:part.name,value:null}]});
       combinedInvalid=mergePatch(combinedInvalid,{query_params:[{name:part.name,value:invalid}]});
@@ -146,19 +181,19 @@
       add("query-duplicate-invalid-last:" + part.name, { query_params: [{ name: part.name, value: freshValue(input,"query",part.name,part.value) }, { name: part.name, value: invalid }] }, "duplicate-token");
     });
     data.ordered_headers.forEach(function (header) {
-      if (!wanted[header.name.toLowerCase()]) return;
+      if (!isToken(header.name)) return;
       tokenFields+=1;
       combinedRemoval=mergePatch(combinedRemoval,{header_tombstones:[header.name]});
       combinedInvalid=mergePatch(combinedInvalid,{header_tombstones:[header.name],headers:[{name:header.name,value:invalid}]});
       add("header-remove:" + header.name, { header_tombstones: [header.name] },"token","header-invalid:"+header.name);
       add("header-invalid:" + header.name, { headers: [{ name: header.name, value: invalid }] });
-      add("header-duplicate-invalid-first:" + header.name, { header_tombstones: [header.name], headers: [{ name: header.name, value: invalid }, { name: header.name, value: freshValue(input,"header",header.name,header.value) }] }, "duplicate-token");
-      add("header-duplicate-invalid-last:" + header.name, { header_tombstones: [header.name], headers: [{ name: header.name, value: freshValue(input,"header",header.name,header.value) }, { name: header.name, value: invalid }] }, "duplicate-token");
+      add("header-duplicate-invalid-first:" + header.name, { header_tombstones: [header.name], headers: [{ name: header.name, value: invalid + ", " + freshValue(input,"header",header.name,header.value) }] }, "duplicate-token");
+      add("header-duplicate-invalid-last:" + header.name, { header_tombstones: [header.name], headers: [{ name: header.name, value: freshValue(input,"header",header.name,header.value) + ", " + invalid }] }, "duplicate-token");
     });
     if (contentType.indexOf("application/x-www-form-urlencoded") !== -1) {
       var parts = formParts(data.body);
       parts.forEach(function (part) {
-        if (!wanted[part.name.toLowerCase()]) return;
+        if (!isToken(part.name)) return;
         tokenFields+=1;
         combinedRemoval=mergePatch(combinedRemoval,{body_params:[{name:part.name,value:null}]});
         combinedInvalid=mergePatch(combinedInvalid,{body_params:[{name:part.name,value:invalid}]});
@@ -168,16 +203,16 @@
         if(refreshBody){
           add("body-duplicate-invalid-first:"+part.name,{body_params:[{name:part.name,value:invalid},{name:part.name,value:"{{extract:csrf_fresh}}"}]},"duplicate-token");
           add("body-duplicate-invalid-last:"+part.name,{body_params:[{name:part.name,value:"{{extract:csrf_fresh}}"},{name:part.name,value:invalid}]},"duplicate-token");
-        } else {
+        } else if (!truncated) {
           var without = parts.filter(function (candidate) { return candidate.name.toLowerCase() !== part.name.toLowerCase(); }).map(function (candidate) { return candidate.raw; });
           add("body-duplicate-invalid-first:" + part.name, { body_base64: encode64(without.concat([encodeURIComponent(part.name) + "=" + encodeURIComponent(invalid), encodeURIComponent(part.name) + "=" + encodeURIComponent(part.value)]).join("&")) }, "duplicate-token");
           add("body-duplicate-invalid-last:" + part.name, { body_base64: encode64(without.concat([encodeURIComponent(part.name) + "=" + encodeURIComponent(part.value), encodeURIComponent(part.name) + "=" + encodeURIComponent(invalid)]).join("&")) }, "duplicate-token");
         }
       });
-    } else if (contentType.indexOf("application/json") !== -1) {
+    } else if (contentType.indexOf("application/json") !== -1 && !truncated) {
       try {
         var object = JSON.parse(data.body);
-        var paths=[]; jsonTokenPaths(object,wanted,[],paths,0);
+        var paths=[]; jsonTokenPaths(object,isToken,[],paths,0);
         if(paths.length){tokenFields+=paths.length; combinedRemoval=mergePatch(combinedRemoval,{body_base64:jsonChangedAll(object,paths,invalid,true)}); combinedInvalid=mergePatch(combinedInvalid,{body_base64:jsonChangedAll(object,paths,invalid,false)});}
         paths.forEach(function (path) {
           var pointer=jsonPointer(path);
@@ -185,6 +220,21 @@
           add("json-invalid:" + pointer, { body_base64: jsonChanged(object,path,invalid,false) });
         });
       } catch (_) {}
+    } else if (contentType.indexOf("multipart/form-data") !== -1 && !truncated) {
+      var boundary = multipartBoundary(firstHeader(data, "content-type")), multipart = boundary ? multipartParts(data.body, boundary) : null;
+      var tokenParts = (multipart || []).filter(function (part) { return !part.file && isToken(part.name); });
+      tokenParts.forEach(function (part) {
+        tokenFields += 1;
+        var invalidPart = { head: part.head, content: invalid, name: part.name, file: false };
+        add("multipart-remove:" + part.name, { body_base64: multipartBody(boundary, multipart.filter(function (item) { return item !== part; })) }, "token", "multipart-invalid:" + part.name);
+        add("multipart-invalid:" + part.name, { body_base64: multipartBody(boundary, multipart.map(function (item) { return item === part ? invalidPart : item; })) });
+        add("multipart-duplicate-invalid-first:" + part.name, { body_base64: multipartBody(boundary, multipart.reduce(function (out, item) { return out.concat(item === part ? [invalidPart, item] : [item]); }, [])) }, "duplicate-token");
+        add("multipart-duplicate-invalid-last:" + part.name, { body_base64: multipartBody(boundary, multipart.reduce(function (out, item) { return out.concat(item === part ? [item, invalidPart] : [item]); }, [])) }, "duplicate-token");
+      });
+      if (tokenParts.length) {
+        combinedRemoval = mergePatch(combinedRemoval, { body_base64: multipartBody(boundary, multipart.filter(function (item) { return tokenParts.indexOf(item) === -1; })) });
+        combinedInvalid = mergePatch(combinedInvalid, { body_base64: multipartBody(boundary, multipart.map(function (item) { return tokenParts.indexOf(item) === -1 ? item : { head: item.head, content: invalid, name: item.name, file: false }; })) });
+      }
     }
 
     if(tokenFields) add("control-invalid-all-tokens",combinedInvalid,"token-negative-control");
@@ -194,33 +244,36 @@
       add(name+"+token-remove",mergePatch(combinedRemoval,patch),kind+"-token","control-invalid-all-tokens");
     }
 
+    var crossSiteFetch = firstHeader(data, "sec-fetch-site") ? [{ name: "Sec-Fetch-Site", value: "cross-site" }] : [];
+    function crossSite(patch) { return crossSiteFetch.length ? mergePatch(patch, { header_tombstones: ["Sec-Fetch-Site"], headers: crossSiteFetch }) : patch; }
     addDefense("origin-remove", { header_tombstones: ["Origin"] }, "origin");
-    addDefense("origin-null", { header_tombstones: ["Origin"], headers: [{ name: "Origin", value: "null" }] }, "origin");
-    addDefense("origin-cross-site", { header_tombstones: ["Origin"], headers: [{ name: "Origin", value: String(input.cross_site_origin || "https://csrf.invalid") }] }, "origin");
+    addDefense("origin-null", crossSite({ header_tombstones: ["Origin"], headers: [{ name: "Origin", value: "null" }] }), "origin");
+    addDefense("origin-cross-site", crossSite({ header_tombstones: ["Origin"], headers: [{ name: "Origin", value: String(input.cross_site_origin || "https://csrf.invalid") }] }), "origin");
     addDefense("referer-remove", { header_tombstones: ["Referer"] }, "referer");
-    addDefense("referer-cross-site", { header_tombstones: ["Referer"], headers: [{ name: "Referer", value: String(input.cross_site_origin || "https://csrf.invalid") + "/huntproxy" }] }, "referer");
+    addDefense("referer-cross-site", crossSite({ header_tombstones: ["Referer"], headers: [{ name: "Referer", value: String(input.cross_site_origin || "https://csrf.invalid") + "/huntproxy" }] }), "referer");
     addDefense("origin-and-referer-remove", { header_tombstones: ["Origin", "Referer"] }, "origin-referer");
-    addDefense("origin-and-referer-cross-site", { header_tombstones: ["Origin", "Referer"], headers: [{ name: "Origin", value: String(input.cross_site_origin || "https://csrf.invalid") }, { name: "Referer", value: String(input.cross_site_origin || "https://csrf.invalid") + "/huntproxy" }] }, "origin-referer");
+    addDefense("origin-and-referer-cross-site", crossSite({ header_tombstones: ["Origin", "Referer"], headers: [{ name: "Origin", value: String(input.cross_site_origin || "https://csrf.invalid") }, { name: "Referer", value: String(input.cross_site_origin || "https://csrf.invalid") + "/huntproxy" }] }), "origin-referer");
 
     addDefense("content-type-remove", { header_tombstones: ["Content-Type"] }, "content-type");
     if (contentType.indexOf("application/json") !== -1 || contentType.indexOf("application/x-www-form-urlencoded") !== -1) {
       addDefense("content-type-text-plain", { header_tombstones: ["Content-Type"], headers: [{ name: "Content-Type", value: "text/plain" }] }, "content-type");
     }
     if(contentType.indexOf("application/x-www-form-urlencoded") !== -1) {
-      var methodQuery=formParts(data.body).filter(function(part){return !wanted[part.name.toLowerCase()];}).map(function(part){return {name:part.name,value:part.value};});
-      queryParts(exchange.url).forEach(function(part){if(wanted[part.name.toLowerCase()]) methodQuery.push({name:part.name,value:null});});
-      add("method-get-form-query", mergePatch(combinedRemoval,{ method: "GET", query_params: methodQuery, body_base64: encode64(""), header_tombstones: ["Content-Type", "Content-Length"] }), "method-token",tokenFields?"control-invalid-all-tokens":null);
-    } else add("method-get-empty-body", mergePatch(combinedRemoval,{ method: "GET", body_base64: encode64(""), header_tombstones: ["Content-Type", "Content-Length"] }), tokenFields?"method-token":"method",tokenFields?"control-invalid-all-tokens":null);
+      var methodQuery=formParts(data.body).filter(function(part){return !isToken(part.name);}).map(function(part){return {name:part.name,value:part.value};});
+      queryParts(exchange.url).forEach(function(part){if(isToken(part.name)) methodQuery.push({name:part.name,value:null});});
+      add("method-get-form-query", mergePatch(withoutBodyPatch(combinedRemoval),{ method: "GET", query_params: methodQuery, body_base64: encode64(""), header_tombstones: ["Content-Type", "Content-Length"] }), "method-token",tokenFields?"control-invalid-all-tokens":null);
+    } else add("method-get-empty-body", mergePatch(withoutBodyPatch(combinedRemoval),{ method: "GET", body_base64: encode64(""), header_tombstones: ["Content-Type", "Content-Length"] }), tokenFields?"method-token":"method",tokenFields?"control-invalid-all-tokens":null);
     addDefense("method-override-get", { headers: [{ name: "X-HTTP-Method-Override", value: "GET" }] }, "method");
 
+    var credentialHeaders = credentialHeaderNames(data, isToken);
     if (input.secondary_identity) {
       add("cross-session-original-token", {
-        header_tombstones: ["Cookie", "Authorization", "Proxy-Authorization"],
+        header_tombstones: credentialHeaders,
         headers: identityHeaders(input.secondary_identity)
       }, "session-binding");
     }
     (input.paired_cookie_tests||[]).forEach(function(test){
-      var headers=identityHeaders(test.identity), patch={header_tombstones:["Cookie","Authorization","Proxy-Authorization"],headers:headers};
+      var headers=identityHeaders(test.identity), patch={header_tombstones:credentialHeaders.slice(),headers:headers};
       var token={name:String(test.token.name),value:String(test.token.value)};
       if(test.token.location==="query") patch.query_params=[token];
       else if(test.token.location==="header") patch.headers=headers.concat([token]);
@@ -230,11 +283,11 @@
     return values.slice(0, Math.max(1, Math.min(Number(input.max_mutations || 50), 80)));
   }
   function browserTokenRemoval(input,context){
-    var exchange=browserBase(context),data=raw(context),wanted=lowerSet(tokenNames(input)),query=[],body=[],contentType=firstHeader(data,"content-type").toLowerCase();
-    queryParts(exchange.url).forEach(function(part){if(wanted[part.name.toLowerCase()])query.push({name:part.name,value:null});});
+    var exchange=browserBase(context),data=raw(context),isToken=tokenMatcher(input),query=[],body=[],contentType=firstHeader(data,"content-type").toLowerCase();
+    queryParts(exchange.url).forEach(function(part){if(isToken(part.name))query.push({name:part.name,value:null});});
     if(String(exchange.method).toUpperCase()==="POST"){
       if(contentType.indexOf("application/x-www-form-urlencoded")===-1)throw new Error("Browser form POST probes require application/x-www-form-urlencoded content");
-      formParts(data.body).forEach(function(part){if(wanted[part.name.toLowerCase()])body.push({name:part.name,value:null});});
+      formParts(data.body).forEach(function(part){if(isToken(part.name))body.push({name:part.name,value:null});});
     }
     if(!query.length&&!body.length)throw new Error("Browser CSRF scan requires a configured token in the captured query or form body");
     return {query_params:query,body_params:body};
@@ -282,13 +335,22 @@
     }
     return {id:id,type:"http_workflow",steps:steps};
   }
-  function patchTouchesToken(patch,config){var key=config.location==="query"?"query_params":config.location==="header"?"headers":"body_params";return (patch&&patch[key]||[]).some(function(item){return String(item.name).toLowerCase()===config.name.toLowerCase();});}
+  function patchTouchesToken(patch,config){
+    var name=config.name.toLowerCase();
+    function has(list){return (list||[]).some(function(item){return String(item&&typeof item==="object"?item.name:item).toLowerCase()===name;});}
+    if(!patch)return false;
+    if(config.location==="query")return has(patch.query_params);
+    if(config.location==="header")return has(patch.headers)||has(patch.header_tombstones);
+    // Host body_params rebuild the captured body and would discard an explicit body_base64.
+    return has(patch.body_params)||patch.body_base64!=null;
+  }
   function plan(input, context) {
     if(context.action==="browser_scan")return browserPlan(input,context);
     if (input.allow_state_change !== true) throw new Error("CSRF testing repeats the state-changing request and requires allow_state_change=true");
     var exchange = base(context), operations = [], mutations = mutationList(input, context), fresh=freshToken(input), read=readback(input,exchange);
-    var wanted=lowerSet(tokenNames(input));
-    (input.per_request_values||[]).forEach(function(item){if(wanted[String(item.name).toLowerCase()]) throw new Error("per_request_values cannot target a configured CSRF token name");});
+    var isToken=tokenMatcher(input);
+    (input.per_request_values||[]).forEach(function(item){if(isToken(item.name)) throw new Error("per_request_values cannot target a configured CSRF token name");});
+    if(fresh&&fresh.location==="body"&&firstHeader(raw(context),"content-type").toLowerCase().indexOf("multipart/form-data")!==-1) throw new Error("fresh_token body injection supports form-urlencoded and JSON requests, not multipart");
     var counter=0;
     for (var repeat = 0; repeat < 2; repeat += 1) {
       var baselinePatch=perRequestPatch(input,counter++);
@@ -407,7 +469,7 @@
   function configuredSuccess(item,input){return input.success_predicate?predicateMatches(item,input.success_predicate):(!(input.success_markers&&input.success_markers.length)||includesMarker(item,input.success_markers));}
   function rejected(item, input) {
     return !item || item.error || item.status_code === 401 || item.status_code === 403 || item.status_code === 419 || item.status_code >= 500
-      || /csrf|forbidden|invalid (?:anti[- ]?forgery )?token|origin mismatch|referer mismatch|request rejected/.test(preview(item))
+      || /(?:invalid|missing|mismatch(?:ed)?|expired|incorrect|failed)[^.\n<]{0,40}(?:csrf|xsrf|anti[- ]?forgery|authenticity|verification) token|(?:csrf|xsrf)[^.\n<]{0,40}(?:invalid|missing|mismatch|failed|expired|incorrect|not set)|csrf verification failed|\bforbidden\b[^.\n<]{0,20}(?:csrf|token|origin|referer)|invalid (?:anti[- ]?forgery )?token|origin mismatch|referer mismatch|request rejected/.test(preview(item))
       || includesMarker(item, input.failure_markers);
   }
   function successful(item, input) {
@@ -433,6 +495,11 @@
     if(context.action==="browser_scan")return browserAnalyze(observations);
     observations=workflowObservations(observations);
     var map = byId(observations), baseline = stablePair(map, "baseline-"), findings = [], outcomes = [], mutations = mutationList(input, context);
+    var data = raw(context), authorization = firstHeader(data, "authorization"), contentType = firstHeader(data, "content-type").toLowerCase();
+    // Browsers attach cookies and HTTP authentication to cross-site requests, not bearer or custom headers.
+    var ambient = !!firstHeader(data, "cookie") || /^(basic|digest|ntlm|negotiate)\s/i.test(authorization);
+    var simpleType = !contentType || /^(application\/x-www-form-urlencoded|multipart\/form-data|text\/plain)/.test(contentType);
+    var counterBound = !!input.readback && JSON.stringify(input.readback.predicate || {}).indexOf("{counter}") !== -1 && (input.per_request_values || []).some(function (item) { return String(item.value_template).indexOf("{counter}") !== -1; });
     var baselineSuccess = successful(baseline, input)&&readbackPairSuccessful(map,input,"baseline-");
     var baselineError=pairFailure(map,"baseline-");
     if(!baselineError&&baseline&&!successful(baseline,input))baselineError="success_predicate_not_met";
@@ -451,16 +518,17 @@
       if(!outcomeError&&result&&!readbackPairSuccessful(map,input,prefix))outcomeError="readback_predicate_not_met";
       if(!outcomeError&&mutation.negative_control&&!negativeRejected)outcomeError="negative_control_not_distinct";
       outcomes.push({ mutation: mutation.name, kind: mutation.kind, reproducible: !!result, accepted: !!accepted, baseline_similarity: Math.round(score * 1000) / 1000, negative_control: mutation.negative_control, negative_control_rejected: !!negativeRejected, negative_control_distinct:!!negativeDistinct, readback_confirmed:!!result&&readbackPairSuccessful(map,input,prefix), diagnostic_only: diagnostic, error: outcomeError });
-      if (!diagnostic && accepted && comparable && negativeRejected) findings.push({
+      var preflighted = !simpleType && /^(origin|referer|origin-referer)(-token)?$/.test(mutation.kind);
+      if (!diagnostic && accepted && comparable && negativeRejected && ambient) findings.push({
         title: "CSRF defense bypass using " + mutation.name,
-        severity: mutation.kind === "content-type" || mutation.kind === "method" ? "medium" : "high",
-        confidence: input.readback ? "firm" : "tentative",
-        explanation: input.readback?"The mutation remained reproducibly successful and the configured safe read-back independently confirmed the resulting server state.":"The mutation matched the reproducible accepted baseline and differed materially from its invalid-token control. This proves request acceptance, but no independent state read-back was configured.",
+        severity: mutation.kind === "content-type" || mutation.kind === "method" || preflighted ? "medium" : "high",
+        confidence: counterBound ? "firm" : "tentative",
+        explanation: (counterBound?"The mutation remained reproducibly successful and the configured safe read-back confirmed the value written by this request.":input.readback?"The mutation remained reproducibly successful and the read-back predicate matched, but the predicate does not bind a per-request {counter} value, so state left by the baseline could also satisfy it.":"The mutation matched the reproducible accepted baseline and differed materially from its invalid-token control. This proves request acceptance, but no independent state read-back was configured.")+(preflighted?" The captured "+contentType+" body is not a simple cross-site request, so exploitation also needs a CORS-permitted or simple-request path; see the content-type mutations.":""),
         evidence_exchange_ids: pairEvidence(map,"baseline-",!!input.readback).concat(pairEvidence(map,prefix,!!input.readback),negativeIndex>=0?pairEvidence(map,"mutation-"+negativeIndex+"-",false):[]),
-        metadata: { mutation: mutation.name, kind: mutation.kind, baseline_similarity: Math.round(score * 1000) / 1000,readback_confirmed:!!input.readback,negative_control_distinct:!!negativeDistinct }
+        metadata: { mutation: mutation.name, kind: mutation.kind, baseline_similarity: Math.round(score * 1000) / 1000,readback_confirmed:counterBound,negative_control_distinct:!!negativeDistinct }
       });
     });
-    return { findings: findings, result: { baseline_stable: !!baseline, baseline_successful: !!baselineSuccess, baseline_error:baselineError, fresh_token_workflows:!!freshToken(input),readback_workflows:!!input.readback, outcomes: outcomes, tested_operations: observations.length, limitations: [(input.readback?"":"Response differential evidence proves request acceptance, not durable server state; configure readback for firm confirmation."), "Multipart CSRF token fields are not mutated automatically."].filter(Boolean) } };
+    return { findings: findings, result: { baseline_stable: !!baseline, baseline_successful: !!baselineSuccess, baseline_error:baselineError, fresh_token_workflows:!!freshToken(input),readback_workflows:!!input.readback, outcomes: outcomes, tested_operations: observations.length, ambient_credentials: ambient, limitations: [(input.readback?"":"Response differential evidence proves request acceptance, not durable server state; configure readback for firm confirmation."), (input.readback&&!counterBound?"The read-back predicate does not reference a per-request {counter} value from per_request_values, so read-back matches are not counted as firm confirmation.":""), (ambient?"":"The captured request carries no cookie or browser-managed HTTP authentication, so a cross-site browser request would not be authenticated; accepted mutations are not reported as CSRF."), (bodyTruncated(context)?"The captured request body was truncated, so body-rewriting token mutations were skipped.":"")].filter(Boolean) } };
   }
   globalThis.HuntProxyPlugin = { plan: plan, analyze: analyze };
 }());

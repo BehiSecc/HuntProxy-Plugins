@@ -29,7 +29,7 @@ function observation(operation, { status = 200, hash = "success", text = "profil
 const responseHeader = (name, value) => ({ name, value_base64: b64(value) });
 
 const manifest = JSON.parse(await readFile(new URL("csrf-analyzer/plugin.json", root), "utf8"));
-const expectedTokenNames = ["csrf", "csrf_token", "_csrf", "xsrf", "_token", "authenticity_token", "x-csrf-token", "x-xsrf-token"];
+const expectedTokenNames = ["csrf", "csrf_token", "_csrf", "xsrf", "_token", "authenticity_token", "x-csrf-token", "x-xsrf-token", "csrfmiddlewaretoken", "x-csrftoken", "csrftoken", "__requestverificationtoken", "_xsrf"];
 for (const action of manifest.actions) assert.deepEqual(action.input_schema.properties.token_names.default, expectedTokenNames, `${action.name} token defaults must match runtime discovery`);
 const browserAction = manifest.actions.find((action) => action.name === "browser_scan");
 assert.deepEqual(browserAction.input_schema.required, ["allow_state_change", "identity"]);
@@ -210,5 +210,108 @@ assert.equal(unauthenticatedBrowserAnalysis.result.acceptance_candidates.length,
 assert.throws(()=>plugin.plan({allow_state_change:true,identity_profile:"portswigger-victim",token_names:["csrf_token"]},browserContext),/named managed profile selector/);
 assert.throws(()=>plugin.plan({allow_state_change:true,identity:{cookie_file:"victim.json"},token_names:["csrf_token"]},browserContext),/named managed profile selector/);
 assert.throws(()=>plugin.plan({allow_state_change:true,identity:{profile:"invalid profile"},token_names:["csrf_token"]},browserContext),/named managed profile selector/);
+
+
+// Review fixes: fresh tokens never undo a removal or a rewritten body.
+{
+  const headerFresh={allow_state_change:true,token_names:["X-CSRF-Token"],max_mutations:80,fresh_token:{acquire_url:"https://example.test/profile",body_regex:'csrf="([^"]+)"',location:"header",name:"X-CSRF-Token"}};
+  const headerPlan=plugin.plan(headerFresh,context());
+  const names=Array.from(headerPlan.result.mutations,(item)=>item.name);
+  const submit=(name)=>headerPlan.operations.find((op)=>op.id===`mutation-${names.indexOf(name)}-0`).steps[1].request;
+  for(const name of ["header-remove:X-CSRF-Token","origin-cross-site+token-remove"]){
+    const request=submit(name);
+    assert.ok(request.header_tombstones.includes("X-CSRF-Token"),`${name} removes the token header`);
+    assert.ok(!(request.headers||[]).some((header)=>header.name==="X-CSRF-Token"),`${name} does not re-add a fresh token header`);
+  }
+  const duplicate=submit("header-duplicate-invalid-first:X-CSRF-Token").headers.filter((header)=>header.name==="X-CSRF-Token");
+  assert.deepEqual(Array.from(duplicate,(header)=>header.value),["huntproxy-invalid-csrf, {{extract:csrf_fresh}}"],"the host keeps one header per name, so duplicates are sent as one combined field");
+  assert.ok(submit("origin-cross-site").headers.some((header)=>header.name==="X-CSRF-Token"&&header.value==="{{extract:csrf_fresh}}"),"non-token probes still carry a fresh token");
+
+  const jsonContext=context();
+  jsonContext.base_exchange.identity.request_headers[0].value_base64=b64("application/json");
+  jsonContext.base_exchange.identity.request_body_base64=b64('{"name":"\\u4e2d","csrf_token":"json-good"}');
+  const jsonPlan=plugin.plan({allow_state_change:true,token_names:["csrf_token"],max_mutations:80,fresh_token:{acquire_url:"https://example.test/profile",body_regex:'csrf="([^"]+)"',location:"body",name:"csrf_token"}},jsonContext);
+  const jsonNames=Array.from(jsonPlan.result.mutations,(item)=>item.name);
+  const jsonSubmit=jsonPlan.operations.find((op)=>op.id===`mutation-${jsonNames.indexOf("json-remove:/csrf_token")}-0`).steps[1].request;
+  assert.ok(jsonSubmit.body_base64,"JSON removal keeps its explicit body");
+  assert.equal(jsonSubmit.body_params,undefined,"no body_params that would make the host rebuild the original body");
+  const jsonInvalid=Buffer.from(jsonPlan.operations.find((op)=>op.id===`mutation-${jsonNames.indexOf("json-invalid:/csrf_token")}-0`).steps[1].request.body_base64,"base64").toString("latin1");
+  assert.ok(jsonInvalid.includes('"name":"\\u4e2d"'),"characters above U+00FF survive as JSON escapes");
+  assert.equal(JSON.parse(jsonInvalid).csrf_token,"huntproxy-invalid-csrf");
+}
+
+// Review fixes: framework token names are discovered without configuration, including multipart fields.
+{
+  const djangoContext=context();
+  djangoContext.base_exchange.url="https://example.test/profile";
+  djangoContext.base_exchange.identity.request_headers=djangoContext.base_exchange.identity.request_headers.filter((header)=>header.name!=="X-CSRF-Token");
+  djangoContext.base_exchange.identity.request_body_base64=b64("name=alice&csrfmiddlewaretoken=django-good");
+  const names=Array.from(plugin.plan({allow_state_change:true,max_mutations:80},djangoContext).result.mutations,(item)=>item.name);
+  assert.ok(names.includes("body-remove:csrfmiddlewaretoken"));
+  assert.ok(names.includes("origin-cross-site+token-remove"),"Origin probes get a token-removed variant and a negative control");
+  assert.ok(!Array.from(plugin.plan({allow_state_change:true,max_mutations:80,token_names:["csrf"]},djangoContext).result.mutations,(item)=>item.name).includes("body-remove:csrfmiddlewaretoken"),"an explicit token_names list is used as given");
+  assert.ok(Array.from(plugin.plan({allow_state_change:true,max_mutations:80,token_names:["csrf"],token_name_discovery:true},djangoContext).result.mutations,(item)=>item.name).includes("body-remove:csrfmiddlewaretoken"),"discovery can be added to an explicit list");
+  const customContext=context();customContext.base_exchange.url="https://example.test/profile";
+  customContext.base_exchange.identity.request_headers=customContext.base_exchange.identity.request_headers.filter((header)=>header.name!=="X-CSRF-Token");
+  customContext.base_exchange.identity.request_body_base64=b64("name=alice&app_antiforgery=custom-good");
+  assert.ok(Array.from(plugin.plan({allow_state_change:true,max_mutations:80},customContext).result.mutations,(item)=>item.name).includes("body-remove:app_antiforgery"),"pattern discovery finds names outside the default list");
+  assert.ok(!Array.from(plugin.plan({allow_state_change:true,max_mutations:80,token_name_discovery:false},customContext).result.mutations,(item)=>item.name).includes("body-remove:app_antiforgery"),"discovery can be disabled");
+
+  const boundary="----hpboundary";
+  const multipart=`--${boundary}\r\nContent-Disposition: form-data; name="title"\r\n\r\nhello\r\n--${boundary}\r\nContent-Disposition: form-data; name="__RequestVerificationToken"\r\n\r\nnet-good\r\n--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="a.bin"\r\nContent-Type: application/octet-stream\r\n\r\n\u0000ÿ\u0080bytes\r\n--${boundary}--\r\n`;
+  const multipartContext=context();
+  multipartContext.base_exchange.url="https://example.test/upload";
+  multipartContext.base_exchange.identity.request_headers=[{name:"Content-Type",value_base64:b64(`multipart/form-data; boundary=${boundary}`)},{name:"Cookie",value_base64:b64("sid=primary")}];
+  multipartContext.base_exchange.identity.request_body_base64=b64(multipart);
+  const mpPlan=plugin.plan({allow_state_change:true,max_mutations:80},multipartContext);
+  const mpNames=Array.from(mpPlan.result.mutations,(item)=>item.name);
+  for(const name of ["multipart-remove:__RequestVerificationToken","multipart-invalid:__RequestVerificationToken","multipart-duplicate-invalid-first:__RequestVerificationToken","control-invalid-all-tokens","origin-cross-site+token-remove"]) assert.ok(mpNames.includes(name),`missing ${name}`);
+  const removed=Buffer.from(mpPlan.operations.find((op)=>op.id===`mutation-${mpNames.indexOf("multipart-remove:__RequestVerificationToken")}-0`).body_base64,"base64").toString("latin1");
+  assert.ok(!removed.includes("net-good")&&!removed.includes("__RequestVerificationToken"));
+  assert.ok(removed.includes("\u0000ÿ\u0080bytes"),"binary file parts are preserved byte for byte");
+  assert.ok(removed.endsWith(`--${boundary}--\r\n`));
+  assert.throws(()=>plugin.plan({allow_state_change:true,fresh_token:{acquire_url:"https://example.test/upload",body_regex:"x(.)",location:"body",name:"__RequestVerificationToken"}},multipartContext),/not multipart/);
+}
+
+// Review fixes: GET conversions have no body, identity swaps drop custom credentials, truncated bodies are not rebuilt.
+{
+  const names=Array.from(plan.result.mutations,(item)=>item.name);
+  const methodGet=plan.operations.find((op)=>op.id.startsWith(`mutation-${names.indexOf("method-get-form-query")}-`));
+  assert.equal(methodGet.body_params,undefined,"a GET conversion does not rebuild the form body through body_params");
+  const apiContext=context();
+  apiContext.base_exchange.identity.request_headers.push({name:"X-Api-Key",value_base64:b64("primary-key")});
+  const apiPlan=plugin.plan(input,apiContext);
+  const apiNames=Array.from(apiPlan.result.mutations,(item)=>item.name);
+  const swapped=apiPlan.operations.find((op)=>op.id.startsWith(`mutation-${apiNames.indexOf("cross-session-original-token")}-`));
+  assert.ok(swapped.header_tombstones.includes("X-Api-Key"),"custom credential headers of the primary identity are removed");
+  assert.ok(!swapped.header_tombstones.includes("X-CSRF-Token"),"the original CSRF token is kept for the session-binding test");
+  const truncatedContext=context();
+  truncatedContext.base_exchange.identity.request_headers[0].value_base64=b64("application/json");
+  truncatedContext.base_exchange.identity.request_body_base64=b64('{"csrf_token":"cut');
+  truncatedContext.base_exchange.identity.request_body_truncated=true;
+  const truncatedPlan=plugin.plan({allow_state_change:true,token_names:["csrf_token"],max_mutations:80},truncatedContext);
+  assert.ok(!truncatedPlan.result.mutations.some((item)=>item.name.startsWith("json-")),"truncated JSON bodies are not replayed");
+}
+
+// Review fixes: verdicts need ambient credentials and a per-request read-back, and an embedded token is not a rejection.
+{
+  const bearerContext=context();
+  bearerContext.base_exchange.identity.request_headers=bearerContext.base_exchange.identity.request_headers.filter((header)=>header.name!=="Cookie").concat([{name:"Authorization",value_base64:b64("Bearer api-token")}]);
+  const redirectBearer=redirectPlan.operations.map((op)=>{const item=observation(op,{status:302,hash:"empty",text:""});item.response_headers=[responseHeader("Location","%2Fmy-account")];return item;});
+  for(const name of ["body-invalid:csrf_token","control-invalid-all-tokens"]){const index=redirectMutations.indexOf(name);for(const item of redirectBearer.filter((entry)=>entry.id.startsWith(`mutation-${index}-`)))item.response_headers=[responseHeader("Location","/login")];}
+  const bearer=plugin.analyze(redirectInput,redirectBearer,bearerContext);
+  assert.equal(bearer.findings.length,0,"bearer-only requests are not CSRF-exploitable from a browser");
+  assert.equal(bearer.result.ambient_credentials,false);
+  assert.ok(plugin.analyze(redirectInput,redirectBearer,context()).findings.length>0,"the same evidence with a session cookie is still reported");
+
+  const staticReadback={...readbackInput,readback:{...readbackInput.readback,predicate:{body_contains:"account email"}}};
+  const staticFinding=plugin.analyze(staticReadback,readbackObservations.map((item)=>item.id===`mutation-${bodyRemovalIndex}-1`?{...item,steps:[item.steps[0],observation({id:"readback"},{text:"account email hp-1@invalid.example",hash:"read"})]}:item),context()).findings.find((finding)=>finding.metadata.mutation==="body-remove:csrf_token");
+  assert.ok(staticFinding);
+  assert.equal(staticFinding.confidence,"tentative","a read-back predicate without {counter} cannot tell this request's write from the baseline's");
+
+  const tokenPage=plan.operations.map((op)=>observation(op,{text:'<meta name="csrf-token" content="abc"> profile updated'}));
+  assert.equal(plugin.analyze(input,tokenPage,context()).result.baseline_successful,true,"a successful page that embeds a CSRF token is not a rejection");
+  assert.equal(plugin.analyze(input,plan.operations.map((op)=>observation(op,{text:"CSRF token missing or incorrect"})),context()).result.baseline_successful,false);
+}
 
 console.log("CSRFAnalyzer hardening tests passed.");

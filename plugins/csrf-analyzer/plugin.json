@@ -1,7 +1,7 @@
 {
-  "schema_version": 1, "id": "csrf-analyzer", "name": "CSRFAnalyzer", "version": "1.5.2",
+  "schema_version": 1, "id": "csrf-analyzer", "name": "CSRFAnalyzer", "version": "1.6.0",
   "description": "Reproduce state-changing requests with redirect-aware differential controls and optional independent state read-back.",
-  "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "d6be61954e7af15c7ba1b5f59aa586bf7d4f1a890235e92f0428d36239454e1b",
+  "enabled": true, "entrypoint": "index.js", "entrypoint_sha256": "1600ed423deef192eb8dc0eb6e31becec39883b3871fe1729562d397b4cf3d54",
   "capabilities": ["http.semantic", "identity.use", "browser.csrf"],
   "limits": { "timeout_ms": 600000, "max_operations": 500, "max_concurrency": 2, "memory_mb": 32, "js_stage_timeout_ms": 60000 },
   "actions": [{ "name": "scan", "description": "Run bounded, repeated CSRF mutations after explicit confirmation that the request changes server state.", "required_capabilities": ["http.semantic", "identity.use"], "requires_base_exchange": true,
@@ -13,7 +13,8 @@
         "location": { "enum": ["body", "query", "header"] }, "name": { "type": "string", "minLength": 1, "maxLength": 200 },
         "identity": { "$ref": "#/$defs/identity", "description": "Optional acquisition identity; omit to inherit the captured primary identity." }
       }, "description": "Acquire and inject a fresh one-time token before every baseline and mutation replay." },
-      "token_names": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1 }, "default": ["csrf", "csrf_token", "_csrf", "xsrf", "_token", "authenticity_token", "x-csrf-token", "x-xsrf-token"] },
+      "token_names": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1 }, "default": ["csrf", "csrf_token", "_csrf", "xsrf", "_token", "authenticity_token", "x-csrf-token", "x-xsrf-token", "csrfmiddlewaretoken", "x-csrftoken", "csrftoken", "__requestverificationtoken", "_xsrf"] },
+"token_name_discovery": { "type": "boolean", "description": "Also treat field names matching csrf, xsrf, anti-forgery, RequestVerification or authenticity as tokens. Defaults to true when token_names is omitted and false when it is supplied." },
       "secondary_identity": { "$ref": "#/$defs/identity", "description": "Optional second authenticated identity used to test whether the original token is bound to its session." },
       "paired_cookie_tests": { "type": "array", "maxItems": 20, "items": { "type": "object", "additionalProperties": false, "required": ["name", "identity", "token"], "properties": {
         "name": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,40}$" },
@@ -62,7 +63,8 @@
     "input_schema": { "type": "object", "additionalProperties": false, "required": ["allow_state_change", "identity"], "properties": {
       "allow_state_change": { "const": true },
       "identity": { "type": "object", "additionalProperties": false, "required": ["profile"], "properties": { "profile": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$" } }, "description": "Named managed cookie profile used only in an isolated ephemeral Chromium context." },
-      "token_names": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1 }, "default": ["csrf", "csrf_token", "_csrf", "xsrf", "_token", "authenticity_token", "x-csrf-token", "x-xsrf-token"] },
+      "token_names": { "type": "array", "maxItems": 100, "uniqueItems": true, "items": { "type": "string", "minLength": 1 }, "default": ["csrf", "csrf_token", "_csrf", "xsrf", "_token", "authenticity_token", "x-csrf-token", "x-xsrf-token", "csrfmiddlewaretoken", "x-csrftoken", "csrftoken", "__requestverificationtoken", "_xsrf"] },
+"token_name_discovery": { "type": "boolean", "description": "Also treat field names matching csrf, xsrf, anti-forgery, RequestVerification or authenticity as tokens. Defaults to true when token_names is omitted and false when it is supplied." },
       "timeout_ms": { "type": "integer", "minimum": 1000, "maximum": 30000, "default": 15000 }
     } }
   }]
